@@ -42,6 +42,16 @@
       </div>
     </a>
 
+    <nav class="hero-center-nav" id="heroCenterNav" aria-label="Cala verification pillars">
+      <button type="button" class="hero-nav-pill is-active" data-hero-pillar="0">
+        <span class="hero-nav-dot" aria-hidden="true"></span>
+        <span>Graph Explorer</span>
+      </button>
+      <button type="button" class="hero-nav-pill" data-hero-pillar="1">Real Cala Data</button>
+      <button type="button" class="hero-nav-pill" data-hero-pillar="2">Primary Filings</button>
+      <button type="button" class="hero-nav-pill" data-hero-pillar="3">4-Lens Briefs</button>
+    </nav>
+
     <div class="top-right" id="inlineCalibrationBar">
       <span id="mapStatus" class="map-status-note" aria-live="polite">Initializing Cala map...</span>
 
@@ -71,168 +81,221 @@
       aria-label="Entity bridge constellation workspace"
     >
       <div class="command-stage" id="commandStage">
-        <div class="hero-intro-block" id="heroIntroBlock">
-          <div class="hero-kicker-pill">Powered by Real, Verified Cala Data</div>
-          <h1 class="hero-main-title">
-            Map <em>real, verified entities</em> and documented Cala relationships.
-          </h1>
-          <p class="hero-sub-tagline" id="searchHeroSub">
-            Every investor, supplier, leadership tie, and milestone is contributed directly from live Cala Knowledge Graph records &amp; primary filings — zero synthetic estimates or unverified assumptions.
-          </p>
-        </div>
+        <!-- Upper-Right Translucent Cala Verification Card (hero only) -->
+        <div class="hero-upper-stage" id="heroUpperStage">
+          <aside class="hero-preview-card" id="heroPreviewCard" aria-label="Live Cala Knowledge Graph provenance summary">
+            <div class="hero-card-kicker">
+              <span class="cala-trust-dot" aria-hidden="true"></span>
+              <span>Live Cala Knowledge Graph &middot; Real Filings</span>
+            </div>
 
-        <div class="command-row-bar">
-          <form id="aiSearchForm" class="floating-search-bar" role="search">
-            <label for="aiSearchInput" class="sr-only">Search startups, companies, investors, funds, or people</label>
-            <svg
-              class="search-lead-icon"
-              width="19"
-              height="19"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="11" cy="11" r="8"></circle>
-              <path d="m21 21-4.3-4.3"></path>
-            </svg>
-            <div id="pendingEntityChips" class="pending-entity-chips" aria-live="polite"></div>
-            <input
-              type="text"
-              id="aiSearchInput"
-              class="floating-search-input"
-              placeholder="Search Cala for a company, investor, fund, or person (e.g. Nvidia, OpenAI, Sequoia)..."
-              autocomplete="off"
-            />
-            <button type="submit" class="floating-search-btn" id="aiSearchSubmitBtn">
-              Cala Search
-            </button>
-            <div
-              id="searchSuggestPopup"
-              class="search-suggest-popup"
-              role="listbox"
-              aria-label="Cala entity suggestions"
-              hidden
-            ></div>
-          </form>
-
-          <div class="dock-right-controls" id="dockRightControls">
-            <div class="perspective-picker-wrap" id="perspectivePickerWrap">
-              <button
-                type="button"
-                class="perspective-picker-btn"
-                id="perspectivePickerBtn"
-                aria-expanded="false"
-                aria-controls="perspectivePopover"
-                title="Set buyer or fund perspective (default: Neutral institutional mode)"
-              >
-                <span class="perspective-dot" aria-hidden="true"></span>
-                <span id="perspectivePickerLabel">Perspective: Neutral</span>
-                <span aria-hidden="true">&#9662;</span>
-              </button>
-              <button
-                type="button"
-                class="perspective-clear-btn"
-                id="perspectiveClearBtn"
-                title="Clear perspective back to Neutral"
-                aria-label="Clear perspective back to Neutral"
-                hidden
-              >
-                &times;
-              </button>
-              <div class="perspective-popover" id="perspectivePopover" role="dialog" aria-label="Set My Firm Perspective" hidden>
-                <div class="perspective-pop-head">
-                  <strong>My Firm / Buyer Seat</strong>
-                  <button type="button" class="legend-pop-close" id="perspectiveCloseBtn" aria-label="Close perspective selector">x</button>
+            <div class="hero-card-row">
+              <div class="hero-card-meta">
+                <strong>Primary &amp; Statutory Filings</strong>
+                <span>Audited provenance</span>
+              </div>
+              <div class="hero-card-metrics">
+                <div class="hero-card-stat">
+                  <small>Filings</small>
+                  <b>FILING</b>
                 </div>
-                <p class="perspective-pop-sub"><b>Neutral (Default)</b> maps objective corporate structure or multi-peer overlap. Set a firm to score warm access and portfolio conflicts.</p>
-                <div class="perspective-input-wrap">
-                  <input
-                    type="text"
-                    id="perspectiveSearchInput"
-                    class="perspective-search-input"
-                    placeholder="Search fund or buyer (e.g. Sequoia Capital)"
-                    autocomplete="off"
-                    aria-label="Search fund or buyer perspective"
-                  />
+                <span class="hero-card-mid-pill">100% Real</span>
+                <div class="hero-card-stat is-right">
+                  <small>Disclosures</small>
+                  <b>PRIMARY</b>
                 </div>
-                <div id="perspectiveQuickRow" class="perspective-quick-row">
-                  <button type="button" class="perspective-quick-chip is-neutral-reset" data-perspective-reset="true">Neutral (Default)</button>
-                  <button type="button" class="perspective-quick-chip" data-perspective-quick="Sequoia Capital">Sequoia Capital</button>
-                  <button type="button" class="perspective-quick-chip" data-perspective-quick="NVIDIA Corporation">NVIDIA</button>
-                </div>
-                <div id="perspectiveResults" class="perspective-results" role="listbox" aria-label="Perspective entity matches"></div>
               </div>
             </div>
-            <button
-              type="button"
-              class="filter-drawer-toggle"
-              id="toggleFiltersBtn"
-              aria-expanded="false"
-              aria-controls="constellationFilterRibbon"
-            >
-              <span>Filters</span>
-              <span class="filter-active-badge num-tabular" id="filterCountPill" hidden>0</span>
-              <span aria-hidden="true">&#9662;</span>
-            </button>
-            <button
-              type="button"
-              class="live-cala-pill-btn"
-              id="searchLiveCalaBtn"
-              title="Refresh active entity paths from live Cala graph"
-            >
-              <span class="live-dot" aria-hidden="true"></span>
-              <span>Check Cala</span>
+
+            <div class="hero-card-divider" aria-hidden="true"></div>
+
+            <div class="hero-card-row">
+              <div class="hero-card-meta">
+                <strong>Context-Aware Entity Graph</strong>
+                <span>Zero synthetic links</span>
+              </div>
+              <div class="hero-card-metrics">
+                <div class="hero-card-stat">
+                  <small>Graph Scope</small>
+                  <b>1&ndash;4 Hubs</b>
+                </div>
+                <span class="hero-card-mid-pill">Source-locked</span>
+                <div class="hero-card-stat is-right">
+                  <small>Brief Depth</small>
+                  <b>4 Lenses</b>
+                </div>
+              </div>
+            </div>
+
+            <div class="hero-card-footer">
+              <span class="hero-card-coral-pill">100% Real Cala Data &middot; Auditable Source IDs</span>
+            </div>
+          </aside>
+        </div>
+
+        <!-- Lower Split Baseline Row (collapses into flat top dock when map opens) -->
+        <div class="hero-main-grid" id="heroMainGrid">
+          <div class="hero-intro-block" id="heroIntroBlock">
+            <h1 class="hero-main-title">
+              Real Cala data that<br />maps every link.
+            </h1>
+            <p class="hero-sub-tagline" id="searchHeroSub">
+              Investors, suppliers, leadership ties, and dated milestones sourced directly from live Cala Knowledge Graph filings &mdash; zero synthetic estimates.
+            </p>
+          </div>
+
+          <div class="hero-action-col" id="heroActionCol">
+            <div class="command-row-bar">
+              <form id="aiSearchForm" class="floating-search-bar" role="search">
+                <label for="aiSearchInput" class="sr-only">Search startups, companies, investors, funds, or people</label>
+                <svg
+                  class="search-lead-icon"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="m21 21-4.3-4.3"></path>
+                </svg>
+                <div id="pendingEntityChips" class="pending-entity-chips" aria-live="polite"></div>
+                <input
+                  type="text"
+                  id="aiSearchInput"
+                  class="floating-search-input"
+                  placeholder="Search company, fund, or person..."
+                  autocomplete="off"
+                />
+                <button type="submit" class="floating-search-btn" id="aiSearchSubmitBtn">
+                  Cala Search &rsaquo;
+                </button>
+                <div
+                  id="searchSuggestPopup"
+                  class="search-suggest-popup"
+                  role="listbox"
+                  aria-label="Cala entity suggestions"
+                  hidden
+                ></div>
+              </form>
+
+              <div class="dock-right-controls" id="dockRightControls">
+                <div class="perspective-picker-wrap" id="perspectivePickerWrap">
+                  <button
+                    type="button"
+                    class="perspective-picker-btn"
+                    id="perspectivePickerBtn"
+                    aria-expanded="false"
+                    aria-controls="perspectivePopover"
+                    title="Set buyer or fund perspective (default: Neutral institutional mode)"
+                  >
+                    <span class="perspective-dot" aria-hidden="true"></span>
+                    <span id="perspectivePickerLabel">Perspective: Neutral</span>
+                    <span aria-hidden="true">&#9662;</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="perspective-clear-btn"
+                    id="perspectiveClearBtn"
+                    title="Clear perspective back to Neutral"
+                    aria-label="Clear perspective back to Neutral"
+                    hidden
+                  >
+                    &times;
+                  </button>
+                  <div class="perspective-popover" id="perspectivePopover" role="dialog" aria-label="Set My Firm Perspective" hidden>
+                    <div class="perspective-pop-head">
+                      <strong>My Firm / Buyer Seat</strong>
+                      <button type="button" class="legend-pop-close" id="perspectiveCloseBtn" aria-label="Close perspective selector">x</button>
+                    </div>
+                    <p class="perspective-pop-sub"><b>Neutral (Default)</b> maps objective corporate structure or multi-peer overlap. Set a firm to score warm access and portfolio conflicts.</p>
+                    <div class="perspective-input-wrap">
+                      <input
+                        type="text"
+                        id="perspectiveSearchInput"
+                        class="perspective-search-input"
+                        placeholder="Search fund or buyer (e.g. Sequoia Capital)"
+                        autocomplete="off"
+                        aria-label="Search fund or buyer perspective"
+                      />
+                    </div>
+                    <div id="perspectiveQuickRow" class="perspective-quick-row">
+                      <button type="button" class="perspective-quick-chip is-neutral-reset" data-perspective-reset="true">Neutral (Default)</button>
+                      <button type="button" class="perspective-quick-chip" data-perspective-quick="Sequoia Capital">Sequoia Capital</button>
+                      <button type="button" class="perspective-quick-chip" data-perspective-quick="NVIDIA Corporation">NVIDIA</button>
+                    </div>
+                    <div id="perspectiveResults" class="perspective-results" role="listbox" aria-label="Perspective entity matches"></div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="filter-drawer-toggle"
+                  id="toggleFiltersBtn"
+                  aria-expanded="false"
+                  aria-controls="constellationFilterRibbon"
+                >
+                  <span>Filters</span>
+                  <span class="filter-active-badge num-tabular" id="filterCountPill" hidden>0</span>
+                  <span aria-hidden="true">&#9662;</span>
+                </button>
+                <button
+                  type="button"
+                  class="live-cala-pill-btn"
+                  id="searchLiveCalaBtn"
+                  title="Refresh active entity paths from live Cala graph"
+                >
+                  <span class="live-dot" aria-hidden="true"></span>
+                  <span>Check Cala</span>
+                </button>
+              </div>
+            </div>
+
+            <button type="button" class="hero-secondary-link" id="heroQuickDemoBtn">
+              Explore sample map &rsaquo;
             </button>
           </div>
         </div>
 
-        <div class="hero-cala-trust-bar" id="heroCalaTrustBar" aria-label="Cala verified data guarantees">
-          <div class="hero-trust-pill">
-            <span class="hero-trust-dot" aria-hidden="true"></span>
-            <div class="hero-trust-copy">
-              <strong>Real Cala Graph Data</strong>
-              <span>Live verified entities &amp; corporate trees</span>
-            </div>
+        <!-- Bottom 5-Column Editorial Cala Reliability Strip (hero only) -->
+        <div class="hero-bottom-strip" id="heroBottomStrip" aria-label="Cala data guarantees">
+          <div class="hero-strip-item is-featured" data-strip-index="0">
+            <svg class="hero-strip-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.35" />
+            </svg>
+            <strong>Real Cala graph data</strong>
+            <span>Live verified entities &amp; corporate trees</span>
           </div>
-          <div class="hero-trust-pill">
-            <span class="hero-trust-dot is-ring" aria-hidden="true"></span>
-            <div class="hero-trust-copy">
-              <strong>Filing &amp; Primary Provenance</strong>
-              <span>Statutory filings &amp; direct disclosures cited</span>
-            </div>
+          <div class="hero-strip-item" data-strip-index="1">
+            <svg class="hero-strip-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.35" />
+            </svg>
+            <strong>Primary &amp; 13F filings</strong>
+            <span>Direct statutory &amp; filing provenance</span>
           </div>
-          <div class="hero-trust-pill">
-            <span class="hero-trust-dot is-coral" aria-hidden="true"></span>
-            <div class="hero-trust-copy">
-              <strong>Source-Locked Analysis</strong>
-              <span>Every insight tied to auditable Cala IDs</span>
-            </div>
+          <div class="hero-strip-item" data-strip-index="2">
+            <svg class="hero-strip-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.35" />
+            </svg>
+            <strong>Zero synthetic links</strong>
+            <span>Every insight locked to Cala IDs</span>
           </div>
-        </div>
-
-        <!-- Quick Starter Picks (shown when hero is open) -->
-        <div class="starter-prompts-wrap" id="aiExamplesBar">
-          <div class="starter-prompts-grid">
-            <button type="button" class="starter-pill-btn" data-entity-query="OpenAI">
-              <span class="starter-pill-kicker">Organization &amp; People</span>
-              <span class="starter-pill-text">OpenAI</span>
-            </button>
-            <button type="button" class="starter-pill-btn" data-entity-query="Nvidia">
-              <span class="starter-pill-kicker">Public Company &amp; Leadership</span>
-              <span class="starter-pill-text">NVIDIA Corporation</span>
-            </button>
-            <button type="button" class="starter-pill-btn" data-entity-query="Sequoia Capital">
-              <span class="starter-pill-kicker">Venture Firm &amp; Holdings</span>
-              <span class="starter-pill-text">Sequoia Capital</span>
-            </button>
-            <button type="button" class="starter-pill-btn" data-entity-query="Nvidia, OpenAI">
-              <span class="starter-pill-kicker">Explorer Graph</span>
-              <span class="starter-pill-text">Nvidia + OpenAI network</span>
-            </button>
+          <div class="hero-strip-item" data-strip-index="3">
+            <svg class="hero-strip-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.35" />
+            </svg>
+            <strong>Three analyst modes</strong>
+            <span>Teardown, peers &amp; firm triage</span>
+          </div>
+          <div class="hero-strip-item" data-strip-index="4">
+            <svg class="hero-strip-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.35" />
+            </svg>
+            <strong>Source-cited briefs</strong>
+            <span>Audit every link with one click</span>
           </div>
         </div>
 

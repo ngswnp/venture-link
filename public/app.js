@@ -7108,11 +7108,26 @@ function bindSearchAndCommandEvents() {
     }
   });
 
-  document.querySelectorAll(".starter-pill-btn[data-entity-query]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const q = btn.dataset.entityQuery;
-      if (q) await handleEntitySearchSubmit(q, { replace: true });
+  document.querySelectorAll("#heroCenterNav .hero-nav-pill[data-hero-pillar]").forEach((pill) => {
+    pill.addEventListener("click", () => {
+      document.querySelectorAll("#heroCenterNav .hero-nav-pill").forEach((b) => {
+        b.classList.remove("is-active");
+        b.querySelector(".hero-nav-dot")?.remove();
+      });
+      pill.classList.add("is-active");
+      const dot = document.createElement("span");
+      dot.className = "hero-nav-dot";
+      dot.setAttribute("aria-hidden", "true");
+      pill.prepend(dot);
+      const idx = Number(pill.dataset.heroPillar || 0);
+      document.querySelectorAll("#heroBottomStrip .hero-strip-item").forEach((el, itemIdx) => {
+        el.classList.toggle("is-featured", itemIdx === idx);
+      });
     });
+  });
+
+  $("#heroQuickDemoBtn")?.addEventListener("click", async () => {
+    await handleEntitySearchSubmit("OpenAI, Nvidia, Anthropic", { replace: true });
   });
 
   $("#searchLiveCalaBtn")?.addEventListener("click", async () => {

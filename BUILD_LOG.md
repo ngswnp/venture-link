@@ -139,3 +139,17 @@ Tested live on `OpenAI + Anthropic` (`POST /api/analyze` + `POST /api/connection
   - `npm test`: `75/75` tests passing across all 8 test suites (including `test/decisionEngine.test.mjs` coverage for `shortTabLabel`, `nodeEntityType`, and Org-ahead-of-Person priority).
   - Static invariants: `0` `<details>` elements, `0` `pts` strings, `0` green hex/rgba colors.
   - Live Chrome CDP (`qa_v2_capture.mjs`, `http://127.0.0.1:4173`): `ok: true`, `0` console/page errors, `0` tab overlaps/clipping across compact, expanded dark/light, teardown, triage, and `390×844` mobile.
+
+## Step 11: Saltmere-Style Editorial Welcome Screen Redesign & Starter Card Removal (`public/index.html`, `public/styles.css`, `public/app.js`)
+- **Removed Old 4-Tab Starter Grid (`#aiExamplesBar` / `.starter-pill-btn`)**:
+  - Removed the 4 starter entity cards (`OpenAI`, `NVIDIA Corporation`, `Sequoia Capital`, `Nvidia + OpenAI network`) and `#heroCalaTrustBar` from `public/index.html`, `public/styles.css`, and `public/app.js` (`STARTER=0`).
+- **Editorial Saltmere-Matched Welcome Layout (`body.is-search-hero`)**:
+  - **Fluted Glass & Coral/Cream Radial Bloom Backdrop**: Layered `repeating-linear-gradient(90deg, ...)` reeded vertical stripes over a central Coral (`#FF6B5B`) and warm Cream (`#F4EDE0`) radial bloom on deep Navy (`#111D35`) in dark mode and Cream (`#F4EDE0`) in light mode, keeping the dot-grid canvas scoped strictly to `body.is-map-workspace`.
+  - **Floating Centered Header Pillar Nav (`#heroCenterNav`)**: Added a hero-only translucent pill switcher (`Graph Explorer`, `Real Cala Data`, `Primary Filings`, `4-Lens Briefs`) in `#dashboardMasthead` that syncs the active Coral indicator on the bottom feature strip.
+  - **Upper-Right Translucent Cala Verification Card (`#heroPreviewCard`)**: Added the right-aligned frosted glass card showcasing `Live Cala Knowledge Graph · Real Filings`, tabular `FILING` / `100% Real` / `PRIMARY` and `1–4 Hubs` / `Source-locked` / `4 Lenses` rows, and the bottom Coral provenance badge (`100% Real Cala Data · Auditable Source IDs`).
+  - **Lower Split Baseline Row (`.hero-main-grid`)**: Positioned the left-aligned display headline (`Real Cala data that / maps every link.`) and 2-line subtitle opposite the lower-right glass `#aiSearchForm` (`Cala Search ›`), upward-opening `#searchSuggestPopup` (`opensUpward: true`, `fitsViewport: true`), and `#heroQuickDemoBtn` (`Explore sample map ›`).
+  - **Bottom 5-Column Editorial Reliability Strip (`#heroBottomStrip`)**: Added the 5-column hairline footer strip with active Coral top border segment and geometric vector icons (`Real Cala graph data`, `Primary & 13F filings`, `Zero synthetic links`, `Three analyst modes`, `Source-cited briefs`).
+- **Verified Checks**:
+  - `node --check public/app.js public/mapPhysics.js server.mjs src/*.mjs` & `npm test`: `75/75` tests passing (`0` failures).
+  - Static invariants: `0` `.starter-pill-btn`, `0` `<details>`, `0` `pts`, `0` green hex/rgba colors.
+  - Live Chrome CDP (`qa_v3_capture.mjs`, `http://127.0.0.1:4173`): `ok: true`, `scrollHeight: 900` at `1440×900`, `0` console/page errors, `390×844` mobile `overflows: false`, visually inspected in `qa_v3_welcome_dark.png`, `qa_v3_welcome_light.png`, `qa_v3_welcome_suggest.png`, `qa_v3_welcome_mobile_390.png`, and `qa_v3_map_workspace_check.png`.
