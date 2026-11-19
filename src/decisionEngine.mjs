@@ -39,16 +39,63 @@ function rankUpper(rank) {
   return PROVENANCE_WEIGHTS[r] ? r : 'AGGREGATOR';
 }
 
-function computeTimingRecencyBoost(dateStr = '') {
-  const yr = Number(String(dateStr || '').slice(0, 4));
-  if (!Number.isFinite(yr) || yr <= 0) return 0.9;
-  if (yr >= 2026) return 1.3;
-  if (yr >= 2025) return 1.15;
-  if (yr >= 2024) return 1.0;
-  return 0.85;
+function computeTimingRecencyBoost(dateStr = '', referenceDate = null) {
+  const rec = resolveTimingRecencyBucket({ date: dateStr }, referenceDate);
+  if (rec.isRecentCatalyst) return 1.3;
+  if (rec.isHistoricalMilestone) return 0.85;
+  return 0.95;
 }
 
-function scoreEdgeSignal(edge, group) {
+function resolveTimingRecencyBucket(record = {}, referenceDate = null) {
+  if (record.timingRecency === 'active_catalyst' || record.isRecentCatalyst === true) {
+    return { timingRecency: 'active_catalyst', isRecentCatalyst: true, isHistoricalMilestone: false };
+  }
+  if (record.timingRecency === 'historical_milestone' || record.isHistoricalMilestone === true) {
+    return { timingRecency: 'historical_milestone', isRecentCatalyst: false, isHistoricalMilestone: true };
+  }
+  const raw = String(record.date || '').trim();
+  if (!raw) return { timingRecency: 'undated', isRecentCatalyst: false, isHistoricalMilestone: false };
+  let norm = raw.slice(0, 10);
+  if (/^\d{4}$/.test(raw)) norm = `${raw}-06-15`;
+  else if (/^\d{4}-\d{2}$/.test(raw)) norm = `${raw}-15`;
+  const evtMs = Date.parse(norm);
+  if (!Number.isFinite(evtMs)) return { timingRecency: 'undated', isRecentCatalyst: false, isHistoricalMilestone: false };
+  const refMs = Date.parse(referenceDate || new Date().toISOString().slice(0, 10));
+  const baseMs = Number.isFinite(refMs) ? refMs : Date.now();
+  const monthsAgo = (baseMs - evtMs) / (1000 * 60 * 60 * 24 * 30.4375);
+  if (monthsAgo <= 18 && monthsAgo >= -12) {
+    return { timingRecency: 'active_catalyst', isRecentCatalyst: true, isHistoricalMilestone: false };
+  }
+  if (monthsAgo > 18) {
+    return { timingRecency: 'historical_milestone', isRecentCatalyst: false, isHistoricalMilestone: true };
+  }
+  return { timingRecency: 'undated', isRecentCatalyst: false, isHistoricalMilestone: false };
+}
+
+function classifyStructuralRoleFromEdge(edge = {}) {
+  if (edge.structuralRole) return edge.structuralRole;
+  const rel = String(edge.relation || '').toUpperCase();
+  if (['INVESTED_IN', 'CO_INVESTED_WITH', 'PARTICIPATES_IN_FUNDING_ROUND', 'HAS_FUNDING_ROUND'].includes(rel)) {
+    return 'capital';
+  }
+  if (['PARTNERED_WITH', 'SUPPLIES', 'SUPPLIED_BY', 'ADVISED'].includes(rel)) {
+    return 'commercial';
+  }
+  if (
+    rel === 'ACQUIRED' ||
+    rel.startsWith('IS_') ||
+    rel.includes('FOUNDED') ||
+    rel === 'WORKS_AT' ||
+    rel === 'SPUN_OUT_OF'
+  ) {
+    return 'governance';
+  }
+  if (edge.contributionGroup === 'access') return 'capital';
+  if (edge.contributionGroup === 'lineage') return 'governance';
+  return 'strategic_event';
+}
+
+function scoreEdgeSignal(edge, group, referenceDate = null) {
   const rank = rankUpper(edge.topSourceRank);
   let weight = PROVENANCE_WEIGHTS[rank] || 0.35;
   if (edge.isSharedBridge) weight *= 1.5;
@@ -57,7 +104,7 @@ function scoreEdgeSignal(edge, group) {
   }
   if (edge.date) weight *= 1.12;
   if (group === 'timing') {
-    weight *= computeTimingRecencyBoost(edge.date);
+    weight *= computeTimingRecencyBoost(edge.date, referenceDate);
     if (edge.isAnomaly) weight *= 0.5;
   }
   return Math.round(weight * 100) / 100;
@@ -79,13 +126,17 @@ function buildProvenanceMix(records = []) {
   return counts;
 }
 
-function balanceRecordsAcrossHubs(records = [], focalIds = [], maxItems = 8) {
-  if (records.length <= maxItems) return records;
+function balanceRecordsAcrossHubs(records = [], focalIds = [], maxItems = 8, primaryTargetId = null) {
+  const pTarget = primaryTargetId ? String(primaryTargetId) : null;
+  const touchesPrimary = (r) => Boolean(pTarget && (r.focalEntityId === pTarget || (r.sharedHubIds || []).includes(pTarget)));
   const sortBySignal = (a, b) =>
+    Number(touchesPrimary(b)) - Number(touchesPrimary(a)) ||
     Number(Boolean(b.isSharedBridge)) - Number(Boolean(a.isSharedBridge)) ||
     (b.signalWeight || 0) - (a.signalWeight || 0) ||
     (SOURCE_RANK_ORDER[rankUpper(b.sourceRank)] || 0) - (SOURCE_RANK_ORDER[rankUpper(a.sourceRank)] || 0) ||
     String(b.date || '').localeCompare(String(a.date || ''));
+
+  if (records.length <= maxItems) return [...records].sort(sortBySignal);
 
   const shared = records.filter((r) => r.isSharedBridge).sort(sortBySignal);
   const selected = [];
@@ -169,11 +220,20 @@ export function buildDecisionIntelligence({
   edges = [],
   timingEventsByEntity = {},
   sourcesById = {},
-  anomalies = []
+  anomalies = [],
+  analysisMode = null,
+  perspectiveEntity = null,
+  primaryTargetId = null,
+  referenceDate = null
 } = {}) {
   const focalList = (Array.isArray(focalEntities) ? focalEntities : []).filter((e) => e?.id && e?.name);
   const focalIds = focalList.map((e) => String(e.id));
   const focalById = new Map(focalList.map((e) => [String(e.id), e]));
+  const perspectiveObj = perspectiveEntity?.id && perspectiveEntity?.name ? perspectiveEntity : null;
+  const resolvedMode = analysisMode || (perspectiveObj ? 'perspective_triage' : focalList.length <= 1 ? 'single_teardown' : 'ecosystem_compare');
+  const resolvedPrimaryTargetId = primaryTargetId && focalById.has(String(primaryTargetId)) ? String(primaryTargetId) : null;
+  const primaryTargetName = resolvedPrimaryTargetId ? focalById.get(resolvedPrimaryTargetId)?.name || null : null;
+  const refDate = referenceDate || new Date().toISOString().slice(0, 10);
   const nodeById = new Map((Array.isArray(nodes) ? nodes : []).map((n) => [String(n.id), n]));
   const validEdges = (Array.isArray(edges) ? edges : []).filter((e) => e && !String(e.id || '').startsWith('tree-spoke-'));
 
@@ -182,9 +242,13 @@ export function buildDecisionIntelligence({
 
   const rawByGroup = { access: [], lineage: [], timing: [], caution: [] };
   for (const edge of validEdges) {
-    const group = ['access', 'lineage', 'timing', 'caution'].includes(edge.contributionGroup)
+    const relUpper = String(edge.relation || '').toUpperCase();
+    const isAcquisition = Boolean(edge.isAcquisition || relUpper === 'ACQUIRED');
+    const rawGroup = ['access', 'lineage', 'timing', 'caution'].includes(edge.contributionGroup)
       ? edge.contributionGroup
       : 'access';
+    // ACQUIRED is Corporate M&A / Governance, never automatically Caution
+    const group = isAcquisition && rawGroup === 'caution' ? 'lineage' : rawGroup;
     const fromId = String(edge.from || '');
     const toId = String(edge.to || '');
     const fromName = nodeLabel(fromId);
@@ -195,6 +259,13 @@ export function buildDecisionIntelligence({
     const sourceIds = [...new Set([...(Array.isArray(edge.sourceIds) ? edge.sourceIds : []), edge.sourceId].filter(Boolean).map(String))];
     const sourceRank = rankUpper(edge.topSourceRank);
     const relationText = normalizeText(edge.label || edge.relation || 'Verified link');
+    const structuralRole = classifyStructuralRoleFromEdge(edge);
+    const recency = resolveTimingRecencyBucket(edge, refDate);
+    const touchesPerspective = Boolean(
+      edge.touchesPerspective ||
+      edge.isPerspectiveBridge ||
+      (perspectiveObj && (fromId === String(perspectiveObj.id) || toId === String(perspectiveObj.id)))
+    );
 
     rawByGroup[group].push({
       id: String(edge.id || `${group}-${fromId}-${toId}`),
@@ -209,19 +280,101 @@ export function buildDecisionIntelligence({
       detail: normalizeText(edge.detail || edge.whyMatters || relationText),
       date: edge.date ? String(edge.date).slice(0, 10) : null,
       sourceRank,
+      structuralRole,
+      isAcquisition,
+      timingRecency: recency.timingRecency,
+      isRecentCatalyst: recency.isRecentCatalyst,
+      isHistoricalMilestone: recency.isHistoricalMilestone,
+      touchesPerspective,
+      perspectiveChain: Array.isArray(edge.perspectiveChain) ? edge.perspectiveChain : null,
       isSharedBridge: Boolean(edge.isSharedBridge),
       isLead: Boolean(edge.isLead),
       isAnomaly: Boolean(edge.isAnomaly),
       sharedHubIds,
       sharedHubs,
-      signalWeight: scoreEdgeSignal(edge, group),
+      signalWeight: scoreEdgeSignal(edge, group, refDate),
       sourceIds
     });
   }
 
-  // Synthesize analyst-relevant Caution signals (dual-sided investors, shared talent migration, anomalies)
+  // Include Perspective 2-hop chains into Access if not already covered by direct perspective edges
+  if (resolvedMode === 'perspective_triage' && perspectiveObj) {
+    const existingAccessEdgeIds = new Set(rawByGroup.access.filter((r) => r.touchesPerspective).map((r) => r.edgeId));
+    for (const [idx, chain] of (perspectiveObj.warmIntroChains || []).entries()) {
+      const hasMatch = rawByGroup.access.some(
+        (r) => r.touchesPerspective && r.canonicalTo === chain.targetLabel && (!chain.bridgeNodeId || r.nodeId === chain.bridgeNodeId)
+      );
+      if (hasMatch) continue;
+      const chainSrcIds = (chain.sourceIds || []).map(String).filter(Boolean);
+      const pseudoEdgeId = '';
+      if (!existingAccessEdgeIds.has(`${chain.targetId}:${chain.bridgeNodeId || 'direct'}`)) {
+        rawByGroup.access.push({
+          id: `persp-chain-${idx + 1}`,
+          edgeId: pseudoEdgeId,
+          nodeId: chain.bridgeNodeId || String(perspectiveObj.id),
+          focalEntityId: String(chain.targetId || focalIds[0] || ''),
+          type: chain.type === 'direct' ? 'PERSPECTIVE_DIRECT' : 'PERSPECTIVE_WARM_INTRO',
+          path: chain.chainText,
+          canonicalFrom: chain.bridgeLabel || perspectiveObj.name,
+          canonicalTo: chain.targetLabel || focalList[0]?.name || '',
+          relation: chain.relationLabel || 'Warm intro bridge',
+          detail: chain.chainText,
+          date: null,
+          sourceRank: rankUpper(chain.topSourceRank || 'PRIMARY'),
+          structuralRole: 'capital',
+          isAcquisition: false,
+          timingRecency: 'undated',
+          isRecentCatalyst: false,
+          isHistoricalMilestone: false,
+          touchesPerspective: true,
+          perspectiveChain: [perspectiveObj.name, ...(chain.bridgeLabel ? [chain.bridgeLabel] : []), chain.targetLabel].filter(Boolean),
+          isSharedBridge: true,
+          isLead: false,
+          isAnomaly: false,
+          sharedHubIds: chain.targetId ? [String(chain.targetId)] : [],
+          sharedHubs: chain.targetLabel ? [chain.targetLabel] : [],
+          signalWeight: 1.25,
+          sourceIds: chainSrcIds
+        });
+      }
+    }
+  }
+
+  // Synthesize analyst-relevant Caution signals (dual-sided investors, shared talent migration, portfolio conflicts, anomalies)
   const syntheticCautionRecords = [];
   const seenCautionKeys = new Set();
+
+  if (resolvedMode === 'perspective_triage' && perspectiveObj) {
+    for (const [idx, conflict] of (perspectiveObj.portfolioConflicts || []).entries()) {
+      const cKey = `portfolio-conflict:${conflict.targetId}:${conflict.portfolioName}`;
+      if (seenCautionKeys.has(cKey)) continue;
+      seenCautionKeys.add(cKey);
+      syntheticCautionRecords.push({
+        id: `caution:portfolio:${idx + 1}`,
+        edgeId: '',
+        nodeId: String(conflict.portfolioId || ''),
+        focalEntityId: String(conflict.targetId || focalIds[0] || ''),
+        type: 'PORTFOLIO_OVERLAP',
+        path: `${perspectiveObj.name} (${conflict.portfolioName}) ↔ ${conflict.targetName}`,
+        canonicalFrom: conflict.portfolioName,
+        canonicalTo: conflict.targetName,
+        relation: conflict.kind === 'DIRECT_RIVAL' ? 'Direct portfolio rival' : 'Portfolio sector overlap',
+        detail: conflict.reason,
+        date: null,
+        sourceRank: conflict.kind === 'DIRECT_RIVAL' ? 'PRIMARY' : 'PRESS',
+        structuralRole: 'strategic_event',
+        isAcquisition: false,
+        touchesPerspective: true,
+        isSharedBridge: true,
+        isLead: false,
+        isAnomaly: false,
+        sharedHubIds: conflict.targetId ? [String(conflict.targetId)] : [],
+        sharedHubs: conflict.targetName ? [conflict.targetName] : [],
+        signalWeight: conflict.kind === 'DIRECT_RIVAL' ? 1.3 : 1.05,
+        sourceIds: (conflict.sourceIds || []).map(String).filter(Boolean).slice(0, 6)
+      });
+    }
+  }
 
   if (focalIds.length >= 2) {
     // 1. Dual-sided investor conflict exposure
@@ -275,6 +428,8 @@ export function buildDecisionIntelligence({
           detail: `${dualInvestors.length} investor(s) (${names}) hold stakes across ${hubList.join(' and ')}; verify Chinese walls and information rights.`,
           date: null,
           sourceRank: firstInv.bestRank,
+          structuralRole: 'capital',
+          isAcquisition: false,
           isSharedBridge: true,
           isLead: false,
           isAnomaly: false,
@@ -326,6 +481,8 @@ export function buildDecisionIntelligence({
         detail: `${talentList.length} founder/executive(s) (${names}) hold mapped roles across ${hubList.join(' and ')}; check IP assignment and non-compete exposure.`,
         date: null,
         sourceRank: firstPerson.bestRank,
+        structuralRole: 'governance',
+        isAcquisition: false,
         isSharedBridge: true,
         isLead: false,
         isAnomaly: false,
@@ -336,6 +493,34 @@ export function buildDecisionIntelligence({
       });
     }
   }
+
+  // Identify shared commercial bottlenecks across 2+ focal hubs
+  const sharedCommercialMap = new Map();
+  if (focalIds.length >= 2) {
+    for (const rec of rawByGroup.access) {
+      if (!rec.isSharedBridge || rec.structuralRole !== 'commercial') continue;
+      if (!rec.nodeId || focalById.has(rec.nodeId)) continue;
+      if (!sharedCommercialMap.has(rec.nodeId)) {
+        sharedCommercialMap.set(rec.nodeId, {
+          nodeId: rec.nodeId,
+          edgeId: rec.edgeId,
+          name: nodeLabel(rec.nodeId),
+          relation: rec.relation,
+          sharedHubs: new Set(rec.sharedHubs),
+          sourceRank: rec.sourceRank,
+          sourceIds: new Set(rec.sourceIds)
+        });
+      } else {
+        const b = sharedCommercialMap.get(rec.nodeId);
+        for (const h of rec.sharedHubs) b.sharedHubs.add(h);
+        for (const s of rec.sourceIds) b.sourceIds.add(s);
+      }
+    }
+  }
+  const sharedCommercialBottlenecks = [...sharedCommercialMap.values()]
+    .filter((b) => b.sharedHubs.size >= 2)
+    .map((b) => ({ ...b, sharedHubs: [...b.sharedHubs], sourceIds: [...b.sourceIds].slice(0, 4) }))
+    .slice(0, 5);
 
   // 3. Analyst-relevant provenance & round-sequence anomalies
   const relevantAnomalyKinds = new Set(['timing_anomaly', 'quarantined_comention', 'low_confidence_comention']);
@@ -370,6 +555,8 @@ export function buildDecisionIntelligence({
         detail: cleaned.detail,
         date: cleaned.date,
         sourceRank: cleaned.sourceRank,
+        structuralRole: 'strategic_event',
+        isAcquisition: false,
         isSharedBridge: false,
         isLead: false,
         isAnomaly: true,
@@ -381,37 +568,119 @@ export function buildDecisionIntelligence({
     }
   }
 
+  // In perspective_triage, access reflects ONLY real bridges touching Perspective Firm (never third-party Target investors)
+  const accessRecordsForMode =
+    resolvedMode === 'perspective_triage' && perspectiveObj
+      ? rawByGroup.access.filter((r) => r.touchesPerspective)
+      : rawByGroup.access;
+
   const allGroupRecords = {
-    access: rawByGroup.access,
+    access: accessRecordsForMode,
     lineage: rawByGroup.lineage,
     timing: rawByGroup.timing,
     caution: [...rawByGroup.caution, ...syntheticCautionRecords]
   };
 
-  // Build per-factor quantitative outputs
+  // Compute timing catalysts split (<=18m vs >18m)
+  const timingRecentCatalysts = allGroupRecords.timing.filter((r) => r.isRecentCatalyst);
+  const timingHistoricalMilestones = allGroupRecords.timing.filter((r) => r.isHistoricalMilestone);
+
+  // Explicit disclosure gaps for teardown & comparison workflows
+  const missingDisclosures = [];
+  if (timingRecentCatalysts.length === 0) {
+    missingDisclosures.push('No verified dated financing or corporate catalyst within the last 18 months in Cala');
+  }
+  if (!allGroupRecords.access.some((r) => r.structuralRole === 'commercial')) {
+    missingDisclosures.push('No commercial supplier, customer, or strategic partner relationships indexed in Cala');
+  }
+  if (!allGroupRecords.lineage.some((r) => !r.isAcquisition)) {
+    missingDisclosures.push('Limited executive, founder, or board governance records indexed in Cala');
+  }
+  if (rawByGroup.caution.length === 0) {
+    missingDisclosures.push('No direct competitive rivals or litigation flags indexed in Cala (absence is not clearance)');
+  }
+
+  const MODE_DISPLAY_LABELS = {
+    single_teardown: {
+      access: {
+        displayLabel: 'Capital & Value Chain',
+        question: 'Who backs it & who powers its commercial stack?'
+      },
+      lineage: {
+        displayLabel: 'Governance, Leadership & M&A',
+        question: 'Who leads, controls, or was acquired by it?'
+      },
+      timing: {
+        displayLabel: 'Recent Catalysts vs. History',
+        question: 'What happened in the last 18 months vs. historical milestones?'
+      },
+      caution: {
+        displayLabel: 'Rivals, Anomalies & Gaps',
+        question: 'What competitive threats, anomalies, or missing Cala disclosures exist?'
+      }
+    },
+    ecosystem_compare: {
+      displayLabel: null,
+      access: {
+        displayLabel: 'Shared Backers & Bottlenecks',
+        question: 'Where do cap tables, suppliers, or strategic partnerships converge across targets?'
+      },
+      lineage: {
+        displayLabel: 'Talent & Corporate Lineage',
+        question: 'Which founders, executives, or M&A links connect the mapped companies?'
+      },
+      timing: {
+        displayLabel: 'Comparative Momentum',
+        question: 'Which companies carry recent catalysts (<=18m) vs. older financing history?'
+      },
+      caution: {
+        displayLabel: 'Dual-Backer & Rivalry Risk',
+        question: 'What dual-backed conflicts, commercial bottlenecks, or direct rivalries appear?'
+      }
+    },
+    perspective_triage: {
+      access: {
+        displayLabel: 'Warm Intro Access',
+        question: `What verified path connects ${perspectiveObj?.name || 'your firm'} to the target(s)?`
+      },
+      lineage: {
+        displayLabel: 'Team & Spinout Lineage',
+        question: 'Are founder and executive tenures current, and who gives a direct backchannel?'
+      },
+      timing: {
+        displayLabel: 'Active Timing Window',
+        question: 'Do dated catalysts within 18 months establish an active deal window?'
+      },
+      caution: {
+        displayLabel: 'Portfolio & Risk Flags',
+        question: `What portfolio overlap with ${perspectiveObj?.name || 'your firm'} or competitive risk requires verification?`
+      }
+    }
+  };
+
   const factorConfigs = {
     access: {
       label: 'Access',
-      defaultQuestion: 'Which shared syndicate investor or strategic partner offers the cleanest warm intro?'
+      defaultQuestion: MODE_DISPLAY_LABELS[resolvedMode].access.question
     },
     lineage: {
       label: 'Lineage',
-      defaultQuestion: 'Are the mapped founder and executive tenures current, and who provides a direct reference?'
+      defaultQuestion: MODE_DISPLAY_LABELS[resolvedMode].lineage.question
     },
     timing: {
       label: 'Timing',
-      defaultQuestion: 'Do the latest dated financings and corporate milestones create an actionable entry window?'
+      defaultQuestion: MODE_DISPLAY_LABELS[resolvedMode].timing.question
     },
     caution: {
       label: 'Caution',
-      defaultQuestion: 'What competitive overlap, shared cap-table conflict, or sequence anomaly requires verification?'
+      defaultQuestion: MODE_DISPLAY_LABELS[resolvedMode].caution.question
     }
   };
 
   const factors = {};
   for (const group of ['access', 'lineage', 'timing', 'caution']) {
     const records = allGroupRecords[group] || [];
-    const rankedRecords = balanceRecordsAcrossHubs(records, focalIds, 8);
+    const rankedRecords = balanceRecordsAcrossHubs(records, focalIds, 8, resolvedPrimaryTargetId);
     const sharedRecords = records.filter((r) => r.isSharedBridge);
     const uniqueBridgeEntities = [...new Set(records.map((r) => r.canonicalFrom).filter((n) => !focalList.some((f) => f.name === n)))];
     const sharedBridgeNames = [...new Set(
@@ -428,7 +697,7 @@ export function buildDecisionIntelligence({
     let tier = 'No Signal';
     let tierClass = 'is-neutral';
     if (group === 'caution') {
-      if (records.length >= 3 || rawByGroup.caution.length > 0 && syntheticCautionRecords.length > 0) {
+      if (records.length >= 3 || (rawByGroup.caution.length > 0 && syntheticCautionRecords.length > 0) || syntheticCautionRecords.some((r) => r.type === 'PORTFOLIO_OVERLAP')) {
         tier = 'Risk · Watch';
         tierClass = 'is-caution';
       } else if (records.length > 0) {
@@ -438,15 +707,18 @@ export function buildDecisionIntelligence({
         tier = 'Clear';
         tierClass = 'is-beneficial';
       }
+    } else if (group === 'access' && resolvedMode === 'perspective_triage' && records.length === 0) {
+      tier = 'Cold Outreach';
+      tierClass = 'is-neutral';
     } else if (signalStrength >= 70 || (sharedRecords.length >= 2 && records.length >= 4)) {
       tier = 'Strong';
       tierClass = 'is-beneficial';
     } else if (signalStrength >= 40 || records.length >= 3) {
-      tier = group === 'timing' ? 'Active' : 'Moderate';
-      tierClass = 'is-beneficial';
+      tier = group === 'timing' ? (timingRecentCatalysts.length > 0 ? 'Active' : 'Historical') : 'Moderate';
+      tierClass = group === 'timing' && timingRecentCatalysts.length === 0 ? 'is-neutral' : 'is-beneficial';
     } else if (records.length > 0) {
-      tier = group === 'timing' ? 'Catalyst' : 'Signal';
-      tierClass = 'is-beneficial';
+      tier = group === 'timing' ? (timingRecentCatalysts.length > 0 ? 'Catalyst' : 'Historical') : 'Signal';
+      tierClass = group === 'timing' && timingRecentCatalysts.length === 0 ? 'is-neutral' : 'is-beneficial';
     }
 
     const hubCoverage = focalList.map((f) => ({
@@ -458,36 +730,103 @@ export function buildDecisionIntelligence({
     const datedCount = records.filter((r) => Boolean(r.date)).length;
     const undatedCount = Math.max(0, records.length - datedCount);
 
+    const structuralBreakdown = {
+      capitalCount: records.filter((r) => r.structuralRole === 'capital').length,
+      commercialCount: records.filter((r) => r.structuralRole === 'commercial').length,
+      governanceCount: records.filter((r) => r.structuralRole === 'governance' && !r.isAcquisition).length,
+      acquisitionCount: records.filter((r) => r.isAcquisition).length,
+      activeCatalystCount: records.filter((r) => r.isRecentCatalyst).length,
+      historicalMilestoneCount: records.filter((r) => r.isHistoricalMilestone).length
+    };
+
     let headline = '';
     let investmentImpact = '';
     let actionableCheck = factorConfigs[group].defaultQuestion;
 
     if (group === 'access') {
       const leadNames = sharedBridgeNames.slice(0, 2);
+      const capitalRecords = records.filter((r) => r.structuralRole === 'capital');
+      const commercialRecords = records.filter((r) => r.structuralRole === 'commercial');
       const directNames = rankedRecords.slice(0, 2).map((r) => (focalById.has(r.nodeId) ? r.canonicalFrom : nodeLabel(r.nodeId)));
-      if (sharedRecords.length > 0) {
-        headline = truncateLine(`${sharedRecords.length} shared investor/partner paths (${leadNames.join(', ')})`);
-        investmentImpact = `Shared cap-table & strategic backers (${leadNames.join(', ')}) create verified warm-intro leverage across mapped hubs.`;
-        actionableCheck = `Verify whether ${leadNames[0]} can provide a warm reference and confirm current board/observer status.`;
+
+      if (resolvedMode === 'perspective_triage' && perspectiveObj) {
+        if (records.length > 0) {
+          headline = truncateLine(`${records.length} warm path(s) from ${perspectiveObj.name} (${[...new Set(directNames)].join(', ')})`);
+          investmentImpact = `${perspectiveObj.name} connects directly or via ${leadNames[0] || directNames[0] || 'a shared syndicate bridge'} to the target.`;
+          actionableCheck = `Confirm whether ${leadNames[0] || directNames[0] || 'the mapped bridge'} can sponsor a direct partner introduction.`;
+        } else {
+          headline = `No shared path from ${perspectiveObj.name} — cold outreach`;
+          investmentImpact = `No shared co-investor, partner, or executive bridge connects ${perspectiveObj.name} to mapped target(s); plan direct cold origination.`;
+          actionableCheck = `Verify outside-Cala relationships or advisor ties from ${perspectiveObj.name} before initiating cold outreach.`;
+        }
+      } else if (resolvedMode === 'single_teardown') {
+        const capCount = capitalRecords.length;
+        const comCount = commercialRecords.length;
+        if (records.length > 0) {
+          const capLead = capitalRecords.slice(0, 2).map((r) => nodeLabel(r.nodeId)).filter(Boolean);
+          const comLead = commercialRecords.slice(0, 2).map((r) => nodeLabel(r.nodeId)).filter(Boolean);
+          headline = truncateLine(
+            [capCount ? `${capCount} capital backer${capCount === 1 ? '' : 's'}` : '', comCount ? `${comCount} commercial link${comCount === 1 ? '' : 's'}` : '']
+              .filter(Boolean)
+              .join(' · ') + (directNames.length ? ` (${[...new Set([...capLead, ...comLead])].slice(0, 2).join(', ')})` : '')
+          );
+          investmentImpact = [
+            capCount ? `Institutional cap-table & ownership links verified (${capLead.join(', ')})` : '',
+            comCount ? `commercial supply/partner ecosystem links (${comLead.join(', ')}) — treat commercial ties as value-chain leverage, not warm intro paths` : ''
+          ].filter(Boolean).join('; ') + '.';
+          actionableCheck = comCount
+            ? `Verify contractual depth and concentration risk across ${comLead[0] || 'mapped commercial partners'}.`
+            : `Verify current ownership concentration and board rights held by ${capLead[0] || 'mapped backers'}.`;
+        } else {
+          headline = 'No capital backers or commercial value-chain ties indexed in Cala.';
+          investmentImpact = 'Ownership and commercial supplier/customer dependencies remain unindexed in Cala.';
+          actionableCheck = 'Pull statutory cap table and key supplier/customer concentration outside Cala.';
+        }
+      } else if (sharedRecords.length > 0) {
+        const bottleneckNote = sharedCommercialBottlenecks.length
+          ? ` (including ${sharedCommercialBottlenecks.length} shared commercial bottleneck${sharedCommercialBottlenecks.length === 1 ? '' : 's'}: ${sharedCommercialBottlenecks[0].name})`
+          : '';
+        headline = truncateLine(`${sharedRecords.length} shared cap-table/value-chain paths (${leadNames.join(', ')})`);
+        investmentImpact = `Shared backers and ecosystem nodes (${leadNames.join(', ')}) connect multiple hubs${bottleneckNote}.`;
+        actionableCheck = `Verify whether ${leadNames[0]} creates mutual dependency or reference leverage across mapped hubs.`;
       } else if (records.length > 0) {
-        headline = truncateLine(`${records.length} direct backer/partner links (${[...new Set(directNames)].join(', ')})`);
-        investmentImpact = `Direct institutional and strategic backers (${[...new Set(directNames)].join(', ')}) establish concrete outreach routes.`;
-        actionableCheck = `Confirm whether ${directNames[0] || uniqueBridgeEntities[0] || 'a mapped backer'} remains active for introductions.`;
+        headline = truncateLine(`${records.length} direct capital/partner links (${[...new Set(directNames)].join(', ')})`);
+        investmentImpact = `Direct institutional and strategic counterparties (${[...new Set(directNames)].join(', ')}) map external leverage across entities.`;
+        actionableCheck = `Confirm whether ${directNames[0] || uniqueBridgeEntities[0] || 'a mapped counterparty'} spans multiple peers off-map.`;
       } else {
         headline = 'No investor or strategic partner paths found in Cala.';
-        investmentImpact = 'No mapped access route to influence outreach.';
-        actionableCheck = 'Verify cap-table backers and strategic partners outside Cala before outreach.';
+        investmentImpact = 'No mapped capital or commercial route surfaced.';
+        actionableCheck = 'Verify cap-table backers and strategic partners outside Cala.';
       }
     } else if (group === 'lineage') {
-      const execNames = [...new Set(rankedRecords.map((r) => nodeLabel(r.nodeId)).filter(Boolean))].slice(0, 2);
-      if (sharedRecords.length > 0) {
+      const execNames = [...new Set(rankedRecords.filter((r) => !r.isAcquisition).map((r) => nodeLabel(r.nodeId)).filter(Boolean))].slice(0, 2);
+      const acqNames = [...new Set(rankedRecords.filter((r) => r.isAcquisition).map((r) => nodeLabel(r.nodeId)).filter(Boolean))].slice(0, 2);
+      if (resolvedMode === 'single_teardown') {
+        if (records.length > 0) {
+          const parts = [
+            structuralBreakdown.governanceCount ? `${structuralBreakdown.governanceCount} governance/leadership link${structuralBreakdown.governanceCount === 1 ? '' : 's'}` : '',
+            structuralBreakdown.acquisitionCount ? `${structuralBreakdown.acquisitionCount} corporate M&A acquisition${structuralBreakdown.acquisitionCount === 1 ? '' : 's'}` : ''
+          ].filter(Boolean);
+          headline = truncateLine(`${parts.join(' · ')} (${[...execNames, ...acqNames].slice(0, 2).join(', ')})`);
+          investmentImpact = structuralBreakdown.acquisitionCount > 0 && !structuralBreakdown.governanceCount
+            ? `Mapped M&A activity (${acqNames.join(', ')}) reflects corporate ownership allocation; check integration outcomes separately.`
+            : `Documented leadership & corporate structure (${[...execNames, ...acqNames].slice(0, 2).join(', ')}) clarify control and operating lineage.`;
+          actionableCheck = structuralBreakdown.acquisitionCount
+            ? `Verify strategic rationale and post-merger integration for ${acqNames[0] || 'the mapped acquisition'}.`
+            : `Verify whether ${execNames[0] || 'mapped leadership'} holds active statutory authority.`;
+        } else {
+          headline = 'No founder, governance, or M&A links indexed in Cala.';
+          investmentImpact = 'Leadership control and M&A history remain unverified on this map.';
+          actionableCheck = 'Confirm founder control rights, subsidiary structure, and executive tenure outside Cala.';
+        }
+      } else if (sharedRecords.length > 0) {
         headline = truncateLine(`${sharedBridgeNames.length} cross-hub leaders (${sharedBridgeNames.slice(0, 2).join(', ')})`);
-        investmentImpact = `Verified founder/executive bridges (${sharedBridgeNames.slice(0, 2).join(', ')}) give direct back-channel team diligence.`;
+        investmentImpact = `Verified founder/executive bridges (${sharedBridgeNames.slice(0, 2).join(', ')}) reveal shared talent spillover across mapped hubs.`;
         actionableCheck = `Confirm whether ${sharedBridgeNames[0]}'s departure and current role dates match statutory records.`;
       } else if (records.length > 0) {
-        headline = truncateLine(`${records.length} leadership & founder links (${execNames.join(', ')})`);
-        investmentImpact = `Documented leadership roles (${execNames.join(', ')}) support operator reference checks; execution still requires proof.`;
-        actionableCheck = `Verify whether ${execNames[0] || 'mapped leadership'} holds active decision authority in current filings.`;
+        headline = truncateLine(`${records.length} leadership, governance & M&A links (${[...execNames, ...acqNames].slice(0, 2).join(', ')})`);
+        investmentImpact = `Documented leadership and corporate tree links (${[...execNames, ...acqNames].slice(0, 2).join(', ')}) map control and alumni lineage.`;
+        actionableCheck = `Verify whether ${execNames[0] || acqNames[0] || 'mapped leadership'} holds active decision authority in current filings.`;
       } else {
         headline = 'No founder or executive lineage links indexed in Cala.';
         investmentImpact = 'Team background and operator ties remain unverified on this map.';
@@ -496,29 +835,53 @@ export function buildDecisionIntelligence({
     } else if (group === 'timing') {
       const sortedDated = [...records].filter((r) => r.date).sort((a, b) => String(b.date).localeCompare(String(a.date)));
       const latest = sortedDated[0] || rankedRecords[0];
-      const latestLabel = latest ? `${latest.canonicalFrom} ${latest.relation}`.trim() : '';
+      const latestRecent = [...timingRecentCatalysts].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0];
       const anomCount = dataAnomalies.filter((a) => a.kind === 'timing_anomaly').length;
-      if (records.length > 0) {
+      if (timingRecentCatalysts.length > 0 && timingHistoricalMilestones.length > 0) {
         headline = truncateLine(
-          `${records.length} dated milestones${latest?.date ? ` · latest ${latest.date}` : ''}${anomCount ? ` (${anomCount} flag)` : ''}`
+          `${timingRecentCatalysts.length} active catalyst${timingRecentCatalysts.length === 1 ? '' : 's'} (<=18m) · ${timingHistoricalMilestones.length} historical${anomCount ? ` (${anomCount} flag)` : ''}`
         );
-        investmentImpact = `Dated catalysts${latest?.date ? ` through ${latest.date}` : ''} establish financing cadence${anomCount ? '; verify flagged sequence conflict' : ''}.`;
-        const cleanRelation = latest
-          ? String(latest.relation || '').replace(/\s*\(\d{4}(?:-\d{2}-\d{2})?\)\s*$/, '').trim()
+        investmentImpact = `Recent catalysts (${latestRecent?.date || 'within 18m'}) mark active momentum alongside ${timingHistoricalMilestones.length} older milestone(s) (>18m)${anomCount ? '; verify flagged sequence conflict' : ''}.`;
+        const cleanRelation = (latestRecent || latest)
+          ? String((latestRecent || latest).relation || '').replace(/\s*\(\d{4}(?:-\d{2}-\d{2})?\)\s*$/, '').trim()
           : '';
+        actionableCheck = latestRecent
+          ? `Confirm whether ${latestRecent.canonicalFrom}'s ${cleanRelation || 'recent catalyst'} (${latestRecent.date || 'recent'}) reflects the latest corporate update.`
+          : factorConfigs.timing.defaultQuestion;
+      } else if (timingRecentCatalysts.length > 0) {
+        headline = truncateLine(
+          `${timingRecentCatalysts.length} active catalyst${timingRecentCatalysts.length === 1 ? '' : 's'} (<=18m) · latest ${latestRecent?.date || latest?.date || 'dated'}${anomCount ? ` (${anomCount} flag)` : ''}`
+        );
+        investmentImpact = `Dated catalysts within 18 months${latestRecent?.date ? ` through ${latestRecent.date}` : ''} establish active operating or financing momentum${anomCount ? '; verify flagged sequence conflict' : ''}.`;
+        const cleanRelation = latestRecent
+          ? String(latestRecent.relation || '').replace(/\s*\(\d{4}(?:-\d{2}-\d{2})?\)\s*$/, '').trim()
+          : '';
+        actionableCheck = latestRecent
+          ? `Confirm whether ${latestRecent.canonicalFrom}'s ${cleanRelation || 'recent catalyst'} (${latestRecent.date || 'dated'}) reflects the latest completed corporate event.`
+          : factorConfigs.timing.defaultQuestion;
+      } else if (timingHistoricalMilestones.length > 0) {
+        headline = truncateLine(
+          `No recent catalysts (<=18m) · ${timingHistoricalMilestones.length} historical milestone${timingHistoricalMilestones.length === 1 ? '' : 's'} (>18m)`
+        );
+        investmentImpact = `All mapped dated events predate the 18-month active window (latest ${latest?.date || 'historical'}); verify current trajectory outside stale rounds.`;
+        actionableCheck = `Confirm any unindexed financings, M&A, or operating catalysts in the past 18 months (${latest?.date || 'historical'} is outdated).`;
+      } else if (records.length > 0) {
+        headline = truncateLine(`${records.length} dated milestones${latest?.date ? ` · latest ${latest.date}` : ''}${anomCount ? ` (${anomCount} flag)` : ''}`);
+        investmentImpact = `Mapped events${latest?.date ? ` through ${latest.date}` : ''} lack recent 18-month recency markers; confirm current status.`;
         actionableCheck = latest
-          ? `Confirm whether ${latest.canonicalFrom}'s ${cleanRelation || 'corporate milestone'} (${latest.date || 'dated'}) reflects the latest completed corporate event.`
+          ? `Confirm whether ${latest.canonicalFrom}'s corporate milestone (${latest.date || 'undated'}) remains current.`
           : factorConfigs.timing.defaultQuestion;
       } else {
         headline = 'No dated funding milestones or corporate events verified in Cala.';
-        investmentImpact = 'No mapped timing catalyst to confirm fundraising urgency.';
-        actionableCheck = 'Verify most recent financing date and cash runway directly with management.';
+        investmentImpact = 'No mapped timing catalyst to confirm recent momentum or fundraising urgency.';
+        actionableCheck = 'Verify most recent financing date and operating catalysts directly with management.';
       }
     } else {
       const topCaution = rankedRecords[0];
       if (records.length > 0) {
         const flags = [];
-        if (rawByGroup.caution.length > 0) flags.push('industry overlap');
+        if (syntheticCautionRecords.some((r) => r.type === 'PORTFOLIO_OVERLAP')) flags.push('portfolio overlap');
+        if (rawByGroup.caution.length > 0) flags.push('industry/rival overlap');
         if (syntheticCautionRecords.some((r) => r.type === 'DUAL_SIDED_INVESTOR_CONFLICT')) flags.push('dual-sided investors');
         if (syntheticCautionRecords.some((r) => r.type === 'CROSS_HUB_TALENT_OVERLAP')) flags.push('shared talent');
         if (syntheticCautionRecords.some((r) => r.type === 'ROUND_SEQUENCE_ANOMALY')) flags.push('round-order flag');
@@ -526,15 +889,21 @@ export function buildDecisionIntelligence({
         investmentImpact = `${topCaution.detail}`;
         actionableCheck = `Verify whether ${topCaution.path} creates competitive conflict, governance restriction, or data inconsistency.`;
       } else {
-        headline = 'No competitive conflict, dual-backer, or sequence flags detected.';
-        investmentImpact = 'No mapped conflict surfaced; absence of Cala flags does not rule out commercial risk.';
-        actionableCheck = 'Verify customer overlap and IP disputes not indexed in Cala.';
+        headline = resolvedMode === 'single_teardown' && missingDisclosures.length
+          ? `${missingDisclosures.length} Cala disclosure gap(s) · 0 competitive flags`
+          : 'No competitive conflict, dual-backer, or sequence flags detected.';
+        investmentImpact = resolvedMode === 'single_teardown' && missingDisclosures.length
+          ? `${missingDisclosures[0]}. Absence of Cala conflict flags does not rule out commercial risk.`
+          : 'No mapped conflict surfaced; absence of Cala flags does not rule out commercial risk.';
+        actionableCheck = 'Verify customer overlap, litigation, and commercial concentration not indexed in Cala.';
       }
     }
 
     factors[group] = {
       group,
       label: factorConfigs[group].label,
+      displayLabel: MODE_DISPLAY_LABELS[resolvedMode][group].displayLabel,
+      sectionQuestion: MODE_DISPLAY_LABELS[resolvedMode][group].question,
       count: records.length,
       sharedCount: sharedRecords.length,
       signalStrength,
@@ -544,6 +913,7 @@ export function buildDecisionIntelligence({
       investmentImpact,
       actionableCheck,
       provenanceMix,
+      structuralBreakdown,
       coverage: {
         totalPaths: records.length,
         sharedBridgeCount: sharedRecords.length,
@@ -576,26 +946,60 @@ export function buildDecisionIntelligence({
 
   const hasBeneficial = factors.access.count > 0 || factors.lineage.count > 0 || factors.timing.count > 0;
   const cautionCount = factors.caution.count;
-  const hasDirectRisk = rawByGroup.caution.length > 0 || syntheticCautionRecords.some((r) => r.type === 'DUAL_SIDED_INVESTOR_CONFLICT');
+  const hasDirectRisk =
+    rawByGroup.caution.length > 0 ||
+    syntheticCautionRecords.some((r) => r.type === 'DUAL_SIDED_INVESTOR_CONFLICT' || r.type === 'PORTFOLIO_OVERLAP');
   let verdict = 'Limited Coverage';
   let verdictClass = 'is-neutral';
-  let investmentEffect = 'Insufficient verified Cala paths to shift investment conviction.';
-  if (cautionCount > 0 && hasBeneficial) {
-    verdict = hasDirectRisk && evidenceScore >= 60 ? 'Actionable · Verify Risks' : 'Mixed · Diligence Required';
-    verdictClass = 'is-mixed';
-    investmentEffect = 'Strong access and lineage signals coexist with mapped overlap or conflict risks: clear caution checks before advancing.';
-  } else if (cautionCount > 0) {
-    verdict = 'Caution · Verify Risks';
-    verdictClass = 'is-caution';
-    investmentEffect = 'Mapped competitive or structural risk requires verification before advancing.';
-  } else if (evidenceScore >= 72 && hasBeneficial) {
-    verdict = 'Strong Multi-Factor Signal';
-    verdictClass = 'is-beneficial';
-    investmentEffect = 'High-provenance access, leadership, and timing signals support priority outreach; commercial traction still requires proof.';
-  } else if (hasBeneficial) {
-    verdict = 'Beneficial Signals';
-    verdictClass = 'is-beneficial';
-    investmentEffect = 'Verified Cala paths guide outreach and reference diligence; fundamentals remain unindexed.';
+  let investmentEffect = 'Insufficient verified Cala paths to shift analytical conviction.';
+
+  if (resolvedMode === 'single_teardown') {
+    const fName = focalList[0]?.name || 'target entity';
+    if (cautionCount > 0 && hasBeneficial) {
+      verdict = hasDirectRisk ? 'Rivals Mapped · Verify Gaps' : 'Teardown Complete · Check Gaps';
+      verdictClass = 'is-mixed';
+      investmentEffect = `Mapped ownership, commercial links, and dated milestones for ${fName} alongside ${cautionCount} flagged risk item(s) and ${missingDisclosures.length} disclosure gap(s).`;
+    } else if (hasBeneficial) {
+      verdict = timingRecentCatalysts.length > 0 ? 'Active Coverage' : 'Structural Profile Mapped';
+      verdictClass = 'is-beneficial';
+      investmentEffect = `${fName} shows ${factors.access.count} capital/commercial ties and ${factors.lineage.count} governance/M&A links; check ${missingDisclosures.length} missing Cala disclosure(s) or compare peers.`;
+    }
+  } else if (resolvedMode === 'perspective_triage' && perspectiveObj) {
+    if (cautionCount > 0 && factors.access.count === 0) {
+      verdict = 'Cold · Portfolio Overlap';
+      verdictClass = 'is-caution';
+      investmentEffect = `No shared intro path from ${perspectiveObj.name}; ${cautionCount} competitive/portfolio overlap flag(s) detected.`;
+    } else if (cautionCount > 0 && hasBeneficial) {
+      verdict = hasDirectRisk ? 'Warm Triage · Verify Overlap' : 'Mixed · Diligence Required';
+      verdictClass = 'is-mixed';
+      investmentEffect = `${perspectiveObj.name} has ${factors.access.count} warm path(s), balanced against ${cautionCount} risk/portfolio overlap flag(s).`;
+    } else if (factors.access.count > 0) {
+      verdict = 'Warm Route Mapped';
+      verdictClass = 'is-beneficial';
+      investmentEffect = `Verified intro chain from ${perspectiveObj.name} supports prioritized origination diligence; clear commercial checks before term-sheet work.`;
+    } else if (hasBeneficial) {
+      verdict = 'Cold Outreach · Target Mapped';
+      verdictClass = 'is-neutral';
+      investmentEffect = `No shared intro bridge connects ${perspectiveObj.name} to target(s); use mapped leadership and timing signals for cold origination.`;
+    }
+  } else {
+    if (cautionCount > 0 && hasBeneficial) {
+      verdict = hasDirectRisk && evidenceScore >= 60 ? 'Actionable · Verify Risks' : 'Mixed · Diligence Required';
+      verdictClass = 'is-mixed';
+      investmentEffect = `${sharedCommercialBottlenecks.length ? `${sharedCommercialBottlenecks.length} shared commercial bottleneck(s) and ` : ''}shared backers coexist with mapped overlap or conflict risks${primaryTargetName ? ` (focus: ${primaryTargetName})` : ''}.`;
+    } else if (cautionCount > 0) {
+      verdict = 'Caution · Verify Risks';
+      verdictClass = 'is-caution';
+      investmentEffect = 'Mapped competitive or structural risk requires verification before advancing.';
+    } else if (evidenceScore >= 72 && hasBeneficial) {
+      verdict = 'Strong Multi-Entity Signal';
+      verdictClass = 'is-beneficial';
+      investmentEffect = `High-provenance capital, commercial, and leadership convergence mapped${primaryTargetName ? ` around ${primaryTargetName}` : ''}; validate customer concentration separately.`;
+    } else if (hasBeneficial) {
+      verdict = 'Ecosystem Links Mapped';
+      verdictClass = 'is-beneficial';
+      investmentEffect = `Verified cross-entity links map backers, bottlenecks, and leadership${primaryTargetName ? ` relative to ${primaryTargetName}` : ''}.`;
+    }
   }
 
   // Top Shared Bridge Highlights: diversify top access & lineage hubs before backfilling by weight
@@ -618,6 +1022,7 @@ export function buildDecisionIntelligence({
         name: node?.label || node?.name || r.canonicalFrom,
         entityType: node?.entityType || 'Entity',
         group: r.highlightGroup,
+        structuralRole: r.structuralRole,
         sourceRank: r.sourceRank,
         sharedHubs: r.sharedHubs,
         signalWeight: r.signalWeight,
@@ -628,26 +1033,28 @@ export function buildDecisionIntelligence({
   }
   const sharedBridgeHighlights = [...sharedHighlightsMap.values()];
 
-  // Top Warm Intro Routes
+  // Top Warm Intro / Structural Routes
   const warmIntroRoutes = factors.access.rankedRecords
-    .filter((r) => !focalById.has(r.nodeId) || r.isSharedBridge)
+    .filter((r) => !focalById.has(r.nodeId) || r.isSharedBridge || r.touchesPerspective)
     .slice(0, 4)
     .map((r) => ({
       entityName: nodeLabel(r.nodeId),
       nodeId: r.nodeId,
       edgeId: r.edgeId,
       focalName: focalById.get(r.focalEntityId)?.name || r.canonicalTo,
+      structuralRole: r.structuralRole,
       isLead: r.isLead,
       isSharedBridge: r.isSharedBridge,
+      touchesPerspective: r.touchesPerspective,
       sourceRank: r.sourceRank,
-      routeLabel: `${r.canonicalFrom} → ${r.canonicalTo}`
+      routeLabel: r.perspectiveChain?.length ? r.perspectiveChain.join(' → ') : `${r.canonicalFrom} → ${r.canonicalTo}`
     }));
 
   // Top Diligence Actions
   const topDiligenceActions = ['caution', 'access', 'lineage', 'timing']
     .map((group) => ({
       factorGroup: group,
-      label: factors[group].label,
+      label: factors[group].displayLabel || factors[group].label,
       check: factors[group].actionableCheck,
       targetEdgeId: factors[group].rankedRecords[0]?.edgeId || '',
       targetNodeId: factors[group].rankedRecords[0]?.nodeId || ''
@@ -655,8 +1062,20 @@ export function buildDecisionIntelligence({
     .filter((item) => item.check)
     .slice(0, 3);
 
+  const modeLabel =
+    resolvedMode === 'perspective_triage'
+      ? `Origination Triage · ${perspectiveObj?.name || 'My Firm'}`
+      : resolvedMode === 'single_teardown'
+        ? `Company Teardown · ${focalList[0]?.name || 'Single Entity'}`
+        : `Ecosystem & Peer Map (${focalList.length} entities)`;
+
   return {
     executive: {
+      analysisMode: resolvedMode,
+      modeLabel,
+      perspectiveEntity: perspectiveObj,
+      primaryTargetId: resolvedPrimaryTargetId,
+      primaryTargetName,
       verdict,
       verdictClass,
       investmentEffect,
@@ -665,7 +1084,12 @@ export function buildDecisionIntelligence({
       verifiedSharePct: overallProv.verifiedSharePct,
       provenanceMix: overallProv,
       sharedBridgeHighlights,
+      sharedCommercialBottlenecks,
       warmIntroRoutes,
+      warmIntroChains: perspectiveObj?.warmIntroChains || [],
+      isColdOutreach: perspectiveObj ? Boolean(perspectiveObj.isColdOutreach) : false,
+      portfolioConflicts: perspectiveObj?.portfolioConflicts || [],
+      missingDisclosures,
       dataAnomalies: dataAnomalies.slice(0, 6),
       topDiligenceActions
     },

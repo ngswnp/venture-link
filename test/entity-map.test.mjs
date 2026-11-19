@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAppServer } from '../server.mjs';
-import { buildEntityBridgeMap, ingestLiveCalaEntities, runFullAnalysis } from '../src/engine.mjs';
+import { buildEntityBridgeMap, classifyTimingRecency, ingestLiveCalaEntities, runFullAnalysis, STRUCTURAL_ROLES } from '../src/engine.mjs';
 import { COMPANIES } from '../src/data.mjs';
 
 function removeLiveRecords(calaEntityIds) {
@@ -756,4 +756,180 @@ test('buildEntityBridgeMap keeps investor-role FundingRound participation out of
   assert.equal((bridgeMap.timingEventsByEntity['inv-focal'] || []).length, 0, 'Investor participation in a portfolio round must not become investor timing event');
   assert.ok(!bridgeMap.edges.some((e) => e.relation === 'IS_MEMBER_OF' && e.to === 'comp-b'), 'Unverified company-to-company IS_MEMBER_OF must be quarantined');
   assert.ok(bridgeMap.edges.some((e) => e.relation === 'INVESTED_IN' && e.from === 'inv-focal' && e.to === 'comp-a'), 'Pass 2 should still emit Investor -> Issuer edge');
+});
+
+test('buildEntityBridgeMap decouples structuralRole from decision lenses, enforces 18-month timing split, and computes Layer B modes', () => {
+  assert.deepEqual(STRUCTURAL_ROLES, ['capital', 'governance', 'commercial', 'strategic_event']);
+  const recRecent = classifyTimingRecency('2026-06-01', '2026-11-19');
+  assert.equal(recRecent.timingRecency, 'active_catalyst');
+  assert.equal(recRecent.isRecentCatalyst, true);
+  assert.equal(recRecent.isHistoricalMilestone, false);
+  const recOld = classifyTimingRecency('2022-05-01', '2026-11-19');
+  assert.equal(recOld.timingRecency, 'historical_milestone');
+  assert.equal(recOld.isRecentCatalyst, false);
+  assert.equal(recOld.isHistoricalMilestone, true);
+
+  const focalCo = {
+    id: 'nvda-test',
+    name: 'NVIDIA Test Corp',
+    entity_type: 'Company',
+    properties: {},
+    relationships: {
+      outgoing: {
+        OPERATES_IN_INDUSTRY: [{ id: 'ind-semi', name: 'AI Chips' }],
+        ACQUIRED: [
+          {
+            id: 'mlnx-test',
+            name: 'Mellanox',
+            entity_type: 'Company',
+            properties: { sources: [{ name: 'SEC 8-K', document: 'https://sec.example/8k', source_rank: 'FILING' }], event_date: '2020-04-27' }
+          }
+        ],
+        SUPPLIED_BY: [
+          {
+            id: 'tsmc-test',
+            name: 'TSMC',
+            entity_type: 'Company',
+            properties: { sources: [{ name: '10-K', document: 'https://sec.example/10k', source_rank: 'FILING' }] }
+          }
+        ],
+        PARTICIPATES_IN_CORPORATE_EVENT: [
+          {
+            id: 'evt-recent-test',
+            name: 'Blackwell Launch Event',
+            entity_type: 'CorporateEvent',
+            properties: {
+              event_date: '2026-06-01',
+              sources: [{ name: 'Press Release', document: 'https://nvda.example/blackwell', source_rank: 'PRIMARY' }]
+            }
+          },
+          {
+            id: 'evt-old-test',
+            name: 'IPO Milestone',
+            entity_type: 'CorporateEvent',
+            properties: {
+              event_date: '2021-02-01',
+              sources: [{ name: 'Archive', document: 'https://nvda.example/ipo', source_rank: 'PRIMARY' }]
+            }
+          }
+        ]
+      },
+      incoming: {
+        INVESTED_IN: [
+          {
+            id: 'co-inv-bridge',
+            name: 'Bridge Fund',
+            entity_type: 'Organization',
+            properties: { sources: [{ name: 'Filing', document: 'https://sec.example/inv', source_rank: 'FILING' }] }
+          }
+        ]
+      }
+    }
+  };
+
+  // 1) Neutral single-company teardown
+  const teardownMap = buildEntityBridgeMap([focalCo], [], { multiCenter: true, referenceDate: '2026-11-19' });
+  assert.equal(teardownMap.analysisMode, 'single_teardown');
+  assert.equal(teardownMap.perspectiveEntity, null);
+
+  const acqEdge = teardownMap.edges.find((e) => e.relation === 'ACQUIRED');
+  assert.ok(acqEdge, 'ACQUIRED edge should exist');
+  assert.equal(acqEdge.structuralRole, 'governance');
+  assert.equal(acqEdge.contributionGroup, 'lineage');
+  assert.equal(acqEdge.isAcquisition, true);
+
+  const supEdge = teardownMap.edges.find((e) => e.relation === 'SUPPLIED_BY');
+  assert.ok(supEdge, 'SUPPLIED_BY edge should exist');
+  assert.equal(supEdge.structuralRole, 'commercial');
+
+  const recentEvtNode = teardownMap.nodes.find((n) => n.fullTitle === 'Blackwell Launch Event');
+  assert.equal(recentEvtNode?.timingRecency, 'active_catalyst');
+  assert.equal(recentEvtNode?.entityType, 'Active Catalyst');
+  const oldEvtNode = teardownMap.nodes.find((n) => n.fullTitle === 'IPO Milestone');
+  assert.equal(oldEvtNode?.timingRecency, 'historical_milestone');
+  assert.equal(oldEvtNode?.entityType, 'Historical Milestone');
+
+  // 2) Ecosystem comparison (2+ entities, neutral perspective)
+  const peerCo = {
+    id: 'amd-test',
+    name: 'AMD Test Corp',
+    entity_type: 'Company',
+    properties: {},
+    relationships: {
+      outgoing: {
+        SUPPLIED_BY: [
+          {
+            id: 'tsmc-test',
+            name: 'TSMC',
+            entity_type: 'Company',
+            properties: { sources: [{ name: '10-K', document: 'https://sec.example/amd-10k', source_rank: 'FILING' }] }
+          }
+        ]
+      },
+      incoming: {}
+    }
+  };
+  const ecoMap = buildEntityBridgeMap([focalCo, peerCo], [], { multiCenter: true, referenceDate: '2026-11-19' });
+  assert.equal(ecoMap.analysisMode, 'ecosystem_compare');
+  assert.equal(ecoMap.decisionIntelligence.executive.sharedCommercialBottlenecks[0]?.name, 'TSMC');
+
+  // 3) Perspective triage (My Firm set): 2-hop warm intro via Bridge Fund + sector overlap portfolio conflict
+  const portfolioCo = {
+    id: 'rival-port-co',
+    name: 'ComputeRival Inc',
+    entity_type: 'Company',
+    relationships: { outgoing: { OPERATES_IN_INDUSTRY: [{ id: 'ind-semi', name: 'AI Chips' }] }, incoming: {} }
+  };
+  const perspFirm = {
+    id: 'sequoia-test',
+    name: 'My VC Perspective',
+    entity_type: 'Organization',
+    properties: {},
+    relationships: {
+      outgoing: {
+        CO_INVESTED_WITH: [
+          {
+            id: 'co-inv-bridge',
+            name: 'Bridge Fund',
+            entity_type: 'Organization',
+            properties: { sources: [{ name: 'Syndicate', document: 'https://vc.example/syn', source_rank: 'PRIMARY' }] }
+          }
+        ],
+        INVESTED_IN: [
+          {
+            id: 'rival-port-co',
+            name: 'ComputeRival Inc',
+            entity_type: 'Company',
+            properties: { sources: [{ name: 'Portfolio', document: 'https://vc.example/port', source_rank: 'PRIMARY' }] }
+          }
+        ]
+      },
+      incoming: {}
+    }
+  };
+  const triageMap = buildEntityBridgeMap([focalCo], [portfolioCo], {
+    multiCenter: true,
+    perspectiveEntity: perspFirm,
+    referenceDate: '2026-11-19'
+  });
+  assert.equal(triageMap.analysisMode, 'perspective_triage');
+  assert.equal(triageMap.perspectiveEntity?.isColdOutreach, false);
+  assert.ok(triageMap.perspectiveEntity?.warmIntroChains.some((c) => c.bridgeLabel === 'Bridge Fund'));
+  assert.ok(triageMap.perspectiveEntity?.portfolioConflicts.some((c) => c.portfolioName === 'ComputeRival Inc'));
+
+  // 4) Cold outreach when Perspective has zero shared links to target
+  const isolatedFirm = {
+    id: 'cold-vc',
+    name: 'Isolated VC',
+    entity_type: 'Organization',
+    relationships: { outgoing: {}, incoming: {} }
+  };
+  const coldMap = buildEntityBridgeMap([focalCo], [], {
+    multiCenter: true,
+    perspectiveEntity: isolatedFirm,
+    referenceDate: '2026-11-19'
+  });
+  assert.equal(coldMap.analysisMode, 'perspective_triage');
+  assert.equal(coldMap.perspectiveEntity?.isColdOutreach, true);
+  assert.equal(coldMap.decisionIntelligence.factors.access.count, 0);
 });

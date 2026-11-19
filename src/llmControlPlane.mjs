@@ -564,7 +564,10 @@ function filterUnsupportedFactorClaims(text, factor, citedIds, maxLength = 520, 
     (record.sourceIds || []).some((id) => effectiveCited.includes(id))
   );
   const evidenceText = [factor.label, factor.effect, factor.impact, factor.evidence, ...referencedRecords.flatMap((record) => [
-    record.id, record.type, record.path, record.relation, record.detail, record.date, record.sourceRank
+    record.id, record.type, record.path, record.relation, record.detail, record.date, record.sourceRank,
+    ...(record.structuralRole ? [record.structuralRole] : []),
+    ...(record.timingRecency ? [record.timingRecency] : []),
+    ...(Array.isArray(record.perspectiveChain) ? record.perspectiveChain : [])
   ])].filter(Boolean).join(' ');
   const evidenceLower = evidenceText.toLowerCase();
   const evidenceWords = new Set(evidenceLower.match(/[a-z0-9]+/g) || []);
@@ -780,12 +783,26 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
         date: record?.date ? String(record.date).slice(0, 24) : null,
         sourceRank: record?.sourceRank ? sanitizeShortText(String(record.sourceRank), 16) : undefined,
         isSharedBridge: record?.isSharedBridge === true ? true : undefined,
+        ...(record?.structuralRole ? { structuralRole: sanitizeShortText(String(record.structuralRole), 24) } : {}),
+        ...(record?.timingRecency ? { timingRecency: sanitizeShortText(String(record.timingRecency), 24) } : {}),
+        ...(record?.isAcquisition === true ? { isAcquisition: true } : {}),
+        ...(Array.isArray(record?.perspectiveChain) && record.perspectiveChain.length
+          ? { perspectiveChain: record.perspectiveChain.slice(0, 4).map((p) => sanitizeShortText(String(p || ''), 60)).filter(Boolean) }
+          : {}),
         sourceIds: [...new Set((Array.isArray(record?.sourceIds) ? record.sourceIds : []).map(String).filter((id) => sourceIdSet.has(id)))].slice(0, 4)
       }))
     }));
 
+  const allowedAnalysisModes = new Set(['single_teardown', 'perspective_triage', 'ecosystem_compare']);
+  const cleanAnalysisMode = allowedAnalysisModes.has(packet.analysisMode) ? packet.analysisMode : undefined;
+  const cleanPerspectiveName = packet.perspectiveEntityName ? sanitizeShortText(packet.perspectiveEntityName, 80) : undefined;
+  const cleanPrimaryTargetName = packet.primaryTargetName ? sanitizeShortText(packet.primaryTargetName, 80) : undefined;
+
   const groundedPacket = {
     mode: packet.mode === 'entity' ? 'entity' : 'connection',
+    ...(cleanAnalysisMode ? { analysisMode: cleanAnalysisMode } : {}),
+    ...(cleanPerspectiveName ? { perspectiveEntityName: cleanPerspectiveName } : {}),
+    ...(cleanPrimaryTargetName ? { primaryTargetName: cleanPrimaryTargetName } : {}),
     title: sanitizeShortText(packet.title || '', 120) || 'Cala Relationship',
     hopType: sanitizeShortText(packet.hopType || '', 60),
     relation: sanitizeShortText(packet.relation || '', 60),
@@ -846,7 +863,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
   const cache = options.cache || connectionInsightCache;
   const useDiskCache = !options.cache && !options.disableDiskCache;
   const diskCachePath = options.diskCachePath || DEFAULT_INSIGHT_DISK_CACHE;
-  const cacheKey = `v9:${groundedPacket.mode}:${JSON.stringify(groundedPacket)}`;
+  const cacheKey = `v10:${groundedPacket.mode}:${groundedPacket.analysisMode || 'default'}:${JSON.stringify(groundedPacket)}`;
   const diskHash = useDiskCache ? crypto.createHash('sha256').update(cacheKey).digest('hex') : null;
   if (cache.has(cacheKey)) {
     return { ...cache.get(cacheKey), fromCache: true };
@@ -889,30 +906,53 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
     useRegistryCheck: false
   };
 
+  const modeGuidance = groundedPacket.analysisMode === 'single_teardown'
+    ? [
+        'Context mode: SINGLE-COMPANY TEARDOWN (neutral perspective; NO buyer or fund seat is selected).',
+        'Evaluate: (1) Capital backers vs. Commercial supply/partner value-chain ties (NEVER label a commercial supplier a warm-intro route), (2) Leadership/Control & M&A (ACQUIRED is corporate structure/capital allocation, NEVER call standard acquisitions a caution or risk unless paired with a dispute/rival), (3) Recent catalysts ("active_catalyst" <=18m) vs historical milestones ("historical_milestone" >18m), (4) Competitive threats & disclosure gaps.'
+      ]
+    : groundedPacket.analysisMode === 'ecosystem_compare'
+      ? [
+          `Context mode: MULTI-ENTITY ECOSYSTEM & PEER COMPARISON${groundedPacket.primaryTargetName ? ` (Primary Target Focus: ${groundedPacket.primaryTargetName})` : ''}.`,
+          'Evaluate: shared commercial bottlenecks, dual-backed conflicts, asymmetric dependencies, talent/alumni crossover across mapped peers, direct rivalries, and comparative momentum (<=18m) vs gaps. Do NOT force single-firm VC warm-intro outreach framing.'
+        ]
+      : groundedPacket.analysisMode === 'perspective_triage'
+        ? [
+            `Context mode: ORIGINATION & DEAL TRIAGE from the perspective of "${groundedPacket.perspectiveEntityName || 'My Firm'}".`,
+            `Evaluate: concrete intro chains connecting ${groundedPacket.perspectiveEntityName || 'My Firm'} to the target(s) (or explicit cold outreach when none exist), team/spinout lineage, active <=18m catalysts, and competitive overlap with ${groundedPacket.perspectiveEntityName || 'My Firm'}'s holdings.`
+          ]
+        : [];
+
+  const nonFactorModeGuidance = groundedPacket.analysisMode === 'single_teardown'
+    ? 'Strict financial research analyst writing a single-company teardown grounded ONLY in input JSON. Treat suppliers/partners as commercial value-chain ties (never warm-intro paths), treat M&A acquisitions as corporate structure unless conflict is cited, and distinguish recent <=18m catalysts from older milestones.'
+    : groundedPacket.analysisMode === 'ecosystem_compare'
+      ? `Strict financial research analyst evaluating cross-entity peer dependencies${groundedPacket.primaryTargetName ? ` (focused on ${groundedPacket.primaryTargetName})` : ''} grounded ONLY in input JSON. Highlight shared bottlenecks, dual backers, or competitive positioning without forcing VC warm-intro boilerplate.`
+      : 'Strict VC investment-diligence analyst grounded ONLY in input JSON. Analyze why the connection or entity graph matters for deal access, operator lineage, timing, or competitive caution.';
+
   const systemPrompt = decisionFactors.length ? [
-    'You are a senior venture investment analyst writing for a busy partner. Analyze ONLY the supplied Cala records and citations; never infer company quality from network position.',
-    'Your job: turn each mapped connection into a plain-English insight that says what the connection lets an investor KNOW or DO (e.g. "Amazon backs both OpenAI and Anthropic, so it can give a side-by-side reference on both teams").',
+    'You are a senior institutional financial and venture analyst writing for a busy partner. Analyze ONLY the supplied Cala records and citations; never infer company quality from network position.',
+    ...modeGuidance,
+    'Your job: turn each mapped group into a plain-English insight that says what the evidence lets an analyst KNOW or DO (e.g. "Amazon backs both OpenAI and Anthropic, so it can give a side-by-side reference on both teams").',
     'For EACH of the four factors emit:',
     '- verdict: one label. access/lineage/timing use Strong signal | Positive signal | Mixed signal | Weak signal | No evidence. caution uses Red flag | Watch item | No flags found | No evidence.',
-    '- headline: 6-14 words, the single so-what for an investor, naming the key entity. No jargon, no numbers unless verbatim.',
-    '- decisionEffect: 14-26 words explaining how this changes the investment decision, citing sourceIds.',
-    '- findings: up to 3, ranked by decision value. connection = the entity path verbatim from records (e.g. "Amazon → OpenAI & Anthropic"). meaning = 8-18 words on why an investor cares about THAT connection. Cite its record sourceIds.',
+    '- headline: 6-14 words, the single so-what for the analyst, naming the key entity. No jargon, no numbers unless verbatim.',
+    '- decisionEffect: 14-26 words explaining what this signal changes in the analysis, citing sourceIds.',
+    '- findings: up to 3, ranked by analytical value. connection = the entity path verbatim from records (e.g. "Amazon → OpenAI & Anthropic"). meaning = 8-18 words on why an analyst cares about THAT connection. Cite its record sourceIds.',
     '- limitation: 8-16 words on what these records do not prove.',
     '- nextCheck: 8-18 words starting with "Verify whether", "Confirm whether" or "Ask whether", naming only entities verbatim in that factor.',
-    'Also emit overallStance (Pursue | Pursue with caution | Monitor | Insufficient evidence) and executiveTakeaway: 14-24 words, the bottom line a partner reads first, balancing upside and caution, with sourceIds.',
-    'Write short, concrete sentences. Lead with the entity name. Prefer verbs like "backs", "founded", "led", "links", "overlaps". Avoid filler such as "establishes", "leverage", "signals that", "ecosystem".',
+    'Also emit overallStance (Pursue | Pursue with caution | Monitor | Insufficient evidence) and executiveTakeaway: 14-24 words, the bottom line read first, balancing upside and caution, with sourceIds.',
+    'Write short, concrete sentences. Lead with the entity name. Prefer verbs like "backs", "supplies", "founded", "acquired", "led", "links", "overlaps". Avoid filler such as "establishes", "leverage", "signals that", "ecosystem".',
     'NEVER invent numbers, dates, entities, conflicts, or evidence. Never write source IDs (like s1) inside prose; put them only in sourceIds arrays.',
     'For a factor with no records: verdict "No evidence", headline "No mapped evidence in Cala", findings [].',
     'Each citation must belong to the same factor and appear on a record or factor source in input JSON.',
-    'Use plain evidence nouns from the records (investors, backers, organizations, founders, roles, milestones, sector overlap). FORBIDDEN words unless verbatim in THAT factor: fund, portfolio, deal, stage, early, fundraising, raise, traction, validation, governance, information, window, cap, table, ownership, market, board rights, runway, burn, liquidity, performance, authority, primary, allocation, institutional, VC, IP, LP.',
+    'Use plain evidence nouns from the records (investors, backers, suppliers, partners, organizations, founders, roles, acquisitions, milestones, rivals, sector overlap). FORBIDDEN words unless verbatim in THAT factor: fund, portfolio, deal, stage, early, fundraising, raise, traction, validation, governance, information, window, cap, table, ownership, market, board rights, runway, burn, liquidity, performance, authority, primary, allocation, institutional, VC, IP, LP.',
     'At most 2 cross-factor insights; cite each with exact source IDs.',
     'Return compact JSON matching the schema, no markdown.'
   ].join('\n') : [
-    'Strict VC investment-diligence analyst grounded ONLY in input JSON.',
-    'Analyze why the connection or entity graph matters for deal access, operator lineage, timing, or competitive caution.',
+    nonFactorModeGuidance,
     'NEVER invent numbers, round sizes, dates, or entities not present in input JSON. Never write source IDs like s1 inside prose sentences.',
     'Output ONE compact single-line JSON only (no markdown fences):',
-    '{"summary":"20-35 word crisp investment takeaway","summarySourceIds":["exact-source-id"],"insights":[{"text":"1 sharp verified insight","sourceIds":["exact-source-id"]}],"question":"1 concrete next diligence question"}.',
+    '{"summary":"20-35 word crisp analytical takeaway","summarySourceIds":["exact-source-id"],"insights":[{"text":"1 sharp verified insight","sourceIds":["exact-source-id"]}],"question":"1 concrete next diligence question"}.',
     'Max 3 insights. Both summarySourceIds and every insight MUST cite at least 1 exact sourceId from input.sources.'
   ].join('\n');
 

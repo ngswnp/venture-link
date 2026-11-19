@@ -120,6 +120,53 @@
           </form>
 
           <div class="dock-right-controls" id="dockRightControls">
+            <div class="perspective-picker-wrap" id="perspectivePickerWrap">
+              <button
+                type="button"
+                class="perspective-picker-btn"
+                id="perspectivePickerBtn"
+                aria-expanded="false"
+                aria-controls="perspectivePopover"
+                title="Set buyer or fund perspective (default: Neutral institutional mode)"
+              >
+                <span class="perspective-dot" aria-hidden="true"></span>
+                <span id="perspectivePickerLabel">Perspective: Neutral</span>
+                <span aria-hidden="true">&#9662;</span>
+              </button>
+              <button
+                type="button"
+                class="perspective-clear-btn"
+                id="perspectiveClearBtn"
+                title="Clear perspective back to Neutral"
+                aria-label="Clear perspective back to Neutral"
+                hidden
+              >
+                &times;
+              </button>
+              <div class="perspective-popover" id="perspectivePopover" role="dialog" aria-label="Set My Firm Perspective" hidden>
+                <div class="perspective-pop-head">
+                  <strong>My Firm / Buyer Seat</strong>
+                  <button type="button" class="legend-pop-close" id="perspectiveCloseBtn" aria-label="Close perspective selector">x</button>
+                </div>
+                <p class="perspective-pop-sub"><b>Neutral (Default)</b> maps objective corporate structure or multi-peer overlap. Set a firm to score warm access and portfolio conflicts.</p>
+                <div class="perspective-input-wrap">
+                  <input
+                    type="text"
+                    id="perspectiveSearchInput"
+                    class="perspective-search-input"
+                    placeholder="Search fund or buyer (e.g. Sequoia Capital)"
+                    autocomplete="off"
+                    aria-label="Search fund or buyer perspective"
+                  />
+                </div>
+                <div id="perspectiveQuickRow" class="perspective-quick-row">
+                  <button type="button" class="perspective-quick-chip is-neutral-reset" data-perspective-reset="true">Neutral (Default)</button>
+                  <button type="button" class="perspective-quick-chip" data-perspective-quick="Sequoia Capital">Sequoia Capital</button>
+                  <button type="button" class="perspective-quick-chip" data-perspective-quick="NVIDIA Corporation">NVIDIA</button>
+                </div>
+                <div id="perspectiveResults" class="perspective-results" role="listbox" aria-label="Perspective entity matches"></div>
+              </div>
+            </div>
             <button
               type="button"
               class="filter-drawer-toggle"
@@ -319,19 +366,19 @@
                 <span class="legend-pop-title">Constellation Key</span>
                 <button type="button" class="legend-pop-close" id="mapLegendCloseBtn" aria-label="Close key">x</button>
               </div>
-              <div class="legend-pop-grid">
-                <span class="leg-item"><span class="fam-dot fam-dot-feeder"></span> Access (Partners &amp; Syndicate)</span>
-                <span class="leg-item"><span class="fam-dot fam-dot-alumni"></span> Lineage (Founders &amp; Leadership)</span>
-                <span class="leg-item"><span class="fam-dot fam-dot-event"></span> Timing (Funding &amp; Events)</span>
-                <span class="leg-item"><span class="fam-dot fam-dot-twin"></span> Caution (Acquisitions &amp; Rivals)</span>
+              <div class="legend-pop-grid" id="legendPopGrid">
+                <span class="leg-item"><span class="fam-dot fam-dot-feeder"></span> Capital &amp; Value Chain</span>
+                <span class="leg-item"><span class="fam-dot fam-dot-alumni"></span> Governance &amp; M&amp;A</span>
+                <span class="leg-item"><span class="fam-dot fam-dot-event"></span> Catalysts (&le;18m) &amp; History</span>
+                <span class="leg-item"><span class="fam-dot fam-dot-twin"></span> Rivals &amp; Overlap Flags</span>
               </div>
               <div class="legend-pop-strokes">
                 <span class="leg-item"><span class="leg-line leg-line-solid"></span> FILING / PRIMARY</span>
                 <span class="leg-item"><span class="leg-line leg-line-dashed"></span> PRESS / AGG</span>
                 <span class="leg-item"><span class="leg-line leg-line-peer"></span> Hover relation path</span>
               </div>
-              <div class="legend-pop-controls">
-                Click a Group Hub to expand paths &middot; Click any Entity orb for full Cala Dossier &middot; Scroll/trackpad pans &amp; zooms
+              <div class="legend-pop-controls" id="legendPopControls">
+                Hover an edge or node for structural role &amp; source proof &middot; Click any Entity orb for full Cala Dossier &middot; Scroll/trackpad pans &amp; zooms
               </div>
             </div>
             <button
@@ -352,10 +399,10 @@
           </div>
 
           <div class="map-bottom-right-overlay" id="mapDecisionHud">
-            <div class="decision-summary-popover" id="decisionSummaryPopover" role="dialog" aria-label="4-Factor Investment Decision Summary" hidden>
+            <div class="decision-summary-popover" id="decisionSummaryPopover" role="dialog" aria-label="Context-Aware Decision Summary" hidden>
               <div class="decision-pop-header">
                 <div class="decision-pop-title-row">
-                  <span class="decision-pop-title">4-Factor Decision</span>
+                  <span class="decision-pop-title">Decision Brief</span>
                   <span class="decision-verdict-badge is-neutral" id="decisionOverallBadge">Ready</span>
                   <span class="decision-grade-badge" id="decisionGradeBadge" hidden></span>
                 </div>
@@ -363,6 +410,7 @@
                   <button type="button" class="legend-pop-close" id="decisionSummaryCloseBtn" aria-label="Close decision summary">x</button>
                 </div>
               </div>
+              <div class="decision-mode-meta-bar" id="decisionModeMetaBar" hidden></div>
               <div class="decision-factor-list" id="decisionFactorList" role="tablist" aria-label="Decision factors" aria-orientation="vertical"></div>
               <div class="decision-bridge-strip" id="decisionBridgeStrip" hidden></div>
               <div class="decision-ai-prompt" id="decisionAiPrompt">Select any factor for grounded Claude analysis.</div>

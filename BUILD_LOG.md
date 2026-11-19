@@ -105,3 +105,20 @@ Tested live on `OpenAI + Anthropic` (`POST /api/analyze` + `POST /api/connection
   - Invariants: `0` `<details>` tags, `0` green hex/rgba colors.
   - Headless Chrome CDP (`qa_browser.mjs`, `http://127.0.0.1:4173`): `consoleErrors: []`, `failedRequests: []`, Dark/Light/Mobile screenshots visually inspected (`qa_1`..`qa_7`, `qa_6b`).
 
+## Step 9: Context-Aware Workflow & 4-Factor Architecture Redesign (`src/engine.mjs`, `server.mjs`, `src/decisionEngine.mjs`, `src/llmControlPlane.mjs`, `public/*`)
+- **Layer A — Objective Structural Role Decoupling (`src/engine.mjs`)**:
+  - Added `STRUCTURAL_ROLES` (`capital`, `governance`, `commercial`, `strategic_event`) and `classifyTimingRecency()` using a dynamic 18-month cutoff relative to `referenceDate` (`active_catalyst` <= 18m vs `historical_milestone` > 18m vs `undated`).
+  - Reclassified `ACQUIRED` out of `caution` to `structuralRole: 'governance'`, `contributionGroup: 'lineage'`, `isAcquisition: true` unless paired with an explicit conflict/rivalry flag.
+  - Tagged `SUPPLIES`, `SUPPLIED_BY`, `PARTNERED_WITH`, `ADVISED` cleanly with `structuralRole: 'commercial'` so commercial value-chain ties are never mislabeled as warm intro outreach unless traced through an active firm Perspective.
+  - Removed remaining `'pts'` strings from `buildEntityBridgeMap` (`formulaBreakdown.inputs`, `significanceInputs`) and `computeContributionWeightsFrontend` (`public/app.js`).
+- **Layer B — Dynamic Context Modes & Asymmetric Perspective Triage (`src/engine.mjs`, `server.mjs`, `src/decisionEngine.mjs`, `src/llmControlPlane.mjs`)**:
+  - **`single_teardown`** (1 entity, Perspective = Neutral default): Removed forced `group_hub` rings; grouped satellites into non-empty radial sectors by objective `structuralRole` (`GOVERNANCE & LEADERSHIP`, `CAPITAL & OWNERSHIP`, `COMMERCIAL VALUE CHAIN`, `M&A, RIVALS & CATALYSTS`) with SVG sector headers, Company Teardown brief, explicit `missingDisclosures`, and quick CTAs (`+ Add Peer`, `Set Perspective`).
+  - **`ecosystem_compare`** (2+ entities, Neutral): Removed per-anchor `group_hub` intermediate bubbles in favor of direct structural satellite arcs + typed Center Bridge Spine badges (`↔ Shared Backer`, `↔ Shared Bottleneck`, `↔ Shared Talent`, `↔ Direct Rivalry`), `sharedCommercialBottlenecks`, and `Evaluate Primary Target` switcher.
+  - **`perspective_triage`** (optional, clearable `My Firm / Buyer Seat` set): Resolved direct and 2-hop warm intro chains (`warmIntroChains`, `isColdOutreach`) and `PORTFOLIO_OVERLAP` conflicts asymmetrically relative to the selected perspective (`My Firm` on left -> Warm Spine -> Target(s) on right).
+  - Updated `analyzeConnectionWithCitationGate` (`v10:` cache key) to tailor structured and single-edge prompts per active `analysisMode` (`single_teardown`, `ecosystem_compare`, `perspective_triage`).
+- **Verified Checks (Post-Final Edit)**:
+  - `node --check public/app.js public/mapPhysics.js server.mjs src/*.mjs`: `0` syntax errors.
+  - `npm test`: `74/74` tests passing across all 8 suites (including 4 new test cases across `test/entity-map.test.mjs`, `test/decisionEngine.test.mjs`, `test/api.test.mjs`, and `test/llmControlPlane.test.mjs`).
+  - UI Invariants: `0` `<details>` elements, `0` green hex/rgba colors in `public/styles.css` & `public/app.js`, `0` `'pts'` strings in `public/app.js`.
+  - Live Chrome CDP (`qa_context_modes.mjs`, `http://127.0.0.1:4173`): Verified `Nvidia` single teardown (`0` `group_hub` nodes, `3` SVG sector labels, all 4 teardown cards visible), `OpenAI + Nvidia + Anthropic` ecosystem map (`0` `group_hub` nodes, `Anthropic` Primary Target focus), `Sequoia Capital` -> `Anthropic` perspective triage (`perspective_triage` + clean reset back to Neutral), `390x844` mobile layout (`0px` horizontal overflow), `consoleErrors: []`, `pageExceptions: []`.
+

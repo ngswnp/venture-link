@@ -168,3 +168,166 @@ test('buildDecisionIntelligence handles sparse single-entity maps cleanly', () =
   assert.equal(intel.factors.caution.tier, 'Clear');
   assert.equal(intel.factors.access.count, 0);
 });
+
+test('buildDecisionIntelligence adapts labels, timing recency, ACQUIRED M&A, cold outreach, and portfolio conflicts per analysisMode', () => {
+  const teardown = buildDecisionIntelligence({
+    focalEntities: [{ id: 'nvda', name: 'NVIDIA' }],
+    nodes: [
+      { id: 'nvda', label: 'NVIDIA', entityType: 'Company', isFocalEntity: true },
+      { id: 'tsmc', label: 'TSMC', entityType: 'Company' },
+      { id: 'mlnx', label: 'Mellanox', entityType: 'Company' },
+      { id: 'ev-old', label: 'Series B · $20M', entityType: 'Historical Milestone', kind: 'event' }
+    ],
+    edges: [
+      {
+        id: 'e-sup',
+        from: 'nvda',
+        to: 'tsmc',
+        focalEntityId: 'nvda',
+        relation: 'SUPPLIED_BY',
+        label: 'Supplied by',
+        contributionGroup: 'access',
+        structuralRole: 'commercial',
+        topSourceRank: 'PRIMARY',
+        sourceIds: ['s1']
+      },
+      {
+        id: 'e-acq',
+        from: 'nvda',
+        to: 'mlnx',
+        focalEntityId: 'nvda',
+        relation: 'ACQUIRED',
+        label: 'Acquired',
+        contributionGroup: 'caution',
+        structuralRole: 'governance',
+        isAcquisition: true,
+        topSourceRank: 'FILING',
+        date: '2020-04-27',
+        sourceIds: ['s2']
+      },
+      {
+        id: 'e-old-ev',
+        from: 'nvda',
+        to: 'ev-old',
+        focalEntityId: 'nvda',
+        relation: 'DATED_MILESTONE',
+        label: 'Series B (2021-05-01)',
+        contributionGroup: 'timing',
+        structuralRole: 'capital',
+        timingRecency: 'historical_milestone',
+        isRecentCatalyst: false,
+        isHistoricalMilestone: true,
+        topSourceRank: 'PRIMARY',
+        date: '2021-05-01',
+        sourceIds: ['s3']
+      }
+    ],
+    analysisMode: 'single_teardown',
+    referenceDate: '2026-11-19'
+  });
+
+  assert.equal(teardown.executive.analysisMode, 'single_teardown');
+  assert.equal(teardown.factors.access.displayLabel, 'Capital & Value Chain');
+  assert.equal(teardown.factors.lineage.displayLabel, 'Governance, Leadership & M&A');
+  assert.equal(teardown.factors.caution.count, 0, 'ACQUIRED must never be routed into caution without conflict');
+  assert.equal(teardown.factors.lineage.structuralBreakdown.acquisitionCount, 1);
+  assert.match(teardown.factors.timing.headline, /No recent catalysts/i);
+  assert.ok(teardown.executive.missingDisclosures.length >= 2);
+
+  const triageCold = buildDecisionIntelligence({
+    focalEntities: [{ id: 'target-1', name: 'Target Co' }],
+    nodes: [
+      { id: 'target-1', label: 'Target Co', entityType: 'Company', isFocalEntity: true },
+      { id: 'inv-other', label: 'Other VC', entityType: 'Organization' }
+    ],
+    edges: [
+      {
+        id: 'e-other-inv',
+        from: 'inv-other',
+        to: 'target-1',
+        focalEntityId: 'target-1',
+        relation: 'INVESTED_IN',
+        label: 'Invested in',
+        contributionGroup: 'access',
+        structuralRole: 'capital',
+        touchesPerspective: false,
+        topSourceRank: 'PRIMARY',
+        sourceIds: ['s4']
+      }
+    ],
+    analysisMode: 'perspective_triage',
+    perspectiveEntity: {
+      id: 'my-vc',
+      name: 'Alpha Fund',
+      isColdOutreach: true,
+      warmIntroChains: [],
+      portfolioConflicts: [
+        {
+          kind: 'SECTOR_OVERLAP',
+          portfolioId: 'port-1',
+          portfolioName: 'Portfolio Rival',
+          targetId: 'target-1',
+          targetName: 'Target Co',
+          industry: 'AI Software',
+          reason: 'Alpha Fund backs Portfolio Rival in AI Software, overlapping Target Co.',
+          sourceIds: ['s5']
+        }
+      ]
+    },
+    referenceDate: '2026-11-19'
+  });
+
+  assert.equal(triageCold.factors.access.count, 0, 'Third-party investors must not count as Access when perspective_triage is active');
+  assert.equal(triageCold.factors.access.tier, 'Cold Outreach');
+  assert.match(triageCold.factors.access.headline, /No shared path from Alpha Fund/i);
+  assert.ok(triageCold.factors.caution.rankedRecords.some((r) => r.type === 'PORTFOLIO_OVERLAP'));
+
+  const eco = buildDecisionIntelligence({
+    focalEntities: [
+      { id: 'co-a', name: 'OpenAI' },
+      { id: 'co-b', name: 'Anthropic' }
+    ],
+    nodes: [
+      { id: 'co-a', label: 'OpenAI', entityType: 'Company', isFocalEntity: true },
+      { id: 'co-b', label: 'Anthropic', entityType: 'Company', isFocalEntity: true },
+      { id: 'nvda', label: 'NVIDIA', entityType: 'Company', isSharedBridge: true, sharedByFocalEntityIds: ['co-a', 'co-b'] }
+    ],
+    edges: [
+      {
+        id: 'e-sup-a',
+        from: 'nvda',
+        to: 'co-a',
+        focalEntityId: 'co-a',
+        relation: 'SUPPLIES',
+        label: 'Supplies',
+        contributionGroup: 'access',
+        structuralRole: 'commercial',
+        isSharedBridge: true,
+        sharedByFocalEntityIds: ['co-a', 'co-b'],
+        topSourceRank: 'PRIMARY',
+        sourceIds: ['s6']
+      },
+      {
+        id: 'e-sup-b',
+        from: 'nvda',
+        to: 'co-b',
+        focalEntityId: 'co-b',
+        relation: 'SUPPLIES',
+        label: 'Supplies',
+        contributionGroup: 'access',
+        structuralRole: 'commercial',
+        isSharedBridge: true,
+        sharedByFocalEntityIds: ['co-a', 'co-b'],
+        topSourceRank: 'PRIMARY',
+        sourceIds: ['s7']
+      }
+    ],
+    analysisMode: 'ecosystem_compare',
+    primaryTargetId: 'co-b',
+    referenceDate: '2026-11-19'
+  });
+
+  assert.equal(eco.executive.primaryTargetId, 'co-b');
+  assert.equal(eco.executive.primaryTargetName, 'Anthropic');
+  assert.equal(eco.executive.sharedCommercialBottlenecks[0]?.name, 'NVIDIA');
+});

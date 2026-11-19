@@ -796,3 +796,164 @@ test('mode connection preserves B2B text without false $2B rejection and grounds
   assert.equal(res.summary, 'Sequoia Capital backed B2B sales platform Samplead.');
   assert.match(res.insights[0].text, /B2B/);
 });
+
+test('analyzeConnectionWithCitationGate tailors system prompts across single_teardown, ecosystem_compare, and perspective_triage', async () => {
+  const seenPrompts = [];
+  const makeFetch = (answerObj) => async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    seenPrompts.push({ system: body.system, user: body.messages?.[0]?.content });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(answerObj) }] })
+    };
+  };
+
+  await analyzeConnectionWithCitationGate({
+    mode: 'entity',
+    analysisMode: 'single_teardown',
+    title: 'NVIDIA Corporation · single_teardown',
+    decisionFactors: [
+      {
+        group: 'access',
+        label: 'Capital & Value Chain',
+        impact: 'TSMC supplies wafer fabrication to NVIDIA Corporation.',
+        evidence: 'NVIDIA Corporation supplied by TSMC.',
+        sourceIds: ['src-nvda-tsmc'],
+        records: [
+          {
+            id: 'r1',
+            type: 'SUPPLIED_BY',
+            path: 'NVIDIA Corporation → TSMC',
+            relation: 'Supplied by',
+            detail: 'NVIDIA Corporation supplied by TSMC.',
+            structuralRole: 'commercial',
+            sourceIds: ['src-nvda-tsmc']
+          }
+        ]
+      }
+    ],
+    sources: [{ id: 'src-nvda-tsmc', title: 'NVIDIA Supply Filing', publisher: 'SEC', sourceRank: 'FILING', date: '2026-03-01' }]
+  }, {
+    apiKey: 'test-key',
+    cache: new Map(),
+    disableDiskCache: true,
+    fetchFn: makeFetch({
+      executiveTakeaway: { text: 'TSMC supplies wafer fabrication capacity for NVIDIA Corporation.', sourceIds: ['src-nvda-tsmc'] },
+      factorAnalyses: [
+        {
+          group: 'access',
+          verdict: 'Positive signal',
+          headline: 'TSMC supplies manufacturing capacity to NVIDIA',
+          decisionEffect: { text: 'TSMC supplies fabrication capacity to NVIDIA Corporation.', sourceIds: ['src-nvda-tsmc'] },
+          reasoning: [{ text: 'NVIDIA Corporation relies on TSMC supply.', sourceIds: ['src-nvda-tsmc'] }],
+          limitation: 'Supply record does not confirm pricing terms.',
+          nextCheck: 'Confirm whether TSMC allocation covers NVIDIA 2026 volume.'
+        }
+      ],
+      insights: []
+    })
+  });
+
+  await analyzeConnectionWithCitationGate({
+    mode: 'entity',
+    analysisMode: 'ecosystem_compare',
+    primaryTargetName: 'Anthropic',
+    title: 'OpenAI + Anthropic · ecosystem_compare',
+    decisionFactors: [
+      {
+        group: 'access',
+        label: 'Shared Backers & Bottlenecks',
+        impact: 'NVIDIA supplies compute to both peers.',
+        evidence: 'NVIDIA supplies OpenAI and Anthropic.',
+        sourceIds: ['src-eco-1'],
+        records: [
+          {
+            id: 'r2',
+            type: 'SUPPLIES',
+            path: 'NVIDIA → OpenAI & Anthropic',
+            relation: 'Supplies',
+            detail: 'NVIDIA supplies compute hardware to OpenAI and Anthropic.',
+            structuralRole: 'commercial',
+            sourceIds: ['src-eco-1']
+          }
+        ]
+      }
+    ],
+    sources: [{ id: 'src-eco-1', title: 'Chip Supply Report', publisher: 'Reuters', sourceRank: 'PRIMARY', date: '2026-04-01' }]
+  }, {
+    apiKey: 'test-key',
+    cache: new Map(),
+    disableDiskCache: true,
+    fetchFn: makeFetch({
+      executiveTakeaway: { text: 'NVIDIA supplies hardware to both OpenAI and Anthropic.', sourceIds: ['src-eco-1'] },
+      factorAnalyses: [
+        {
+          group: 'access',
+          verdict: 'Positive signal',
+          headline: 'NVIDIA supplies compute hardware to OpenAI and Anthropic',
+          decisionEffect: { text: 'NVIDIA supplies compute hardware to both OpenAI and Anthropic.', sourceIds: ['src-eco-1'] },
+          reasoning: [{ text: 'NVIDIA supplies both OpenAI and Anthropic.', sourceIds: ['src-eco-1'] }],
+          limitation: 'Supply record does not establish contract capacity.',
+          nextCheck: 'Confirm whether NVIDIA allocation limits OpenAI or Anthropic.'
+        }
+      ],
+      insights: []
+    })
+  });
+
+  await analyzeConnectionWithCitationGate({
+    mode: 'entity',
+    analysisMode: 'perspective_triage',
+    perspectiveEntityName: 'Sequoia Capital',
+    title: 'Anthropic (Sequoia Capital) · perspective_triage',
+    decisionFactors: [
+      {
+        group: 'access',
+        label: 'Warm Intro Access',
+        impact: 'Sequoia Capital connects to Anthropic.',
+        evidence: 'Sequoia Capital -> Anthropic',
+        sourceIds: ['src-persp-1'],
+        records: [
+          {
+            id: 'r3',
+            type: 'INVESTED_IN',
+            path: 'Sequoia Capital → Anthropic',
+            relation: 'Invested in',
+            detail: 'Sequoia Capital invested in Anthropic.',
+            structuralRole: 'capital',
+            perspectiveChain: ['Sequoia Capital', 'Anthropic'],
+            sourceIds: ['src-persp-1']
+          }
+        ]
+      }
+    ],
+    sources: [{ id: 'src-persp-1', title: 'Sequoia Anthropic Link', publisher: 'Bloomberg', sourceRank: 'PRESS', date: '2026-05-01' }]
+  }, {
+    apiKey: 'test-key',
+    cache: new Map(),
+    disableDiskCache: true,
+    fetchFn: makeFetch({
+      executiveTakeaway: { text: 'Sequoia Capital backs Anthropic directly.', sourceIds: ['src-persp-1'] },
+      factorAnalyses: [
+        {
+          group: 'access',
+          verdict: 'Positive signal',
+          headline: 'Sequoia Capital connects directly to Anthropic',
+          decisionEffect: { text: 'Sequoia Capital invested in Anthropic directly.', sourceIds: ['src-persp-1'] },
+          reasoning: [{ text: 'Sequoia Capital invested in Anthropic.', sourceIds: ['src-persp-1'] }],
+          limitation: 'Record does not verify current partner seat.',
+          nextCheck: 'Confirm whether Sequoia Capital sponsors a partner intro to Anthropic.'
+        }
+      ],
+      insights: []
+    })
+  });
+
+  assert.equal(seenPrompts.length, 3);
+  assert.match(seenPrompts[0].system, /SINGLE-COMPANY TEARDOWN/i);
+  assert.match(seenPrompts[0].system, /NEVER label a commercial supplier a warm-intro/i);
+  assert.match(seenPrompts[1].system, /MULTI-ENTITY ECOSYSTEM/i);
+  assert.match(seenPrompts[1].system, /Primary Target Focus: Anthropic/i);
+  assert.match(seenPrompts[2].system, /ORIGINATION & DEAL TRIAGE.*Sequoia Capital/i);
+});

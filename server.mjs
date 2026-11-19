@@ -1111,14 +1111,49 @@ export function createAppServer(options = {}) {
     }
     rememberLiveEntities(entities);
 
+    const rawPerspectiveRef =
+      body.perspectiveEntity ||
+      body.perspectiveEntityRef ||
+      body.perspectiveEntityId ||
+      body.perspectiveEntityName ||
+      null;
+    let perspectiveEntity = rawPerspectiveRef ? await resolveEntityReference(rawPerspectiveRef) : null;
+    if (!perspectiveEntity && rawPerspectiveRef) {
+      const pName =
+        typeof rawPerspectiveRef === 'object'
+          ? String(rawPerspectiveRef.name || rawPerspectiveRef.label || '').trim()
+          : String(rawPerspectiveRef || '').trim();
+      const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(pName);
+      if (pName && !looksLikeUuid) {
+        perspectiveEntity =
+          [...liveEntitiesById.values()].find((candidate) => isStrongEntityNameMatch(pName, candidate?.name)) || null;
+        if (!perspectiveEntity) {
+          try {
+            const pSearch = await calaClient.calaEntitySearch(pName, 10, ['Company', 'Organization', 'Person']);
+            const matchedP = pickBestCalaEntity(pSearch.data?.entities || [], 'Organization', pName)
+              || pickBestCalaEntity(pSearch.data?.entities || [], 'Company', pName);
+            if (matchedP?.id) perspectiveEntity = await hydrateLiveEntity(matchedP.id);
+          } catch {
+            perspectiveEntity = null;
+          }
+        }
+      }
+    }
+    if (perspectiveEntity?.id) rememberLiveEntities([perspectiveEntity]);
+
     // 2-hop enrichment: hydrate FundingRound / PrivateCompanyFundingRound nodes and
     // top Person / Company / Organization neighbors so co-investors, round issuers,
-    // and cross-company founders/executives resolve onto the map.
-    const hydratedNeighbors = await hydratePriorityNeighborsForMap(entities, body);
+    // cross-company founders/executives, and perspective bridges resolve onto the map.
+    const hydrationRoots = perspectiveEntity && !entities.some((e) => String(e.id) === String(perspectiveEntity.id))
+      ? [...entities, perspectiveEntity]
+      : entities;
+    const hydratedNeighbors = await hydratePriorityNeighborsForMap(hydrationRoots, body);
     return {
       entities,
       anchor: entities[0],
       relatedEntities: entities.slice(1),
+      perspectiveEntity: perspectiveEntity || null,
+      primaryTargetId: body.primaryTargetId ? String(body.primaryTargetId) : null,
       hydratedNeighbors
     };
   };
@@ -1783,19 +1818,31 @@ export function createAppServer(options = {}) {
       if (req.method === 'POST' && pathname === '/api/analyze') {
         const body = await readJsonBody(req);
         if (body.mode === 'entity') {
-          const { entities, anchor, relatedEntities, hydratedNeighbors } = await resolveEntityMapRequest(body);
+          const {
+            entities,
+            anchor,
+            relatedEntities,
+            perspectiveEntity,
+            primaryTargetId,
+            hydratedNeighbors
+          } = await resolveEntityMapRequest(body);
           const result = runFullAnalysis(
             {
               mode: 'entity',
               entities,
               entity: anchor,
-              relatedEntities: [...relatedEntities, ...(hydratedNeighbors || [])]
+              relatedEntities: [...relatedEntities, ...(hydratedNeighbors || [])],
+              perspectiveEntity,
+              primaryTargetId,
+              referenceDate: body.referenceDate || null
             },
             { hideMegaHubs: body.hideMegaHubs }
           );
           const { allRanked, ...publicPayload } = result;
           sendJson(res, 200, {
             ...publicPayload,
+            analysisMode: publicPayload.bridgeMap?.analysisMode || null,
+            perspectiveEntity: publicPayload.bridgeMap?.perspectiveEntity || null,
             entityProfile: summarizeLiveCalaEntity(anchor),
             focalEntities: entities.map(toLiveSearchEntity).filter(Boolean),
             comparedEntities: relatedEntities.map(toLiveSearchEntity).filter(Boolean),

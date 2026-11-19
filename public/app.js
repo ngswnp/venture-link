@@ -18,7 +18,36 @@ import {
 
 const THEME_STORAGE_KEY = "rte_theme_v2";
 const MAP_STATE_STORAGE_KEY = "rte_entity_map_v2";
+const PERSPECTIVE_STORAGE_KEY = "rte_perspective_v1";
 const MISSING = "Not found in Cala";
+
+const STRUCTURAL_ROLE_META = {
+  governance: {
+    role: "governance",
+    label: "Governance & Leadership",
+    shortLabel: "Governance",
+    groupFallback: "lineage"
+  },
+  capital: {
+    role: "capital",
+    label: "Capital & Ownership",
+    shortLabel: "Capital",
+    groupFallback: "access"
+  },
+  commercial: {
+    role: "commercial",
+    label: "Commercial Value Chain",
+    shortLabel: "Commercial",
+    groupFallback: "access"
+  },
+  strategic_event: {
+    role: "strategic_event",
+    label: "M&A, Rivals & Catalysts",
+    shortLabel: "Rivals & Catalysts",
+    groupFallback: "timing"
+  }
+};
+const STRUCTURAL_SECTOR_ORDER = ["governance", "capital", "commercial", "strategic_event"];
 
 const CONSTELLATION_W = 1960;
 const CONSTELLATION_H = 1400;
@@ -95,6 +124,12 @@ const state = {
   calaBudget: null,
   workspaceMode: "hero", // "hero" | "map"
   pinnedEntities: [], // up to 20 focal entity refs
+  perspectiveEntity: null, // optional clearable My Firm / Buyer seat (default strictly Neutral = null)
+  primaryTargetId: null, // optional focal entity focus in ecosystem_compare mode
+  perspectivePopoverOpen: false,
+  perspectiveSearchTimer: null,
+  perspectiveSeq: 0,
+  perspectiveResults: [],
   drafts: [],
   resolvingDrafts: new Map(),
   bridgeMap: null,
@@ -462,6 +497,121 @@ function loadPinnedEntitiesFromStorage() {
   }
 }
 
+function savePerspectiveToStorage() {
+  try {
+    if (!state.perspectiveEntity?.id && !state.perspectiveEntity?.name) {
+      localStorage.removeItem(PERSPECTIVE_STORAGE_KEY);
+      return;
+    }
+    const p = state.perspectiveEntity;
+    localStorage.setItem(PERSPECTIVE_STORAGE_KEY, JSON.stringify({
+      id: p.id,
+      calaId: p.calaId || p.id,
+      type: p.type || p.entityType || "Organization",
+      name: p.name,
+      entityType: p.entityType || p.type || "Organization"
+    }));
+  } catch (_) {}
+}
+
+function loadPerspectiveFromStorage() {
+  try {
+    const raw = localStorage.getItem(PERSPECTIVE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || (!parsed.id && !parsed.name)) return null;
+    return toEntityRef(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function getActiveAnalysisMode(bridgeMap = state.bridgeMap) {
+  const explicit = bridgeMap?.analysisMode;
+  if (explicit === "single_teardown" || explicit === "perspective_triage" || explicit === "ecosystem_compare") {
+    return explicit;
+  }
+  if (state.perspectiveEntity?.id || bridgeMap?.perspectiveEntity?.id) {
+    return "perspective_triage";
+  }
+  const focalCount = asList(bridgeMap?.focalEntityIds).length || state.pinnedEntities.length;
+  return focalCount <= 1 ? "single_teardown" : "ecosystem_compare";
+}
+
+function deriveStructuralRoleFrontend(item = {}) {
+  if (item.structuralRole && STRUCTURAL_ROLE_META[item.structuralRole]) {
+    return item.structuralRole;
+  }
+  const rel = String(item.relation || item.relationType || "").toUpperCase();
+  if (["INVESTED_IN", "CO_INVESTED_WITH", "PARTICIPATES_IN_FUNDING_ROUND", "HAS_FUNDING_ROUND"].includes(rel)) {
+    return "capital";
+  }
+  if (["PARTNERED_WITH", "SUPPLIES", "SUPPLIED_BY", "ADVISED"].includes(rel)) {
+    return "commercial";
+  }
+  if (
+    rel === "ACQUIRED" ||
+    rel.startsWith("IS_") ||
+    rel.includes("FOUNDED") ||
+    rel === "WORKS_AT" ||
+    rel === "SPUN_OUT_OF"
+  ) {
+    return "governance";
+  }
+  const fam = String(item.bridgeFamily || "").toLowerCase();
+  const group = String(item.contributionGroup || item.group || "").toLowerCase();
+  if (fam === "alumni_spinout" || group === "lineage") return "governance";
+  if (group === "access" || fam === "co_investor") return "capital";
+  return "strategic_event";
+}
+
+function classifyTimingRecencyFrontend(item = {}, referenceDate = null) {
+  if (item.timingRecency === "active_catalyst" || item.isRecentCatalyst === true) {
+    return { timingRecency: "active_catalyst", isRecentCatalyst: true, isHistoricalMilestone: false };
+  }
+  if (item.timingRecency === "historical_milestone" || item.isHistoricalMilestone === true) {
+    return { timingRecency: "historical_milestone", isRecentCatalyst: false, isHistoricalMilestone: true };
+  }
+  const raw = String(item.date || item.roundDate || "").trim();
+  if (!raw) return { timingRecency: "undated", isRecentCatalyst: false, isHistoricalMilestone: false };
+  let norm = raw.slice(0, 10);
+  if (/^\d{4}$/.test(raw)) norm = `${raw}-06-15`;
+  else if (/^\d{4}-\d{2}$/.test(raw)) norm = `${raw}-15`;
+  const evtMs = Date.parse(norm);
+  if (!Number.isFinite(evtMs)) return { timingRecency: "undated", isRecentCatalyst: false, isHistoricalMilestone: false };
+  const refMs = Date.parse(referenceDate || state.bridgeMap?.referenceDate || new Date().toISOString().slice(0, 10));
+  const baseMs = Number.isFinite(refMs) ? refMs : Date.now();
+  const monthsAgo = (baseMs - evtMs) / (1000 * 60 * 60 * 24 * 30.4375);
+  if (monthsAgo <= 18 && monthsAgo >= -12) {
+    return { timingRecency: "active_catalyst", isRecentCatalyst: true, isHistoricalMilestone: false };
+  }
+  if (monthsAgo > 18) {
+    return { timingRecency: "historical_milestone", isRecentCatalyst: false, isHistoricalMilestone: true };
+  }
+  return { timingRecency: "undated", isRecentCatalyst: false, isHistoricalMilestone: false };
+}
+
+function getSharedImpactBadge(node, incidentEdges = []) {
+  const mode = getActiveAnalysisMode();
+  const rels = asList(incidentEdges);
+  if (mode === "perspective_triage" || node?.isPerspectiveBridge || rels.some((e) => e.touchesPerspective || e.isPerspectiveBridge)) {
+    return "↔ Warm Intro";
+  }
+  if (rels.some((e) => e.relation === "COMPETES_WITH" || e.relation === "SECTOR_COMPETITION" || deriveContributionGroupFrontend(e) === "caution")) {
+    return "↔ Direct Rivalry";
+  }
+  if (rels.some((e) => deriveStructuralRoleFrontend(e) === "commercial")) {
+    return "↔ Shared Bottleneck";
+  }
+  if (String(node?.entityType || "").toLowerCase() === "person" || rels.some((e) => deriveStructuralRoleFrontend(e) === "governance")) {
+    return "↔ Shared Talent";
+  }
+  if (rels.some((e) => deriveStructuralRoleFrontend(e) === "capital")) {
+    return "↔ Shared Backer";
+  }
+  return "↔ Shared";
+}
+
 function setWorkspaceMode(mode) {
   const isMap = mode === "map";
   state.workspaceMode = isMap ? "map" : "hero";
@@ -516,6 +666,8 @@ function strongestTier(records = []) {
 
 function deriveContributionGroupFrontend(item) {
   if (!item) return "access";
+  const relUpper = String(item.relation || item.relationType || "").toUpperCase();
+  if (item.isAcquisition || relUpper === "ACQUIRED") return "lineage";
   const explicit = String(item.contributionGroup || item.group || "").toLowerCase();
   if (explicit === "access" || explicit === "lineage" || explicit === "timing" || explicit === "caution") {
     return explicit;
@@ -526,10 +678,10 @@ function deriveContributionGroupFrontend(item) {
   if (fam === "co_investor" || bType.includes("invest") || bType.includes("fund") || bType.includes("board")) {
     return "access";
   }
-  if (fam === "alumni_spinout" || bType.includes("person") || bType.includes("founder") || bType.includes("ceo") || bType.includes("employ")) {
+  if (fam === "alumni_spinout" || bType.includes("person") || bType.includes("founder") || bType.includes("ceo") || bType.includes("employ") || bType.includes("acquir")) {
     return "lineage";
   }
-  if (bType.includes("caution") || bType.includes("compet") || bType.includes("acquir") || labelLower.includes("conflict") || labelLower.includes("compet")) {
+  if (bType.includes("caution") || bType.includes("compet") || labelLower.includes("conflict") || labelLower.includes("compet")) {
     return "caution";
   }
   if (fam === "event" || bType.includes("event") || bType.includes("round") || bType.includes("metric") || bType.includes("finan")) {
@@ -581,7 +733,7 @@ function computeContributionWeightsFrontend(bridgeMap, explicitNodes = null, exp
         significanceFormula: c.significanceFormula || sigFormula,
         significanceInputs:
           c.significanceInputs ||
-          `Top: ${topR.toFixed(1)} + Top3 avg: ${top3M.toFixed(1)} + ${fCount} FILING (+${fBonus.toFixed(1)}) = ${Number(c.significanceScore || 0).toFixed(1)} pts | ${sCount} ${sCount === 1 ? "entity" : "entities"}`
+          `Top: ${topR.toFixed(1)} + Top3 avg: ${top3M.toFixed(1)} + ${fCount} FILING (+${fBonus.toFixed(1)}) = ${Number(c.significanceScore || 0).toFixed(1)} | ${sCount} ${sCount === 1 ? "entity" : "entities"}`
       };
     }
     if (groups.every((g) => out[g])) return out;
@@ -629,7 +781,7 @@ function computeContributionWeightsFrontend(bridgeMap, explicitNodes = null, exp
       startupCount: entries.length,
       topContributors: entries.slice(0, 3),
       significanceFormula: sigFormula,
-      significanceInputs: `Top: ${topR.toFixed(1)} + Top3 avg: ${top3M.toFixed(1)} + ${fCount} FILING (+${fBonus.toFixed(1)}) = ${sig.toFixed(1)} pts | ${entries.length} ${entityWord}`
+      significanceInputs: `Top: ${topR.toFixed(1)} + Top3 avg: ${top3M.toFixed(1)} + ${fCount} FILING (+${fBonus.toFixed(1)}) = ${sig.toFixed(1)} | ${entries.length} ${entityWord}`
     };
   }
 
@@ -859,12 +1011,13 @@ function getEffectiveBridgeMap() {
       : allNodes.filter((n) => n.kind === "anchor" || n.isFocalEntity).map((n) => n.id)
   );
   if (base.anchor?.id) focalIds.add(base.anchor.id);
+  const perspId = base.perspectiveEntity?.id || allNodes.find((n) => n.isPerspectiveEntity)?.id || null;
 
   const hasFilter = state.sharedOnly || state.filingOnly || (state.contributionGroup && state.contributionGroup !== "all");
   if (!hasFilter) return base;
 
   const filteredEdges = edges.filter((edge) => {
-    if (state.sharedOnly && !(edge.isSharedEdge || edge.isSharedBridge)) return false;
+    if (state.sharedOnly && !(edge.isSharedEdge || edge.isSharedBridge || edge.touchesPerspective)) return false;
     if (state.filingOnly && String(edge.topSourceRank || "").toUpperCase() !== "FILING") return false;
     if (state.contributionGroup && state.contributionGroup !== "all") {
       if (getNodeContributionGroup(edge) !== state.contributionGroup) return false;
@@ -873,6 +1026,7 @@ function getEffectiveBridgeMap() {
   });
 
   const keepNodeIds = new Set(focalIds);
+  if (perspId) keepNodeIds.add(perspId);
   for (const e of filteredEdges) {
     keepNodeIds.add(e.from);
     keepNodeIds.add(e.to);
@@ -1179,9 +1333,37 @@ function buildPolarContributionTreeData(bridgeMap) {
   };
 }
 
+function layoutAnchorDirectSatellites(aNode, ap, items, spanDeg, posMap, usedSatSet) {
+  const ordered = [...asList(items)].sort((a, b) => {
+    const ra = STRUCTURAL_SECTOR_ORDER.indexOf(deriveStructuralRoleFrontend(a));
+    const rb = STRUCTURAL_SECTOR_ORDER.indexOf(deriveStructuralRoleFrontend(b));
+    if (ra !== rb) return (ra === -1 ? 99 : ra) - (rb === -1 ? 99 : rb);
+    return Number(b.rarityScore || 0) - Number(a.rarityScore || 0);
+  });
+  const count = ordered.length;
+  if (!count) return;
+  const effectiveSpan = count === 1 ? 0 : Math.min(spanDeg, Math.max(46, count * 20));
+  ordered.forEach((sat, idx) => {
+    const frac = count === 1 ? 0.5 : idx / (count - 1);
+    const deg = count === 1 ? ap.outAngle : ap.outAngle - effectiveSpan / 2 + frac * effectiveSpan;
+    const rad = count >= 5 && idx % 2 === 1 ? 286 : 212;
+    const pt = polarToCartesian(ap.x, ap.y, rad, deg);
+    const sm = estimateNodeBoxMetrics(sat, "entity", false, computeEntityOrbSize(sat, false));
+    posMap.set(sat.id, {
+      x: pt.x,
+      y: pt.y,
+      isTopUniqueLabel: idx < 3,
+      placedRole: deriveStructuralRoleFrontend(sat),
+      ...sm
+    });
+    usedSatSet.add(sat.id);
+  });
+}
+
 function layoutBridgeMapNodes(bridgeMap) {
   const allNodes = asList(bridgeMap?.nodes);
   const allEdges = asList(bridgeMap?.edges);
+  const analysisMode = getActiveAnalysisMode(bridgeMap);
   const anchorNodes = allNodes.filter((n) => n.kind === "anchor" || n.isFocalEntity);
   if (!anchorNodes.length && bridgeMap?.anchor) {
     anchorNodes.push({ ...bridgeMap.anchor, kind: "anchor" });
@@ -1191,108 +1373,278 @@ function layoutBridgeMapNodes(bridgeMap) {
   const nodeById = new Map();
   const connectedEdgesByNode = new Map();
 
-  // MODE A: Single-Entity 360 Polar Contribution Tree
-  if (anchorNodes.length <= 1) {
-    const polar = buildPolarContributionTreeData(bridgeMap);
-    const displayNodes = [];
-    if (polar.primaryAnchor) displayNodes.push(polar.primaryAnchor);
-    displayNodes.push(...polar.hubNodes, ...polar.outerNodes);
+  const perspectiveAnchor =
+    anchorNodes.find((n) => n.isPerspectiveEntity) ||
+    (bridgeMap?.perspectiveEntity?.id ? anchorNodes.find((n) => n.id === bridgeMap.perspectiveEntity.id) : null) ||
+    null;
+  const targetAnchors = perspectiveAnchor
+    ? anchorNodes.filter((n) => n.id !== perspectiveAnchor.id)
+    : anchorNodes;
 
-    for (const n of displayNodes) {
+  // MODE P: Asymmetric Perspective Deal Triage (My Firm on left -> Warm Spine -> Target(s) on right)
+  if (perspectiveAnchor && targetAnchors.length >= 1) {
+    const rawNonAnchors = allNodes.filter((n) => n.kind !== "anchor" && !n.isFocalEntity && !n.isPerspectiveEntity);
+    const activeNodeIds = new Set(anchorNodes.map((a) => a.id));
+    for (const e of allEdges) {
+      activeNodeIds.add(e.from);
+      activeNodeIds.add(e.to);
+    }
+    const nonAnchors = rawNonAnchors.filter((n) => activeNodeIds.has(n.id));
+    for (const n of [...anchorNodes, ...nonAnchors]) {
       nodeById.set(n.id, n);
       connectedEdgesByNode.set(n.id, []);
     }
-    for (const e of polar.displayEdges) {
+    for (const e of allEdges) {
       if (!connectedEdgesByNode.has(e.from)) connectedEdgesByNode.set(e.from, []);
       if (!connectedEdgesByNode.has(e.to)) connectedEdgesByNode.set(e.to, []);
       connectedEdgesByNode.get(e.from).push(e);
       connectedEdgesByNode.get(e.to).push(e);
     }
 
-    if (polar.primaryAnchor) {
-      const am = estimateNodeBoxMetrics(polar.primaryAnchor, "anchor");
-      posMap.set(polar.primaryAnchor.id, {
-        x: CONSTELLATION_CX,
-        y: CONSTELLATION_CY,
-        locked: true,
-        ...am
-      });
-    }
+    const pm = estimateNodeBoxMetrics(perspectiveAnchor, "anchor");
+    posMap.set(perspectiveAnchor.id, {
+      x: CONSTELLATION_CX - 340,
+      y: CONSTELLATION_CY,
+      outAngle: 180,
+      locked: true,
+      ...pm
+    });
 
-    const hubRadius = polar.treeMode === "drilldown" ? 156 : 158;
-    for (const hub of polar.hubNodes) {
-      const sec = polar.sectorGeometry[hub.groupKey];
-      const pt = polarToCartesian(CONSTELLATION_CX, CONSTELLATION_CY, hubRadius, sec.midDeg);
-      const hm = estimateNodeBoxMetrics(hub, "group_hub", false, computeGroupHubOrbSize(hub.visualWeight));
-      posMap.set(hub.id, {
-        x: pt.x,
-        y: pt.y,
+    const tCount = targetAnchors.length;
+    targetAnchors.forEach((tNode, idx) => {
+      const yOff = tCount === 1 ? 0 : (idx - (tCount - 1) / 2) * 260;
+      const tm = estimateNodeBoxMetrics(tNode, "anchor");
+      posMap.set(tNode.id, {
+        x: CONSTELLATION_CX + 320,
+        y: CONSTELLATION_CY + yOff,
+        outAngle: 0,
         locked: true,
-        angleDeg: sec.midDeg,
-        placedGroup: hub.groupKey,
-        ...hm
+        ...tm
       });
-    }
+    });
 
-    if (polar.treeMode === "overview") {
-      for (const q of ORBIT_QUADRANTS) {
-        const sec = polar.sectorGeometry[q.group];
-        const items = polar.outerNodes.filter((n) => n.placedGroup === q.group);
-        const count = items.length;
-        const pad = Math.min(12, Math.max(5, Math.round((sec.slotEnd - sec.slotStart) * 0.12)));
-        const usableMin = sec.slotStart + pad;
-        const usableMax = sec.slotEnd - pad;
-        items.forEach((item, idx) => {
-          const deg = count === 1 ? sec.midDeg : usableMin + (idx / Math.max(1, count - 1)) * (usableMax - usableMin);
-          const ringR = count >= 3 && idx % 2 === 1 ? 356 : 298;
-          const pt = polarToCartesian(CONSTELLATION_CX, CONSTELLATION_CY, ringR, deg);
-          const orbSize = computeEntityOrbSize(item, false);
-          const sm = estimateNodeBoxMetrics(item, "entity", false, orbSize);
-          posMap.set(item.id, {
-            x: pt.x,
-            y: pt.y,
-            angleDeg: deg,
-            sectorMinDeg: usableMin,
-            sectorMaxDeg: usableMax,
-            minRingR: 256,
-            maxRingR: 404,
-            placedGroup: q.group,
-            ...sm
-          });
-        });
+    const targetIdSet = new Set(targetAnchors.map((a) => a.id));
+    const touchedByPerspective = new Set();
+    const touchedByTargets = new Map();
+    for (const e of allEdges) {
+      if (e.from === perspectiveAnchor.id && !anchorNodes.some((a) => a.id === e.to)) touchedByPerspective.add(e.to);
+      if (e.to === perspectiveAnchor.id && !anchorNodes.some((a) => a.id === e.from)) touchedByPerspective.add(e.from);
+      if (targetIdSet.has(e.from) && !anchorNodes.some((a) => a.id === e.to)) {
+        if (!touchedByTargets.has(e.to)) touchedByTargets.set(e.to, new Set());
+        touchedByTargets.get(e.to).add(e.from);
       }
-      resolveOrbAndLabelCollisions(posMap, nodeById, { polarRings: true });
-    } else {
-      // Drill-down: fan all outer nodes gracefully across a wide focused arc
-      const fg = polar.focusedGroupKey;
-      const sec = polar.sectorGeometry[fg];
-      const centerDeg = sec ? sec.midDeg : -90;
-      const count = polar.outerNodes.length;
-      const spanDeg = Math.min(200, Math.max(96, count * 22));
-      const minDeg = centerDeg - spanDeg / 2;
-      const maxDeg = centerDeg + spanDeg / 2;
-      polar.outerNodes.forEach((item, idx) => {
-        const frac = count <= 1 ? 0.5 : idx / (count - 1);
-        const deg = minDeg + frac * (maxDeg - minDeg);
-        const tierBand = idx % 3;
-        const ringR = tierBand === 0 ? 290 : tierBand === 1 ? 368 : 436;
+      if (targetIdSet.has(e.to) && !anchorNodes.some((a) => a.id === e.from)) {
+        if (!touchedByTargets.has(e.from)) touchedByTargets.set(e.from, new Set());
+        touchedByTargets.get(e.from).add(e.to);
+      }
+    }
+
+    const spineNodes = [];
+    const targetUniqueMap = new Map(targetAnchors.map((a) => [a.id, []]));
+    for (const n of nonAnchors) {
+      const tOwners = touchedByTargets.get(n.id) || new Set();
+      const connectsPerspAndTarget = touchedByPerspective.has(n.id) && tOwners.size >= 1;
+      const isSpine = Boolean(n.isPerspectiveBridge || connectsPerspAndTarget || tOwners.size >= 2 || n.isSharedBridge);
+      n.isSharedOverlap = isSpine;
+      if (isSpine) {
+        spineNodes.push(n);
+      } else if (tOwners.size >= 1) {
+        const ownerId = [...tOwners][0];
+        if (targetUniqueMap.has(ownerId)) targetUniqueMap.get(ownerId).push(n);
+      }
+    }
+
+    spineNodes
+      .sort((a, b) => Number(Boolean(b.isPerspectiveBridge)) - Number(Boolean(a.isPerspectiveBridge)) || Number(b.rarityScore || 0) - Number(a.rarityScore || 0))
+      .slice(0, 14)
+      .forEach((n, idx, list) => {
+        const offsetIdx = list.length === 1 ? 0 : idx - (list.length - 1) / 2;
+        const xShift = idx % 2 === 0 ? -36 : 36;
+        const yPos = CONSTELLATION_CY + offsetIdx * 96;
+        const sm = estimateNodeBoxMetrics(n, "entity", true, computeEntityOrbSize(n, true));
+        posMap.set(n.id, { x: CONSTELLATION_CX - 10 + xShift, y: yPos, ...sm });
+      });
+
+    const placedSatSet = new Set();
+    targetAnchors.forEach((tNode) => {
+      const ap = posMap.get(tNode.id);
+      const items = (targetUniqueMap.get(tNode.id) || [])
+        .sort((a, b) => Number(b.rarityScore || 0) - Number(a.rarityScore || 0))
+        .slice(0, tCount === 1 ? 12 : 7);
+      layoutAnchorDirectSatellites(tNode, ap, items, tCount === 1 ? 148 : 112, posMap, placedSatSet);
+    });
+
+    resolveOrbAndLabelCollisions(posMap, nodeById, null);
+
+    const placedIds = new Set(posMap.keys());
+    const displayNodes = [...anchorNodes, ...nonAnchors].filter((n) => placedIds.has(n.id));
+    const displayEdges = allEdges.filter((e) => placedIds.has(e.from) && placedIds.has(e.to));
+    const hasPerspConnection =
+      spineNodes.length > 0 ||
+      displayEdges.some((e) => (e.from === perspectiveAnchor.id && targetIdSet.has(e.to)) || (e.to === perspectiveAnchor.id && targetIdSet.has(e.from)));
+
+    let minX = CONSTELLATION_W;
+    let minY = CONSTELLATION_H;
+    let maxX = 0;
+    let maxY = 0;
+    for (const pos of posMap.values()) {
+      minX = Math.min(minX, pos.x - (pos.halfW || 80));
+      minY = Math.min(minY, pos.y - (pos.topPad || 24));
+      maxX = Math.max(maxX, pos.x + (pos.halfW || 80));
+      maxY = Math.max(maxY, pos.y + (pos.bottomPad || 44));
+    }
+
+    return {
+      mode: "perspective",
+      analysisMode: "perspective_triage",
+      treeMode: "perspective",
+      isPerspectiveLayout: true,
+      perspectiveAnchorId: perspectiveAnchor.id,
+      primaryTargetAnchorId: targetAnchors[0].id,
+      isColdOutreach: !hasPerspConnection,
+      focusedGroupKey: null,
+      anchorCount: anchorNodes.length,
+      anchorIds: new Set(anchorNodes.map((a) => a.id)),
+      posMap,
+      sectorMetaForSvg: [],
+      populatedSectors: [],
+      nodeById,
+      connectedEdgesByNode,
+      displayNodes,
+      displayEdges,
+      totalOuterCount: nonAnchors.length,
+      hiddenOuterCount: Math.max(0, nonAnchors.length - (displayNodes.length - anchorNodes.length)),
+      bounds: { minX: minX - 54, minY: minY - 48, maxX: maxX + 54, maxY: maxY + 48 }
+    };
+  }
+
+  // MODE A: Single-Company Teardown (Direct 1-hop/2-hop structural spokes grouped cleanly by non-empty role, ZERO group_hub rings)
+  if (anchorNodes.length <= 1) {
+    const primaryAnchor = anchorNodes[0] || (bridgeMap?.anchor ? { ...bridgeMap.anchor, kind: "anchor" } : null);
+    if (!primaryAnchor) {
+      return {
+        mode: "teardown",
+        analysisMode: "single_teardown",
+        treeMode: "teardown",
+        focusedGroupKey: null,
+        anchorCount: 0,
+        anchorIds: new Set(),
+        posMap,
+        sectorMetaForSvg: [],
+        populatedSectors: [],
+        nodeById,
+        connectedEdgesByNode,
+        displayNodes: [],
+        displayEdges: [],
+        totalOuterCount: 0,
+        hiddenOuterCount: 0,
+        bounds: { minX: 0, minY: 0, maxX: CONSTELLATION_W, maxY: CONSTELLATION_H }
+      };
+    }
+
+    const anchorId = primaryAnchor.id;
+    const rawConnected = allNodes.filter((n) => n.id !== anchorId && n.kind !== "anchor");
+    const activeSatIds = new Set();
+    const bestEdgeByNode = new Map();
+    for (const e of allEdges) {
+      if (e.from !== anchorId && e.to !== anchorId) continue;
+      const otherId = e.from === anchorId ? e.to : e.from;
+      activeSatIds.add(otherId);
+      const prev = bestEdgeByNode.get(otherId);
+      if (!prev || Number(e.rarityScore || 0) > Number(prev.rarityScore || 0)) {
+        bestEdgeByNode.set(otherId, e);
+      }
+    }
+
+    const satellites = rawConnected
+      .filter((n) => activeSatIds.has(n.id))
+      .map((n) => {
+        const edge = bestEdgeByNode.get(n.id);
+        const sRole = deriveStructuralRoleFrontend(edge || n);
+        return {
+          ...n,
+          structuralRole: sRole,
+          placedRole: sRole
+        };
+      })
+      .sort((a, b) => Number(b.rarityScore || 0) - Number(a.rarityScore || 0));
+
+    const cappedSatellites = [];
+    const perSectorCap = 8;
+    const byRoleBuckets = Object.fromEntries(STRUCTURAL_SECTOR_ORDER.map((r) => [r, []]));
+    for (const sat of satellites) {
+      const bucket = byRoleBuckets[sat.placedRole] || byRoleBuckets.governance;
+      if (bucket.length < perSectorCap) {
+        bucket.push(sat);
+        cappedSatellites.push(sat);
+      }
+    }
+
+    const populatedRoles = STRUCTURAL_SECTOR_ORDER.filter((r) => byRoleBuckets[r].length > 0);
+    const totalPop = populatedRoles.reduce((sum, r) => sum + byRoleBuckets[r].length, 0) || 1;
+    let cursorDeg = -140;
+    const sectorGap = populatedRoles.length > 1 ? 12 : 0;
+    const usableArc = 360 - sectorGap * populatedRoles.length;
+    const sectorAngles = new Map();
+    for (const role of populatedRoles) {
+      const share = byRoleBuckets[role].length / totalPop;
+      const span = Math.max(54, Math.round(share * usableArc));
+      const startDeg = cursorDeg;
+      const endDeg = startDeg + span;
+      sectorAngles.set(role, {
+        role,
+        label: STRUCTURAL_ROLE_META[role]?.label || role,
+        shortLabel: STRUCTURAL_ROLE_META[role]?.shortLabel || role,
+        startDeg,
+        endDeg,
+        midDeg: (startDeg + endDeg) / 2,
+        count: byRoleBuckets[role].length
+      });
+      cursorDeg = endDeg + sectorGap;
+    }
+
+    const displayNodes = [{ ...primaryAnchor, kind: "anchor" }, ...cappedSatellites];
+    const satIdSet = new Set(displayNodes.map((n) => n.id));
+    const displayEdges = allEdges.filter((e) => satIdSet.has(e.from) && satIdSet.has(e.to));
+
+    for (const n of displayNodes) {
+      nodeById.set(n.id, n);
+      connectedEdgesByNode.set(n.id, []);
+    }
+    for (const e of displayEdges) {
+      if (connectedEdgesByNode.has(e.from)) connectedEdgesByNode.get(e.from).push(e);
+      if (connectedEdgesByNode.has(e.to)) connectedEdgesByNode.get(e.to).push(e);
+    }
+
+    const am = estimateNodeBoxMetrics(primaryAnchor, "anchor");
+    posMap.set(anchorId, { x: CONSTELLATION_CX, y: CONSTELLATION_CY, locked: true, ...am });
+
+    for (const role of populatedRoles) {
+      const sec = sectorAngles.get(role);
+      const items = byRoleBuckets[role];
+      const pad = Math.min(10, Math.max(4, Math.round((sec.endDeg - sec.startDeg) * 0.12)));
+      const uMin = sec.startDeg + pad;
+      const uMax = sec.endDeg - pad;
+      items.forEach((item, idx) => {
+        const deg = items.length === 1 ? sec.midDeg : uMin + (idx / Math.max(1, items.length - 1)) * (uMax - uMin);
+        const ringR = items.length >= 3 && idx % 2 === 1 ? 336 : 254;
         const pt = polarToCartesian(CONSTELLATION_CX, CONSTELLATION_CY, ringR, deg);
-        const orbSize = computeEntityOrbSize(item, false);
-        const sm = estimateNodeBoxMetrics(item, "entity", false, orbSize);
+        const sm = estimateNodeBoxMetrics(item, "entity", false, computeEntityOrbSize(item, false));
         posMap.set(item.id, {
           x: pt.x,
           y: pt.y,
           angleDeg: deg,
-          sectorMinDeg: minDeg - 6,
-          sectorMaxDeg: maxDeg + 6,
-          minRingR: 255,
-          maxRingR: 480,
-          placedGroup: fg,
+          sectorMinDeg: uMin,
+          sectorMaxDeg: uMax,
+          minRingR: 214,
+          maxRingR: 396,
+          placedRole: role,
           ...sm
         });
       });
-      resolveOrbAndLabelCollisions(posMap, nodeById, { polarRings: true });
     }
+
+    resolveOrbAndLabelCollisions(posMap, nodeById, { polarRings: true });
 
     let minX = CONSTELLATION_W;
     let minY = CONSTELLATION_H;
@@ -1306,31 +1658,32 @@ function layoutBridgeMapNodes(bridgeMap) {
     }
 
     return {
-      mode: "polar",
-      treeMode: polar.treeMode,
-      focusedGroupKey: polar.focusedGroupKey,
-      anchorCount: anchorNodes.length,
-      anchorIds: new Set(polar.primaryAnchor ? [polar.primaryAnchor.id] : []),
+      mode: "teardown",
+      analysisMode,
+      treeMode: "teardown",
+      focusedGroupKey: null,
+      anchorCount: 1,
+      anchorIds: new Set([anchorId]),
       posMap,
-      sectorMetaForSvg: Object.values(polar.sectorGeometry),
+      sectorMetaForSvg: [...sectorAngles.values()],
+      populatedSectors: [...sectorAngles.values()],
       nodeById,
       connectedEdgesByNode,
       displayNodes,
-      displayEdges: polar.displayEdges,
-      totalOuterCount: polar.totalOuterCount,
-      hiddenOuterCount: polar.hiddenOuterCount,
+      displayEdges,
+      totalOuterCount: satellites.length,
+      hiddenOuterCount: Math.max(0, satellites.length - cappedSatellites.length),
       bounds: {
-        minX: minX - 44,
-        minY: minY - 44,
-        maxX: maxX + 44,
-        maxY: maxY + 44
+        minX: minX - 48,
+        minY: minY - 48,
+        maxX: maxX + 48,
+        maxY: maxY + 48
       }
     };
   }
 
-  // MODE B: Free Multi-Entity Explorer Layout (2..20 focal hubs + centroid shared bridges + grouped satellite branches)
+  // MODE B: Multi-Entity Ecosystem & Peer Map (Zero per-anchor group_hub bubbles; clean direct satellites + Center Bridge Spine)
   const rawNonAnchors = allNodes.filter((n) => n.kind !== "anchor" && !n.isFocalEntity);
-  const rawNodeById = new Map([...anchorNodes, ...rawNonAnchors].map((n) => [n.id, n]));
   const activeEdges = allEdges;
   const activeNodeIds = new Set(anchorNodes.map((a) => a.id));
   for (const e of activeEdges) {
@@ -1349,7 +1702,6 @@ function layoutBridgeMapNodes(bridgeMap) {
     connectedEdgesByNode.get(e.to).push(e);
   }
 
-  // Determine which anchor owns each unique non-anchor node
   const anchorIdSet = new Set(anchorNodes.map((a) => a.id));
   const ownersOfNode = new Map();
   for (const e of activeEdges) {
@@ -1381,82 +1733,7 @@ function layoutBridgeMapNodes(bridgeMap) {
   const countA = anchorNodes.length;
   const anchorRingRadius = countA === 2 ? 330 : Math.max(360, Math.round(countA * 78));
   const sortedShared = [...sharedNodes].sort((a, b) => Number(b.rarityScore || 0) - Number(a.rarityScore || 0));
-
-  const groupedHubNodes = [];
-  const groupedHubEdges = [];
-  const groupedSatIdSet = new Set();
-
-  const layoutAnchorGroupedSatellites = (aNode, ap, items, spanDeg) => {
-    const groupsActive = ORBIT_QUADRANTS.map((q) => ({
-      group: q.group,
-      label: q.label,
-      sats: items.filter((s) => deriveContributionGroupFrontend(s) === q.group)
-    })).filter((g) => g.sats.length > 0);
-    if (!groupsActive.length) return;
-
-    const gCount = groupsActive.length;
-    groupsActive.forEach((grp, gIdx) => {
-      const gDeg = gCount === 1 ? ap.outAngle : ap.outAngle - spanDeg / 2 + (gIdx / (gCount - 1)) * spanDeg;
-      const hubPos = polarToCartesian(ap.x, ap.y, 146, gDeg);
-      const hubId = `group_hub:${aNode.id}:${grp.group}`;
-      const hubNode = {
-        id: hubId,
-        kind: "group_hub",
-        groupKey: grp.group,
-        contributionGroup: grp.group,
-        label: grp.label,
-        subtitle: CONTRIBUTION_VISUAL_META[grp.group]?.subtitle || "",
-        clueMetric: `${grp.sats.length} ${grp.sats.length === 1 ? "path" : "paths"}`,
-        entityCount: grp.sats.length,
-        edgeCount: grp.sats.length,
-        visualWeight: 0.78,
-        focalEntityIds: [aNode.id]
-      };
-      groupedHubNodes.push(hubNode);
-      nodeById.set(hubId, hubNode);
-      const hm = estimateNodeBoxMetrics(hubNode, "group_hub", false, computeGroupHubOrbSize(0.78));
-      posMap.set(hubId, { x: hubPos.x, y: hubPos.y, ...hm });
-
-      groupedHubEdges.push({
-        id: `spoke:${aNode.id}->${hubId}`,
-        from: aNode.id,
-        to: hubId,
-        contributionGroup: grp.group,
-        topSourceRank: "PRIMARY",
-        rarityScore: 8,
-        isOverviewSpoke: true,
-        label: `${grp.label} Group`,
-        hubEntityCount: grp.sats.length
-      });
-
-      const sCount = grp.sats.length;
-      const satSpread = Math.min(44, Math.max(18, sCount * 14));
-      grp.sats.forEach((s, sIdx) => {
-        const sDeg = sCount === 1 ? gDeg : gDeg - satSpread / 2 + (sIdx / (sCount - 1)) * satSpread;
-        const sRad = 278 + (sIdx % 2) * 44;
-        const pt = polarToCartesian(ap.x, ap.y, sRad, sDeg);
-        const sm = estimateNodeBoxMetrics(s, "entity", false, computeEntityOrbSize(s, false));
-        posMap.set(s.id, { x: pt.x, y: pt.y, isTopUniqueLabel: sIdx < 2, ...sm });
-        groupedSatIdSet.add(s.id);
-
-        const origEdge = activeEdges.find(
-          (e) => (e.from === aNode.id && e.to === s.id) || (e.to === aNode.id && e.from === s.id)
-        );
-        if (origEdge) {
-          groupedHubEdges.push({
-            ...origEdge,
-            id: `branch:${hubId}->${s.id}`,
-            from: hubId,
-            to: s.id,
-            realFrom: origEdge.from,
-            realTo: origEdge.to,
-            realNodeId: s.id,
-            contributionGroup: grp.group
-          });
-        }
-      });
-    });
-  };
+  const placedSatIdSet = new Set();
 
   if (countA === 2) {
     const p0 = { x: CONSTELLATION_CX - 315, y: CONSTELLATION_CY + 100, outAngle: 162 };
@@ -1492,7 +1769,7 @@ function layoutBridgeMapNodes(bridgeMap) {
       const items = (uniqueByAnchor.get(aNode.id) || [])
         .sort((a, b) => Number(b.rarityScore || 0) - Number(a.rarityScore || 0))
         .slice(0, 10);
-      layoutAnchorGroupedSatellites(aNode, ap, items, 136);
+      layoutAnchorDirectSatellites(aNode, ap, items, 138, posMap, placedSatIdSet);
     });
   } else {
     const anchorDegs =
@@ -1548,18 +1825,15 @@ function layoutBridgeMapNodes(bridgeMap) {
       const items = (uniqueByAnchor.get(aNode.id) || [])
         .sort((a, b) => Number(b.rarityScore || 0) - Number(a.rarityScore || 0))
         .slice(0, perAnchorLimit);
-      layoutAnchorGroupedSatellites(aNode, ap, items, span);
+      layoutAnchorDirectSatellites(aNode, ap, items, span, posMap, placedSatIdSet);
     });
   }
 
   resolveOrbAndLabelCollisions(posMap, nodeById, null);
 
   const placedIds = new Set(posMap.keys());
-  const placedNodes = [...anchorNodes, ...groupedHubNodes, ...nonAnchors].filter((n) => placedIds.has(n.id));
-  const directSharedEdges = activeEdges.filter(
-    (e) => placedIds.has(e.from) && placedIds.has(e.to) && !groupedSatIdSet.has(e.from) && !groupedSatIdSet.has(e.to)
-  );
-  const placedEdges = [...directSharedEdges, ...groupedHubEdges.filter((e) => placedIds.has(e.from) && placedIds.has(e.to))];
+  const placedNodes = [...anchorNodes, ...nonAnchors].filter((n) => placedIds.has(n.id));
+  const placedEdges = activeEdges.filter((e) => placedIds.has(e.from) && placedIds.has(e.to));
 
   let minX = CONSTELLATION_W;
   let minY = CONSTELLATION_H;
@@ -1574,6 +1848,7 @@ function layoutBridgeMapNodes(bridgeMap) {
 
   return {
     mode: "explorer",
+    analysisMode,
     treeMode: "explorer",
     anchorRingRadius,
     focusedGroupKey: null,
@@ -1581,6 +1856,7 @@ function layoutBridgeMapNodes(bridgeMap) {
     anchorIds: anchorIdSet,
     posMap,
     sectorMetaForSvg: [],
+    populatedSectors: [],
     nodeById,
     connectedEdgesByNode,
     displayNodes: placedNodes,
@@ -2115,37 +2391,70 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
   const backBtnEl = $("#mapDrilldownBackBtn");
   const backBadgeEl = $("#mapDrilldownGroupBadge");
   if (backBtnEl) {
-    const showBack = layout.mode === "polar" && layout.treeMode === "drilldown" && Boolean(layout.focusedGroupKey);
-    backBtnEl.hidden = !showBack;
-    if (showBack && backBadgeEl) {
-      const grpMeta = CONTRIBUTION_VISUAL_META[layout.focusedGroupKey];
-      backBadgeEl.textContent = `${grpMeta?.headerLabel || layout.focusedGroupKey.toUpperCase()} (${outerNodes.length} paths)`;
-      backBadgeEl.dataset.group = layout.focusedGroupKey;
-    }
+    backBtnEl.hidden = true;
+    if (backBadgeEl) backBadgeEl.textContent = "";
   }
 
   const defsMarkup = buildConstellationSvgDefs();
   let guidesMarkup = "";
-  if (layout.mode === "polar") {
-    const isDrill = layout.treeMode === "drilldown";
-    const spacing = layout.linkDistanceFactor || 1;
-    const outerRadius = (isDrill ? 468 : 362) * spacing;
-    const orbitRadii = isDrill
-      ? [
-          { r: 156 * spacing, cls: "orbit-guide-ring" },
-          { r: 290 * spacing, cls: "orbit-guide-ring is-dashed" },
-          { r: 428 * spacing, cls: "orbit-guide-ring" }
-        ]
-      : [
-          { r: 158 * spacing, cls: "orbit-guide-ring" },
-          { r: 304 * spacing, cls: "orbit-guide-ring is-dashed" }
-        ];
+  const spacing = layout.linkDistanceFactor || 1;
+  if (layout.mode === "teardown" || layout.mode === "polar") {
+    const orbitRadii = [
+      { r: 248 * spacing, cls: "orbit-guide-ring" },
+      { r: 342 * spacing, cls: "orbit-guide-ring is-dashed" }
+    ];
+    const anchorPos = layout.posMap.get(layout.displayNodes?.[0]?.id) || { x: CONSTELLATION_CX, y: CONSTELLATION_CY };
+    const sectorLabelsMarkup = asList(layout.populatedSectors)
+      .map((sec) => {
+        const sectorNodes = outerNodes.filter((n) => layout.posMap.get(n.id)?.placedRole === sec.role);
+        let maxR = 160 * spacing;
+        let angleSumSin = 0;
+        let angleSumCos = 0;
+        for (const n of sectorNodes) {
+          const p = layout.posMap.get(n.id);
+          if (!p) continue;
+          const dx = p.x - anchorPos.x;
+          const dy = p.y - anchorPos.y;
+          const d = Math.hypot(dx, dy);
+          if (d > maxR) maxR = d;
+          angleSumCos += Math.cos(Math.atan2(dy, dx));
+          angleSumSin += Math.sin(Math.atan2(dy, dx));
+        }
+        const labelAngle = sectorNodes.length
+          ? (Math.atan2(angleSumSin, angleSumCos) * 180) / Math.PI
+          : sec.midDeg;
+        const labelR = maxR + 58;
+        const pt = polarToCartesian(anchorPos.x, anchorPos.y, labelR, labelAngle);
+        const anchorAlign = Math.abs(Math.cos((labelAngle * Math.PI) / 180)) < 0.25
+          ? "middle"
+          : Math.cos((labelAngle * Math.PI) / 180) > 0
+            ? "start"
+            : "end";
+        return `<text class="sector-cluster-label" x="${pt.x.toFixed(1)}" y="${pt.y.toFixed(1)}" text-anchor="${anchorAlign}">${escapeHtml(sec.label.toUpperCase())} (${sec.count})</text>`;
+      })
+      .join("");
 
     guidesMarkup = `
-      ${orbitRadii.map((rg) => `<circle class="${rg.cls}" cx="${CONSTELLATION_CX}" cy="${CONSTELLATION_CY}" r="${rg.r}" />`).join("")}
+      ${orbitRadii.map((rg) => `<circle class="${rg.cls}" cx="${anchorPos.x.toFixed(1)}" cy="${anchorPos.y.toFixed(1)}" r="${rg.r}" />`).join("")}
+      ${sectorLabelsMarkup}
+    `;
+  } else if (layout.mode === "perspective") {
+    const pPos = layout.posMap.get(layout.perspectiveAnchorId);
+    const tPos = layout.posMap.get(layout.primaryTargetAnchorId);
+    let coldMarkup = "";
+    if (layout.isColdOutreach && pPos && tPos) {
+      const mx = (pPos.x + tPos.x) / 2;
+      const my = (pPos.y + tPos.y) / 2 - 26;
+      coldMarkup = `
+        <line class="perspective-cold-line" x1="${pPos.x.toFixed(1)}" y1="${pPos.y.toFixed(1)}" x2="${tPos.x.toFixed(1)}" y2="${tPos.y.toFixed(1)}" />
+        <text class="perspective-cold-label" x="${mx.toFixed(1)}" y="${my.toFixed(1)}" text-anchor="middle">COLD OUTREACH · NO SHARED CALA PATH</text>
+      `;
+    }
+    guidesMarkup = `
+      <circle class="orbit-guide-ring is-dashed" cx="${CONSTELLATION_CX}" cy="${CONSTELLATION_CY}" r="${420 * spacing}" />
+      ${coldMarkup}
     `;
   } else {
-    const spacing = layout.linkDistanceFactor || 1;
     const ringR = Math.round((layout.anchorRingRadius || 360) * spacing);
     if (anchorNodes.length === 2) {
       guidesMarkup = `
@@ -2164,21 +2473,30 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
   svgEl.innerHTML = `${defsMarkup}${guidesMarkup}${edgesMarkup}`;
 
   let nodesHtml = "";
+  let targetHubCounter = 0;
 
   anchorNodes.forEach((aNode, aIdx) => {
     const p = layout.posMap.get(aNode.id);
     if (!p) return;
     const isSel = state.selectedNodeId === aNode.id;
-    const pal = ANCHOR_PALETTE[(aNode.anchorIndex ?? aIdx) % ANCHOR_PALETTE.length];
-    const isMultiHub = layout.mode !== "polar";
+    const isPersp = Boolean(aNode.isPerspectiveEntity || aNode.id === layout.perspectiveAnchorId);
+    if (!isPersp) targetHubCounter += 1;
+    const pal = isPersp
+      ? { hex: "#FF6B5B", glow: "rgba(255, 107, 91, 0.54)", edge: "#B83B2E" }
+      : ANCHOR_PALETTE[(aNode.anchorIndex ?? aIdx) % ANCHOR_PALETTE.length];
+    const isMultiHub = anchorNodes.length >= 2;
     const fullLabel = formatReadableEntityLabel(nameOf(aNode), aNode.date);
     const conciseLabel = formatCompactEntityName(fullLabel, 2, 18);
-    const compareTag = isMultiHub ? `Hub #${aIdx + 1} · ${typeBadge(aNode)}` : typeBadge(aNode);
+    const compareTag = isPersp
+      ? `MY PERSPECTIVE · ${typeBadge(aNode)}`
+      : isMultiHub
+        ? `Target #${targetHubCounter} · ${typeBadge(aNode)}`
+        : typeBadge(aNode);
 
     nodesHtml += `
       <button
         type="button"
-        class="map-node is-physics-enabled node-anchor-orb ${isMultiHub ? "is-compare-anchor" : ""} ${isSel ? "is-selected" : ""}"
+        class="map-node is-physics-enabled node-anchor-orb ${isMultiHub ? "is-compare-anchor" : ""} ${isPersp ? "is-perspective-anchor" : ""} ${isSel ? "is-selected" : ""}"
         data-node-kind="anchor"
         data-node-id="${escapeHtml(aNode.id)}"
         aria-label="${escapeHtml(fullLabel)}"
@@ -2247,12 +2565,17 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
     const readable = formatReadableEntityLabel(nameOf(ent), ent.date);
     const shortName = formatCompactEntityName(readable, 2, 19);
     const tTag = typeBadge(ent);
+    const sharedBadgeLabel = ent.isSharedOverlap
+      ? getSharedImpactBadge(ent, layout.connectedEdgesByNode?.get(ent.id))
+      : "";
     const tierClass =
-      layout.mode === "polar"
-        ? "is-tier-2"
-        : ent.isSharedOverlap || outerNodes.length <= 36 || p.isTopUniqueLabel
-          ? "is-tier-1"
-          : "is-tier-2";
+      layout.mode === "teardown"
+        ? (outerNodes.length <= 24 ? "is-tier-1" : "is-tier-2")
+        : layout.mode === "polar"
+          ? "is-tier-2"
+          : ent.isSharedOverlap || outerNodes.length <= 36 || p.isTopUniqueLabel
+            ? "is-tier-1"
+            : "is-tier-2";
 
     nodesHtml += `
       <button
@@ -2261,10 +2584,10 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
         data-node-kind="entity"
         data-node-id="${escapeHtml(ent.id)}"
         data-contribution-group="${escapeHtml(cg)}"
-        aria-label="${escapeHtml(ent.isSharedOverlap ? `Shared bridge: ${readable}` : readable)}"
+        aria-label="${escapeHtml(ent.isSharedOverlap ? `${sharedBadgeLabel}: ${readable}` : readable)}"
         style="left:${p.x.toFixed(1)}px; top:${p.y.toFixed(1)}px; --orb-color:${colHex}; --orb-glow:${colGlow}; --orb-core-edge:${colEdge}; --entity-orb-size:${orbSize}px;"
       >
-        ${ent.isSharedOverlap ? `<span class="orb-shared-bridge-badge" aria-hidden="true">↔ Shared</span>` : ""}
+        ${ent.isSharedOverlap ? `<span class="orb-shared-bridge-badge" aria-hidden="true">${escapeHtml(sharedBadgeLabel)}</span>` : ""}
         <span class="orb-core-wrap">
           <span class="orb-halo-ring" aria-hidden="true"></span>
           <span class="orb-core-dot" aria-hidden="true"></span>
@@ -2321,7 +2644,13 @@ function renderExploredEntitiesBox() {
     clearQuickBtn.hidden = count === 0;
   }
   if (modeBadgeEl) {
-    modeBadgeEl.textContent = count >= 2 ? `Explorer · ${count}` : "360° Polar";
+    const am = getActiveAnalysisMode();
+    modeBadgeEl.textContent =
+      am === "perspective_triage"
+        ? `Triage · ${state.perspectiveEntity?.name || "Firm"}`
+        : am === "single_teardown"
+          ? "Company Teardown"
+          : `Ecosystem · ${count}`;
   }
 
   listEl.innerHTML = state.pinnedEntities
@@ -2338,6 +2667,83 @@ function renderExploredEntitiesBox() {
       `;
     })
     .join("");
+}
+
+function syncPerspectiveControl() {
+  const btn = $("#perspectivePickerBtn");
+  const label = $("#perspectivePickerLabel");
+  const clearBtn = $("#perspectiveClearBtn");
+  const p = state.perspectiveEntity;
+  if (label) {
+    const shortName = p?.name
+      ? (p.name.length > 22 ? `${p.name.slice(0, 20).trimEnd()}…` : p.name)
+      : "Neutral";
+    label.textContent = `Perspective: ${shortName}`;
+  }
+  if (btn) btn.classList.toggle("is-active", Boolean(p?.id || p?.name));
+  if (clearBtn) clearBtn.hidden = !Boolean(p?.id || p?.name);
+
+  document.querySelectorAll("#perspectiveQuickRow [data-perspective-reset]").forEach((el) => {
+    el.classList.toggle("is-selected", !Boolean(p?.id || p?.name));
+  });
+  document.querySelectorAll("#perspectiveQuickRow [data-perspective-quick]").forEach((el) => {
+    const q = String(el.dataset.perspectiveQuick || "").toLowerCase();
+    const isMatch = Boolean(p?.name && p.name.toLowerCase().includes(q.split(" ")[0]));
+    el.classList.toggle("is-selected", isMatch);
+  });
+}
+
+function syncLegendForActiveMode() {
+  const mode = getActiveAnalysisMode();
+  const gridEl = $("#legendPopGrid");
+  const ctrlEl = $("#legendPopControls");
+  if (gridEl) {
+    if (mode === "perspective_triage") {
+      const pName = escapeHtml(state.perspectiveEntity?.name || "My Firm");
+      gridEl.innerHTML = `
+        <span class="leg-item"><span class="fam-dot fam-dot-feeder"></span> Warm Access (Paths from ${pName})</span>
+        <span class="leg-item"><span class="fam-dot fam-dot-alumni"></span> Lineage &amp; Governance</span>
+        <span class="leg-item"><span class="fam-dot fam-dot-event"></span> Timing (&le;18m Catalyst vs History)</span>
+        <span class="leg-item"><span class="fam-dot fam-dot-twin"></span> Caution (Portfolio Overlap &amp; Rivals)</span>
+      `;
+    } else if (mode === "ecosystem_compare") {
+      gridEl.innerHTML = `
+        <span class="leg-item"><span class="fam-dot fam-dot-feeder"></span> Capital &amp; Commercial Value Chain</span>
+        <span class="leg-item"><span class="fam-dot fam-dot-alumni"></span> Governance, Talent &amp; M&amp;A</span>
+        <span class="leg-item"><span class="fam-dot fam-dot-event"></span> Comparative Momentum (&le;18m)</span>
+        <span class="leg-item"><span class="fam-dot fam-dot-twin"></span> Dual Backers &amp; Competitive Clashes</span>
+      `;
+    } else {
+      gridEl.innerHTML = `
+        <span class="leg-item"><span class="fam-dot fam-dot-feeder"></span> Capital Backers &amp; Value Chain</span>
+        <span class="leg-item"><span class="fam-dot fam-dot-alumni"></span> Governance, Leadership &amp; M&amp;A</span>
+        <span class="leg-item"><span class="fam-dot fam-dot-event"></span> Catalysts (&le;18m) &amp; History</span>
+        <span class="leg-item"><span class="fam-dot fam-dot-twin"></span> Rivals &amp; Disclosure Gaps</span>
+      `;
+    }
+  }
+  if (ctrlEl) {
+    ctrlEl.textContent =
+      mode === "single_teardown"
+        ? "Direct structural spokes grouped by role (no artificial rings) · Hover edges for provenance · Click any Entity orb for Cala Dossier"
+        : mode === "perspective_triage"
+          ? "Asymmetric bridges from your selected firm on left to target(s) on right · Click any Entity orb for full Cala Dossier"
+          : "Center spine surfaces shared backers, bottlenecks & talent · Outer spokes show unique direct links · Scroll/trackpad pans & zooms";
+  }
+
+  const labelMap = mode === "perspective_triage"
+    ? { access: "Access", lineage: "Lineage", timing: "Timing", caution: "Caution" }
+    : mode === "single_teardown"
+      ? { access: "Capital & Supply", lineage: "Governance & M&A", timing: "Catalysts", caution: "Rivals & Gaps" }
+      : { access: "Backers & Chain", lineage: "Talent & M&A", timing: "Momentum", caution: "Risks" };
+  document.querySelectorAll("#bridgeFamilySwitcher [data-contribution-group]").forEach((btn) => {
+    const cg = btn.dataset.contributionGroup || "all";
+    if (cg === "all" || !labelMap[cg]) return;
+    const textNodes = [...btn.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+    if (textNodes.length) {
+      textNodes[0].textContent = `${labelMap[cg]} `;
+    }
+  });
 }
 
 function syncConstellationControls() {
@@ -2384,6 +2790,8 @@ function syncConstellationControls() {
     filterPill.textContent = String(filterCount);
   }
 
+  syncPerspectiveControl();
+  syncLegendForActiveMode();
   renderExploredEntitiesBox();
 }
 
@@ -2439,24 +2847,37 @@ const CONTEXT_RELATION_SET = new Set([
 
 function deriveEdgeVerdict(edge, targetNode = null) {
   if (!edge) return { key: "context", label: "Neutral Context", shortEffect: "Background metadata." };
+  const mode = getActiveAnalysisMode();
   const group = deriveContributionGroupFrontend(edge);
   const rel = String(edge.relation || edge.relationType || "").toUpperCase();
+  const structuralRole = deriveStructuralRoleFrontend(edge);
+  const isAcquisition = Boolean(edge.isAcquisition || rel.includes("ACQUIRED"));
+  const recency = classifyTimingRecencyFrontend(edge);
   const targetType = String(targetNode?.entityType || targetNode?.kind || "").toLowerCase();
 
   if (
-    group === "caution" ||
     edge.isCautionFlag ||
     rel.includes("COMPET") ||
     rel.includes("DISPUTE") ||
     rel.includes("LITIGAT") ||
-    rel.includes("ACQUIRED")
+    (group === "caution" && !isAcquisition)
   ) {
     return {
       key: "caution",
       label: "Caution / Risk",
       shortEffect: edge.isSharedBridge
         ? "Direct competitive overlap or conflict - verify differentiation and customer lock-in."
-        : "Risk or M&A conflict signal - verify impact before proceeding."
+        : "Competitive threat, dispute, or sequence risk flag - verify before proceeding."
+    };
+  }
+
+  if (isAcquisition) {
+    return {
+      key: "context",
+      label: "Corporate M&A",
+      shortEffect: edge.isSharedBridge
+        ? "Shared corporate acquisition or subsidiary structure across mapped entities."
+        : "Corporate M&A / capital allocation event (not flagged as conflict unless disputed)."
     };
   }
 
@@ -2468,48 +2889,123 @@ function deriveEdgeVerdict(edge, targetNode = null) {
     };
   }
 
-  if (group === "timing" || edge.isTimingCatalyst) {
+  if (structuralRole === "commercial") {
+    if (edge.touchesPerspective || edge.isPerspectiveBridge) {
+      return {
+        key: "beneficial",
+        label: "Commercial Bridge (Warm)",
+        shortEffect: "Commercial tie connecting your selected firm perspective and target — supports warm reference or ecosystem diligence."
+      };
+    }
+    return {
+      key: "context",
+      label: "Commercial Value Chain",
+      shortEffect: "Supplier, partner, or commercial value-chain tie — evaluate dependency leverage rather than investor warm outreach."
+    };
+  }
+
+  if (group === "timing" || edge.isTimingCatalyst || recency.isRecentCatalyst || recency.isHistoricalMilestone) {
+    if (recency.isRecentCatalyst) {
+      return {
+        key: "beneficial",
+        label: "Active Catalyst (<=18m)",
+        shortEffect: `Recent dated catalyst${edge.date ? ` (${edge.date})` : ""} within 18 months indicating active momentum.`
+      };
+    }
+    if (recency.isHistoricalMilestone) {
+      return {
+        key: "context",
+        label: "Historical Milestone (>18m)",
+        shortEffect: `Historical capital or corporate milestone${edge.date ? ` (${edge.date})` : ""} older than 18 months.`
+      };
+    }
+    return {
+      key: "context",
+      label: "Dated Milestone",
+      shortEffect: "Verified historical event providing operating timeline context."
+    };
+  }
+
+  if (edge.touchesPerspective || edge.isPerspectiveBridge) {
     return {
       key: "beneficial",
-      label: "Catalyst (Beneficial)",
-      shortEffect: `Dated momentum signal${edge.date ? ` (${edge.date})` : ""} supporting active timing conviction.`
+      label: edge.isLead ? "Warm Access · Lead" : "Warm Route (Perspective)",
+      shortEffect: `Direct or 2-hop verified bridge from ${state.perspectiveEntity?.name || "your firm"} supporting warm origination.`
     };
   }
 
   if (edge.isSharedBridge) {
     return {
       key: "beneficial",
-      label: "Beneficial Bridge",
-      shortEffect: "Shared connection across mapped companies - strong warm intro or read-through path."
+      label: mode === "ecosystem_compare" ? "Shared Ecosystem Tie" : "Beneficial Bridge",
+      shortEffect: mode === "ecosystem_compare"
+        ? "Shared connection linking multiple mapped entities along the center spine."
+        : "Shared connection across mapped companies - strong reference or read-through path."
     };
   }
 
-  if (group === "lineage") {
+  if (structuralRole === "governance" || group === "lineage") {
     return {
       key: "beneficial",
-      label: "Beneficial Lineage",
-      shortEffect: "Verified founder or executive operator tie - supports team diligence and backchanneling."
+      label: "Governance & Leadership",
+      shortEffect: "Verified founder, executive, board, or corporate control relationship."
+    };
+  }
+
+  if (mode === "perspective_triage") {
+    return {
+      key: edge.isLead ? "beneficial" : "context",
+      label: edge.isLead ? "Lead Backer (3rd-Party)" : "Cap-Table Backer",
+      shortEffect: edge.isLead
+        ? "Lead investor on target's cap table — check syndicate overlap relative to your firm perspective."
+        : "Verified external backer on target's cap table."
     };
   }
 
   return {
     key: "beneficial",
-    label: edge.isLead ? "Beneficial (Lead)" : "Beneficial Access",
+    label: edge.isLead ? "Lead Capital Backer" : "Capital Ownership",
     shortEffect: edge.isLead
-      ? "Lead investor relationship - high-conviction warm intro and syndicate anchor."
-      : "Verified investor or partner link - actionable access or syndicate signal."
+      ? "Lead investor stake — high governance influence in ownership structure."
+      : "Verified institutional or strategic capital investment link."
   };
 }
 
 function buildFourFactorDecisionSummary(bridgeMap) {
   const di = bridgeMap?.decisionIntelligence;
   const quarantinedCount = asList(bridgeMap?.quarantinedAnomalies).length;
+  const fallbackMode = getActiveAnalysisMode(bridgeMap);
+  const modeDefaultLabels = {
+    single_teardown: {
+      access: { displayLabel: "Capital & Value Chain", question: "Who backs it & who powers its commercial stack?" },
+      lineage: { displayLabel: "Governance, Leadership & M&A", question: "Who leads, controls, or was acquired by it?" },
+      timing: { displayLabel: "Recent Catalysts vs. History", question: "What happened in the last 18 months vs. historical rounds?" },
+      caution: { displayLabel: "Rivals, Anomalies & Gaps", question: "What competitive threats, anomalies, or missing Cala disclosures exist?" }
+    },
+    ecosystem_compare: {
+      access: { displayLabel: "Shared Backers & Bottlenecks", question: "Where do cap tables, suppliers, or partnerships converge?" },
+      lineage: { displayLabel: "Talent & Corporate Lineage", question: "Which leaders, founders, or M&A links span multiple peers?" },
+      timing: { displayLabel: "Comparative Momentum", question: "Which peers carry recent catalysts (<=18m) vs. older history?" },
+      caution: { displayLabel: "Dual-Backer & Rivalry Risk", question: "What dual-backed conflicts, bottlenecks, or rivalries appear?" }
+    },
+    perspective_triage: {
+      access: { displayLabel: "Warm Intro Access", question: "What verified intro bridge connects your firm to the target(s)?" },
+      lineage: { displayLabel: "Team & Spinout Lineage", question: "Who founded or leads here, and where are reference backchannels?" },
+      timing: { displayLabel: "Active Timing Window", question: "Do recent <=18m catalysts establish an active deal window?" },
+      caution: { displayLabel: "Portfolio & Risk Flags", question: "What portfolio overlap or competitive conflict needs diligence?" }
+    }
+  };
   if (di?.factors && di?.executive) {
+    const activeM = di.executive.analysisMode || fallbackMode;
+    const labelCfg = modeDefaultLabels[activeM] || modeDefaultLabels.ecosystem_compare;
     const factors = ["access", "lineage", "timing", "caution"].map((group) => {
       const f = di.factors[group] || {};
       return {
         group,
         label: f.label || group,
+        displayLabel: f.displayLabel || labelCfg[group]?.displayLabel || f.label || group,
+        sectionQuestion: f.sectionQuestion || labelCfg[group]?.question || GROUP_DECISION_QUESTIONS[group] || "",
+        structuralBreakdown: f.structuralBreakdown || null,
         count: Number(f.count || 0),
         sharedCount: Number(f.sharedCount || 0),
         signalStrength: Number(f.signalStrength || 0),
@@ -2517,7 +3013,7 @@ function buildFourFactorDecisionSummary(bridgeMap) {
         effectClass: f.tierClass || "is-neutral",
         line: f.headline || "No verified signal mapped.",
         investmentImpact: f.investmentImpact || "",
-        actionableCheck: f.actionableCheck || GROUP_DECISION_QUESTIONS[group] || "",
+        actionableCheck: f.actionableCheck || f.sectionQuestion || GROUP_DECISION_QUESTIONS[group] || "",
         provenanceMix: f.provenanceMix || { filing: 0, primary: 0, press: 0, aggregator: 0, total: 0, verifiedSharePct: 0 },
         coverage: f.coverage || { totalPaths: 0, sharedBridgeCount: 0, hubCoverage: [], uniqueSources: 0, datedCount: 0, undatedCount: 0 },
         sourceIds: asList(f.sourceIds),
@@ -2530,6 +3026,7 @@ function buildFourFactorDecisionSummary(bridgeMap) {
         cls: di.executive.verdictClass || "is-neutral"
       },
       executive: {
+        analysisMode: activeM,
         ...di.executive,
         quarantinedCount
       },
@@ -2702,7 +3199,7 @@ function focusDecisionSignalOnMap({ edgeId = "", nodeId = "", group = "" } = {})
   $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", "false");
 
   const validGroup = ["access", "lineage", "timing", "caution"].includes(group) ? group : "";
-  if (validGroup && state.expandedGroupKey !== validGroup) {
+  if (validGroup && state.mapLayoutNodes?.mode === "polar" && state.expandedGroupKey !== validGroup) {
     state.expandedGroupKey = validGroup;
     syncConstellationControls();
     renderConstellationMap(undefined, { fit: false });
@@ -2768,6 +3265,7 @@ function renderDecisionSummaryWidget() {
   const pillLabel = $("#decisionPillLabel");
   const overallBadge = $("#decisionOverallBadge");
   const gradeBadge = $("#decisionGradeBadge");
+  const modeMetaBar = $("#decisionModeMetaBar");
   const factorList = $("#decisionFactorList");
   const bridgeStrip = $("#decisionBridgeStrip");
   const pop = $("#decisionSummaryPopover");
@@ -2776,9 +3274,13 @@ function renderDecisionSummaryWidget() {
   const bridgeMap = state.bridgeMap;
   if (!bridgeMap || !asList(bridgeMap.nodes).length) {
     pillBtn.disabled = true;
-    if (pillLabel) pillLabel.textContent = "Decision · 4 Factors";
+    if (pillLabel) pillLabel.textContent = "Decision · Ready";
     if (pop) pop.hidden = true;
     if (gradeBadge) gradeBadge.hidden = true;
+    if (modeMetaBar) {
+      modeMetaBar.hidden = true;
+      modeMetaBar.innerHTML = "";
+    }
     if (bridgeStrip) bridgeStrip.hidden = true;
     $("#decisionAiOutput")?.setAttribute("hidden", "");
     $("#decisionAiPrompt")?.removeAttribute("hidden");
@@ -2790,6 +3292,7 @@ function renderDecisionSummaryWidget() {
   pillBtn.disabled = false;
   syncDecisionOverlayBodyClasses();
   const summary = buildFourFactorDecisionSummary(bridgeMap);
+  const activeMode = summary.executive?.analysisMode || getActiveAnalysisMode(bridgeMap);
 
   const res = currentDecisionAnalysisResult();
   const stance = getOverallStance(summary, res);
@@ -2799,7 +3302,13 @@ function renderDecisionSummaryWidget() {
     pillDot.className = `decision-pill-dot ${stance.cls}`;
   }
   if (pillLabel) {
-    pillLabel.textContent = `Decision · ${stance.label}`;
+    const modePrefix =
+      activeMode === "single_teardown"
+        ? "Teardown"
+        : activeMode === "perspective_triage"
+          ? "Triage"
+          : "Ecosystem";
+    pillLabel.textContent = `${modePrefix} · ${stance.label}`;
   }
   if (overallBadge) {
     overallBadge.className = `decision-verdict-badge ${stance.cls}`;
@@ -2818,7 +3327,66 @@ function renderDecisionSummaryWidget() {
   }
   const selectedFactor = summary.factors.find((factor) => factor.group === state.decisionSelectedFactor);
   const title = $(".decision-pop-title");
-  if (title) title.textContent = state.decisionDetailView ? `${selectedFactor?.label || "Factor"} Analysis` : "4-Factor Decision";
+  if (title) {
+    title.textContent = state.decisionDetailView
+      ? `${selectedFactor?.displayLabel || selectedFactor?.label || "Factor"} Analysis`
+      : activeMode === "single_teardown"
+        ? "Company Teardown"
+        : activeMode === "perspective_triage"
+          ? `Origination Triage · ${state.perspectiveEntity?.name || "Firm"}`
+          : "Ecosystem Synthesis";
+  }
+
+  if (modeMetaBar) {
+    if (state.decisionDetailView) {
+      modeMetaBar.hidden = true;
+      modeMetaBar.innerHTML = "";
+    } else if (activeMode === "single_teardown") {
+      const gaps = asList(summary.executive?.missingDisclosures);
+      modeMetaBar.hidden = false;
+      modeMetaBar.innerHTML = `
+        <div class="decision-mode-cta-bar">
+          <div class="decision-mode-note">${gaps.length ? `<strong>Cala gaps (${gaps.length}):</strong> ${escapeHtml(gaps[0])}` : "Neutral single-company structural teardown."}</div>
+          <div class="decision-cta-actions">
+            <button type="button" class="decision-cta-pill" data-cta-add-peer="true">+ Add Peer</button>
+            <button type="button" class="decision-cta-pill" data-cta-set-perspective="true">Set Perspective</button>
+          </div>
+        </div>
+      `;
+    } else if (activeMode === "ecosystem_compare") {
+      const focals = state.pinnedEntities.length ? state.pinnedEntities : asList(bridgeMap.focalEntities);
+      const activePrimary = state.primaryTargetId || "";
+      const bottlenecks = asList(summary.executive?.sharedCommercialBottlenecks);
+      modeMetaBar.hidden = false;
+      modeMetaBar.innerHTML = `
+        <div class="decision-target-focus-bar">
+          <span class="decision-focus-kicker">Evaluate Primary Target:</span>
+          <div class="decision-focus-pills" role="group" aria-label="Evaluate mapped entity as primary target">
+            <button type="button" class="decision-focus-chip ${!activePrimary ? "is-active" : ""}" data-primary-target-id="">All Peers</button>
+            ${focals.slice(0, 4).map((f) => `<button type="button" class="decision-focus-chip ${activePrimary === f.id ? "is-active" : ""}" data-primary-target-id="${escapeHtml(f.id)}">${escapeHtml(f.name)}</button>`).join("")}
+          </div>
+          ${bottlenecks.length ? `<div class="decision-bottleneck-note"><strong>Shared Bottleneck:</strong> ${escapeHtml(bottlenecks.map((b) => b.name).slice(0, 2).join(", "))}</div>` : ""}
+        </div>
+      `;
+    } else {
+      const pName = state.perspectiveEntity?.name || summary.executive?.perspectiveEntity?.name || "My Firm";
+      const warmCount = asList(summary.executive?.warmIntroChains).length;
+      const conflictCount = asList(summary.executive?.portfolioConflicts).length;
+      modeMetaBar.hidden = false;
+      modeMetaBar.innerHTML = `
+        <div class="decision-mode-cta-bar">
+          <div class="decision-mode-note">
+            <strong>Seat:</strong> ${escapeHtml(pName)} &middot; ${warmCount > 0 ? `${warmCount} warm intro path${warmCount === 1 ? "" : "s"}` : "Cold outreach"}${conflictCount ? ` &middot; ${conflictCount} portfolio overlap` : ""}
+          </div>
+          <div class="decision-cta-actions">
+            <button type="button" class="decision-cta-pill" data-copy-triage-brief="true">Copy Brief</button>
+            <button type="button" class="decision-cta-pill" data-reset-perspective="true">Neutral</button>
+          </div>
+        </div>
+      `;
+    }
+  }
+
   factorList.hidden = state.decisionDetailView;
   $("#decisionAiPrompt")?.toggleAttribute("hidden", state.decisionDetailView);
   pop?.classList.toggle("is-expanded", state.decisionPanelExpanded);
@@ -2828,6 +3396,7 @@ function renderDecisionSummaryWidget() {
       const fa = factorAnalysisMap.get(f.group);
       const verdict = getFactorVerdict(f, fa);
       const headline = cleanText(fa?.headline) || f.line;
+      const rowLabel = f.displayLabel || f.label;
       return `
       <button
         type="button"
@@ -2842,7 +3411,7 @@ function renderDecisionSummaryWidget() {
         <div class="decision-factor-top">
           <span class="decision-factor-name">
             <span class="fam-dot" style="background:${getContributionColorHex(f.group)}"></span>
-            <span>${escapeHtml(f.label)}</span>
+            <span>${escapeHtml(rowLabel)}</span>
             <span class="decision-factor-count">(${f.count})</span>
             ${f.sharedCount > 0 ? `<span class="decision-shared-micro">${f.sharedCount} shared</span>` : ""}
           </span>
@@ -2862,14 +3431,14 @@ function renderDecisionSummaryWidget() {
     const items = highlights.length
       ? highlights.map((h) => ({
           label: h.name,
-          sub: `${h.group === "access" ? "Access" : h.group === "lineage" ? "Lineage" : "Risk"} · ${asList(h.sharedHubs).length || 2} hubs · ${h.sourceRank || "PRIMARY"}`,
+          sub: `${h.structuralRole === "commercial" ? "Bottleneck" : h.group === "access" ? "Backer" : h.group === "lineage" ? "Lineage" : "Risk"} · ${asList(h.sharedHubs).length || 2} hubs · ${h.sourceRank || "PRIMARY"}`,
           edgeId: h.edgeId || "",
           nodeId: h.nodeId || "",
           group: h.group || "access"
         }))
       : introFallback.map((r) => ({
           label: r.entityName,
-          sub: r.isLead ? `Lead · ${r.focalName}` : `Intro · ${r.focalName}`,
+          sub: r.touchesPerspective ? `Warm · ${r.focalName}` : r.structuralRole === "commercial" ? `Value Chain · ${r.focalName}` : `${r.isLead ? "Lead" : "Backer"} · ${r.focalName}`,
           edgeId: r.edgeId || "",
           nodeId: r.nodeId || "",
           group: "access"
@@ -2905,9 +3474,15 @@ function setDecisionPanelExpanded(expanded) {
 }
 
 function fourFactorClaudeCacheKey(summary, bridgeMap) {
+  const activeMode = getActiveAnalysisMode(bridgeMap);
+  const pId = state.perspectiveEntity?.id || bridgeMap?.perspectiveEntity?.id || "";
+  const ptId = state.primaryTargetId || bridgeMap?.primaryTargetId || "";
   const focalNames = asList(bridgeMap?.focalEntities).map((f) => f.name).filter(Boolean);
-  const title = focalNames.length ? `${focalNames.join(" + ")} · 4-Factor Investment Decision` : "4-Factor Investment Decision";
-  const cacheKey = `4factor:v2:${title}:${JSON.stringify(summary.factors.map((factor) => ({
+  const baseNames = focalNames.length ? focalNames : state.pinnedEntities.map((p) => p.name).filter(Boolean);
+  const title = baseNames.length
+    ? `${baseNames.join(" + ")}${pId ? ` (${state.perspectiveEntity?.name || bridgeMap?.perspectiveEntity?.name || pId})` : ""} · ${activeMode}`
+    : `Context Analysis · ${activeMode}`;
+  const cacheKey = `4factor:v3:${activeMode}:${pId}:${ptId}:${title}:${JSON.stringify(summary.factors.map((factor) => ({
     group: factor.group,
     count: factor.count,
     signalStrength: factor.signalStrength,
@@ -2960,6 +3535,13 @@ function getDecisionFactorEvidence(bridgeMap, factor) {
       detail: cleanText(r.detail || ""),
       date: cleanText(r.date || ""),
       sourceRank: cleanText(r.sourceRank || "AGGREGATOR"),
+      structuralRole: r.structuralRole || deriveStructuralRoleFrontend(r),
+      isAcquisition: Boolean(r.isAcquisition || String(r.type || r.relation || "").toUpperCase() === "ACQUIRED"),
+      timingRecency: r.timingRecency || classifyTimingRecencyFrontend(r).timingRecency,
+      isRecentCatalyst: Boolean(r.isRecentCatalyst),
+      isHistoricalMilestone: Boolean(r.isHistoricalMilestone),
+      touchesPerspective: Boolean(r.touchesPerspective),
+      perspectiveChain: asList(r.perspectiveChain).filter(Boolean),
       isSharedBridge: Boolean(r.isSharedBridge),
       isLead: Boolean(r.isLead),
       isAnomaly: Boolean(r.isAnomaly),
@@ -2989,6 +3571,7 @@ function getDecisionFactorEvidence(bridgeMap, factor) {
         const id = sourceIdOf(source);
         if (id && !sourceById.has(String(id))) sourceById.set(String(id), { ...source, id: String(id) });
       }
+      const recency = classifyTimingRecencyFrontend(edge);
       return {
         id: edge.id || "",
         edgeId: edge.id || "",
@@ -2999,6 +3582,13 @@ function getDecisionFactorEvidence(bridgeMap, factor) {
         detail: cleanText(edge.detail || edge.whyMatters || edge.description),
         date: cleanText(edge.date || edge.asOfDate),
         sourceRank: cleanText(edge.topSourceRank || "AGGREGATOR"),
+        structuralRole: deriveStructuralRoleFrontend(edge),
+        isAcquisition: Boolean(edge.isAcquisition || String(edge.relation || "").toUpperCase() === "ACQUIRED"),
+        timingRecency: recency.timingRecency,
+        isRecentCatalyst: recency.isRecentCatalyst,
+        isHistoricalMilestone: recency.isHistoricalMilestone,
+        touchesPerspective: Boolean(edge.touchesPerspective || edge.isPerspectiveBridge),
+        perspectiveChain: asList(edge.perspectiveChain).filter(Boolean),
         isSharedBridge: Boolean(edge.isSharedBridge),
         isLead: Boolean(edge.isLead),
         isAnomaly: Boolean(edge.isAnomaly),
@@ -3172,32 +3762,55 @@ function deriveConnectionAnalystInsight(rec, factorGroup, findings = []) {
       return meaning;
     }
   }
+  const mode = getActiveAnalysisMode();
   const detail = cleanText(rec?.detail);
   const rel = cleanText(rec?.relation || rec?.type);
   const sharedHubs = asList(rec?.sharedHubs).filter(Boolean);
+  const role = rec?.structuralRole || deriveStructuralRoleFrontend(rec);
+  const isAcq = Boolean(rec?.isAcquisition || String(rec?.type || rec?.relation || "").toUpperCase() === "ACQUIRED");
+  if (isAcq) {
+    return detail || `Corporate M&A / subsidiary acquisition (${recPath}) shaping asset ownership rather than competitive risk.`;
+  }
   if (factorGroup === "access") {
+    if (rec?.touchesPerspective && asList(rec?.perspectiveChain).length) {
+      return `Warm route from your perspective: ${rec.perspectiveChain.join(" → ")}.`;
+    }
+    if (role === "commercial") {
+      if (rec?.isSharedBridge && sharedHubs.length >= 2) {
+        return `Shared commercial bottleneck serving ${sharedHubs.join(" & ")} — assess supplier/partner concentration.`;
+      }
+      return detail || `Commercial supply or partner link with ${recTo || "counterparty"} (value-chain dependency, not investor warm intro).`;
+    }
     if (rec?.isSharedBridge && sharedHubs.length >= 2) {
-      return `Backs both ${sharedHubs.join(" & ")} — warm intro route and side-by-side co-investor reference.`;
+      return mode === "ecosystem_compare"
+        ? `Dual-backed across ${sharedHubs.join(" & ")} — shared institutional investor on both cap tables.`
+        : `Backs both ${sharedHubs.join(" & ")} — warm intro route and side-by-side co-investor reference.`;
     }
     if (/lead/i.test(`${rel} ${detail}`)) {
-      return `Lead investor in ${recTo || "this hub"} — primary syndicate contact for deal terms & conviction.`;
+      return `Lead investor in ${recTo || "this hub"} — primary syndicate anchor for ownership and terms.`;
     }
     if (/invest|back|round/i.test(`${rel} ${detail}`)) {
-      return `Verified backer of ${recTo || "this hub"} — direct syndicate reference call & warm intro path.`;
+      return `Verified capital backer of ${recTo || "this hub"} (${mode === "perspective_triage" ? "cap-table co-investor reference" : "institutional ownership link"}).`;
     }
-    return detail || `Commercial or partner bridge to ${recTo || "this hub"} for customer diligence.`;
+    return detail || `Strategic value-chain tie with ${recTo || "this hub"}.`;
   }
   if (factorGroup === "lineage") {
     if (rec?.isSharedBridge && sharedHubs.length >= 2) {
-      return `Held leadership/founder roles across ${sharedHubs.join(" & ")} — high-signal operator backchannel.`;
+      return `Held leadership/founder roles across ${sharedHubs.join(" & ")} — direct operator spillover and backchannel.`;
     }
-    return detail || `Verified operator or founder link (${rel}) for executive track-record reference checks.`;
+    return detail || `Verified governance or leadership tie (${rel}) confirming executive control and operator lineage.`;
   }
   if (factorGroup === "timing") {
     if (rec?.isAnomaly) {
       return detail || `Round sequence or timing discrepancy requiring cap-table verification.`;
     }
-    return detail || `Dated financing milestone (${rec?.date || "verified"}) anchoring capital velocity and runway.`;
+    if (rec?.isHistoricalMilestone || rec?.timingRecency === "historical_milestone") {
+      return detail || `Historical milestone (${rec?.date || ">18m ago"}) providing capital history rather than a current catalyst.`;
+    }
+    return detail || `Active catalyst (${rec?.date || "within 18m"}) indicating recent financing or corporate momentum.`;
+  }
+  if (rec?.type === "PORTFOLIO_OVERLAP" || /portfolio.*overlap|portfolio rival/i.test(rel)) {
+    return detail || `Overlaps with your perspective firm's portfolio — verify thesis conflict and information walls.`;
   }
   if (rec?.type === "DUAL_SIDED_INVESTOR_CONFLICT" || /shared cap-table/i.test(rel)) {
     return `Holds stakes in both ${recTo || "competitors"} — verify Chinese walls and information-rights boundaries.`;
@@ -3286,7 +3899,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
           data-switch-factor="${escapeHtml(f.group)}"
         >
           <span class="fam-dot" style="background:${getContributionColorHex(f.group)}"></span>
-          <span>${escapeHtml(f.label)}</span>
+          <span>${escapeHtml(f.displayLabel || f.label)}</span>
           <b class="decision-mini-verdict ${escapeHtml(fv.cls)}">${escapeHtml(VERDICT_SHORT_BADGE[fv.label] || fv.label)}</b>
         </button>
       `;
@@ -3467,8 +4080,8 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
     </div>
   `;
 
-  const roleSubtitle = FACTOR_ROLE_SUBTITLES[factor.group] || `${factor.label} Signal Profile`;
-  const factorQuestion = FACTOR_QUESTION_LABELS[factor.group] || roleSubtitle;
+  const roleSubtitle = factor.displayLabel || FACTOR_ROLE_SUBTITLES[factor.group] || `${factor.label} Signal Profile`;
+  const factorQuestion = factor.sectionQuestion || FACTOR_QUESTION_LABELS[factor.group] || roleSubtitle;
   const factorHeadline = cleanText(factorAnalysis?.headline) || roleSubtitle;
   const factorColor = getContributionColorHex(factor.group);
   const findingsList = asList(factorAnalysis?.findings);
@@ -3743,9 +4356,13 @@ async function runFourFactorClaudeInsight(factorGroup = state.decisionSelectedFa
     sourceRank: sourceById.get(id)?.sourceRank || sourceById.get(id)?.source_rank || "AGGREGATOR",
     date: sourceById.get(id)?.date || sourceById.get(id)?.asOfDate || null
   }));
+  const activeMode = getActiveAnalysisMode(state.bridgeMap);
+  const perspectiveEntityName = state.perspectiveEntity?.name || state.bridgeMap?.perspectiveEntity?.name || "";
+  const primaryTargetName = summary.executive?.primaryTargetName || "";
+
   const serializedFactors = factorEvidence.map(({ factor, records }) => ({
     group: factor.group,
-    label: factor.label,
+    label: factor.displayLabel || factor.label,
     effect: factor.effect,
     impact: factor.investmentImpact,
     evidence: factor.line,
@@ -3766,6 +4383,10 @@ async function runFourFactorClaudeInsight(factorGroup = state.decisionSelectedFa
       date: record.date,
       sourceRank: record.sourceRank,
       isSharedBridge: record.isSharedBridge,
+      structuralRole: record.structuralRole || deriveStructuralRoleFrontend(record),
+      timingRecency: record.timingRecency || classifyTimingRecencyFrontend(record).timingRecency,
+      isAcquisition: Boolean(record.isAcquisition),
+      perspectiveChain: asList(record.perspectiveChain).length ? record.perspectiveChain : undefined,
       sourceIds: record.sourceIds.filter((id) => sourceIdsToSend.has(String(id))).map(String)
     }))
   }));
@@ -3778,8 +4399,11 @@ async function runFourFactorClaudeInsight(factorGroup = state.decisionSelectedFa
       method: "POST",
       body: JSON.stringify({
         mode: "entity",
+        analysisMode: activeMode,
+        perspectiveEntityName: perspectiveEntityName || undefined,
+        primaryTargetName: primaryTargetName || undefined,
         title,
-        hopType: "4-Factor Summary",
+        hopType: activeMode === "single_teardown" ? "Company Teardown" : activeMode === "perspective_triage" ? "Origination Triage" : "Ecosystem Comparison",
         relation: "DECISION_SYNTHESIS",
         whyMatters: summary.investmentEffect,
         facts: evidenceFacts,
@@ -3827,7 +4451,11 @@ function explainEdgeDecisionImplication(group, edge, context = {}) {
   const explicit = cleanSentencePunctuation(edge?.whyMatters);
   if (explicit) return explicit;
 
+  const mode = getActiveAnalysisMode();
   const rel = String(edge?.relation || edge?.relationType || "").toUpperCase();
+  const structuralRole = deriveStructuralRoleFrontend(edge);
+  const isAcquisition = Boolean(edge?.isAcquisition || rel.includes("ACQUIRED"));
+  const recency = classifyTimingRecencyFrontend(edge);
   const hubNames = asList(context.hubNames).filter(Boolean);
   const otherFocalNames = asList(context.otherFocalNames).filter(Boolean);
   const bridgeNodeName = cleanText(context.sharedBridgeNodeName);
@@ -3841,10 +4469,26 @@ function explainEdgeDecisionImplication(group, edge, context = {}) {
   const dateStr = edge?.date || context.date || "";
   const rank = tierOf(edge || {});
 
+  if (isAcquisition) {
+    return `Corporate M&A / subsidiary acquisition linking ${fromLabel || "parent"} and ${targetLabel || "target"}${dateStr ? ` (${dateStr})` : ""}; treat as ownership allocation unless an explicit dispute or overlap exists.`;
+  }
+
+  if (structuralRole === "commercial") {
+    if (edge?.touchesPerspective) {
+      return `Commercial bridge connecting your firm perspective (${state.perspectiveEntity?.name || "firm"}) and ${targetLabel || "target"}; evaluate value-chain depth or partner intro potential.`;
+    }
+    if (bridgeNodeName && otherFocalNames.length) {
+      return `Shared commercial bottleneck via ${bridgeNodeName} across ${otherFocalNames.join(" and ")}; assess supplier concentration, exclusivity, and margin dependency.`;
+    }
+    return `Commercial value-chain tie linking ${fromLabel || "counterparty"} and ${targetLabel || "partner"}; assess revenue concentration and operational leverage rather than investor warm outreach.`;
+  }
+
   if (bridgeNodeName && otherFocalNames.length) {
     const peerList = otherFocalNames.join(" and ");
     if (group === "access") {
-      return `Shared bridge via ${bridgeNodeName} connects ${focalLabel || "this hub"} to ${peerList}; use this syndicate overlap for warm intro and co-investor reference calls.`;
+      return mode === "perspective_triage"
+        ? `Warm bridge via ${bridgeNodeName} links ${focalLabel || "this hub"} with ${peerList}; verify direct intro path and reference strength.`
+        : `Shared syndicate or ecosystem bridge via ${bridgeNodeName} connects ${focalLabel || "this hub"} to ${peerList}.`;
     }
     if (group === "lineage") {
       return `Operator/leadership bridge via ${bridgeNodeName} links ${focalLabel || "this hub"} with ${peerList}; verify founder execution track record and cross-company alumni ties.`;
@@ -3856,18 +4500,18 @@ function explainEdgeDecisionImplication(group, edge, context = {}) {
   }
 
   if (group === "access") {
+    if (edge?.touchesPerspective && mode === "perspective_triage") {
+      return `Verified connection from ${state.perspectiveEntity?.name || "your firm"} around ${targetLabel || "target"} creating a direct origination route.`;
+    }
     if (hubNames.length >= 2) {
-      return `Shared syndicate or commercial bridge across ${hubNames.join(" and ")} for warm diligence and reference calls.`;
+      return `Shared backer or partner across ${hubNames.join(" and ")} enabling side-by-side diligence.`;
     }
     if (rel === "INVESTED_IN" || rel === "CO_INVESTED_WITH" || edge?.isRoundExpanded) {
-      const leadNote = edge?.isLead ? "Lead position gives governance weight and allocation influence" : "Syndicate stake creates a direct backchannel path";
+      const leadNote = edge?.isLead ? "Lead capital investor providing governance weight" : "Verified capital backer on the cap table";
       const coText = peerNames.length ? ` alongside ${peerNames.join(" and ")}` : "";
-      return `${leadNote}${coText}${targetLabel ? ` around ${targetLabel}` : ""}.`;
+      return `${leadNote}${coText}${targetLabel ? ` in ${targetLabel}` : ""}.`;
     }
-    if (/PARTNER|SUPPL|CUSTOM|DISTRIB/i.test(rel)) {
-      return `Commercial dependency linking ${fromLabel || "counterparty"} and ${targetLabel || "partner"}; verify revenue concentration and contract exclusivity.`;
-    }
-    return `Verified commercial or partnership link indicating go-to-market reach${targetLabel ? ` with ${targetLabel}` : ""}.`;
+    return `Verified strategic or ownership tie${targetLabel ? ` with ${targetLabel}` : ""}.`;
   }
   if (group === "lineage") {
     if (hubNames.length >= 2) {
@@ -3879,13 +4523,19 @@ function explainEdgeDecisionImplication(group, edge, context = {}) {
     return `Verified founder or leadership tie validating execution pedigree${targetLabel ? ` at ${targetLabel}` : ""}.`;
   }
   if (group === "timing") {
-    return `Dated financing or corporate catalyst${dateStr ? ` (${dateStr})` : ""} anchoring valuation step-up and runway timing.`;
+    if (recency.isRecentCatalyst) {
+      return `Active catalyst within 18 months${dateStr ? ` (${dateStr})` : ""} indicating current financing or operating momentum.`;
+    }
+    if (recency.isHistoricalMilestone) {
+      return `Historical capital/operating milestone (${dateStr || ">18m ago"}) — background context rather than current deal timing.`;
+    }
+    return `Dated financing or corporate milestone${dateStr ? ` (${dateStr})` : ""} providing timeline context.`;
   }
   if (/COMPET/i.test(rel)) {
     return `Direct competitive overlap between ${fromLabel || "entity"} and ${targetLabel || "peer"}; check moat differentiation and win rates.`;
   }
-  if (/ACQUIR|MERG|LITIG|SUED|AFFECT/i.test(rel)) {
-    return `Verified M&A, dependency, or litigation exposure to underwrite before committing capital.`;
+  if (/LITIG|SUED|DISPUT|AFFECT/i.test(rel)) {
+    return `Verified dispute, regulatory, or downside risk exposure to underwrite before committing capital.`;
   }
   if (rank === "AGGREGATOR") {
     return `Backed only by aggregator records; corroborate directly against SEC filings or primary releases.`;
@@ -3971,6 +4621,7 @@ function buildNodeTooltipHtml(node) {
   }
 
   if (node.kind === "anchor" || node.isFocalEntity) {
+    const mode = getActiveAnalysisMode();
     const rawFocalEdges = (state.bridgeMap?.edges || []).filter(
       (e) => !e.id?.startsWith("tree-spoke-") && (e.from === node.id || e.to === node.id)
     );
@@ -3983,28 +4634,39 @@ function buildNodeTooltipHtml(node) {
     const cautionEdges = focalEdges.filter((e) => deriveContributionGroupFrontend(e) === "caution");
     const catalysts = asList(node.timingCatalysts || state.bridgeMap?.timingEventsByEntity?.[node.id]);
 
-    const accessSummary = summarizeFocalGroupInsight(accessEdges, node, bridgeNodeById) || "No shared intro path found in Cala";
+    const accessSummary = summarizeFocalGroupInsight(accessEdges, node, bridgeNodeById) || (
+      mode === "perspective_triage" ? "No warm path from selected perspective in Cala" : "No capital or commercial ties indexed in Cala"
+    );
     const lineageSummary = summarizeFocalGroupInsight(lineageEdges, node, bridgeNodeById);
     const timingSummary = catalysts[0]
       ? [catalysts[0].title, catalysts[0].date].filter(Boolean).join(" · ")
       : summarizeFocalGroupInsight(timingEdges, node, bridgeNodeById);
     const cautionSummary = summarizeFocalGroupInsight(cautionEdges, node, bridgeNodeById);
 
-    const roleKind = /organization|fund/i.test(typeOf(node)) ? "Investor / Syndicate Hub" : "Target / Company Hub";
+    const isPersp = Boolean(node.isPerspectiveEntity);
+    const roleKind = isPersp
+      ? "My Firm Perspective Seat"
+      : /organization|fund|investor/i.test(typeOf(node))
+        ? "Investor / Syndicate Entity"
+        : mode === "single_teardown"
+          ? "Teardown Target Entity"
+          : "Mapped Peer Entity";
     const sharedCount = focalEdges.filter((e) => e.isSharedBridge).length;
     const roleText = `${roleKind} (${entityType})${sharedCount ? ` · ${sharedCount} shared bridge ${sharedCount === 1 ? "link" : "links"}` : ""} · Strongest tier: ${rank}`;
 
+    const accessLbl = mode === "perspective_triage" ? "Access" : "Capital & Chain";
+    const lineageLbl = mode === "perspective_triage" ? "Lineage" : "Governance & M&A";
     const thirdRow = lineageSummary
-      ? `<div class="tip-spec-row"><span class="tip-k">Lineage:</span> ${escapeHtml(lineageSummary)}</div>`
+      ? `<div class="tip-spec-row"><span class="tip-k">${lineageLbl}:</span> ${escapeHtml(lineageSummary)}</div>`
       : timingSummary && cautionSummary
         ? `<div class="tip-spec-row"><span class="tip-k">Timing:</span> ${escapeHtml(timingSummary)}</div>`
         : "";
     const fourthLabel =
       lineageSummary && timingSummary && cautionSummary
-        ? "Timing & Caution"
+        ? "Timing & Risk"
         : cautionSummary
-          ? "Caution"
-          : "Timing";
+          ? "Risks & Rivals"
+          : "Catalysts";
     const fourthValue =
       lineageSummary && timingSummary && cautionSummary
         ? `${timingSummary} | ${cautionSummary}`
@@ -4014,8 +4676,8 @@ function buildNodeTooltipHtml(node) {
       <div class="tip-header">
         <strong>${escapeHtml(nameOf(node))} · ${escapeHtml(rank)}</strong>
       </div>
-      <div class="tip-spec-row"><span class="tip-k">Decision Role:</span> ${escapeHtml(roleText)}</div>
-      <div class="tip-spec-row"><span class="tip-k">Access:</span> ${escapeHtml(accessSummary)}</div>
+      <div class="tip-spec-row"><span class="tip-k">Context Role:</span> ${escapeHtml(roleText)}</div>
+      <div class="tip-spec-row"><span class="tip-k">${accessLbl}:</span> ${escapeHtml(accessSummary)}</div>
       ${thirdRow}
       ${fourthValue ? `<div class="tip-spec-row"><span class="tip-k">${fourthLabel}:</span> ${escapeHtml(fourthValue)}</div>` : ""}
     `;
@@ -4050,9 +4712,10 @@ function buildNodeTooltipHtml(node) {
     date: node.date || bestEdge?.date
   });
   const datePart = node.date || bestEdge?.date;
-  const isSharedBridge = Boolean(node.isSharedOverlap || node.isSharedBridge || hubNames.length > 1);
+  const isSharedBridge = Boolean(node.isSharedOverlap || node.isSharedBridge || node.isPerspectiveBridge || hubNames.length > 1);
+  const impactLabel = isSharedBridge ? getSharedImpactBadge(node, incEdges).replace(/^↔\s*/, "") : "";
   const sharedBridgeNote = isSharedBridge
-    ? `<div class="tip-shared-bridge"><strong>Shared bridge</strong> Connects verified paths across ${escapeHtml(hubNames.length > 1 ? hubNames.join(" and ") : "mapped entities")}.</div>`
+    ? `<div class="tip-shared-bridge"><strong>${escapeHtml(impactLabel)}</strong> Connects verified paths across ${escapeHtml(hubNames.length > 1 ? hubNames.join(" and ") : "mapped entities")}.</div>`
     : "";
 
   return `
@@ -4388,14 +5051,22 @@ function buildEdgeTooltipHtml(edge) {
     whyMatters
   } = ctx;
 
+  const mode = getActiveAnalysisMode();
+  const sRole = deriveStructuralRoleFrontend(edge);
   const verdict = deriveEdgeVerdict(edge, nodeById.get(edge.to));
   const primaryLabel = edge.label || (isModeATreeEdge ? `${cgMeta.headerLabel} Connection` : "Verified Connection");
+  const roleHeaderBadge =
+    mode === "perspective_triage"
+      ? cgMeta.headerLabel
+      : edge.isAcquisition
+        ? "M&A · GOVERNANCE"
+        : (STRUCTURAL_ROLE_META[sRole]?.shortLabel || cgMeta.headerLabel).toUpperCase();
   const statusPills = [
     `<span class="tip-pill tip-verdict-pill is-${escapeHtml(verdict.key)}">${escapeHtml(verdict.label)}</span>`,
     `<span class="tip-pill is-hop">${escapeHtml(edge.isRoundExpanded ? "2-hop · FundingRound" : "1-hop · Direct")}</span>`,
     rawRelations[0] ? `<span class="tip-pill is-rel">${escapeHtml(rawRelations[0])}</span>` : "",
     anyLead ? `<span class="tip-pill is-lead">Lead Investor</span>` : "",
-    edge.isSharedBridge ? `<span class="tip-pill is-bridge">Shared Bridge</span>` : "",
+    edge.touchesPerspective ? `<span class="tip-pill is-bridge">Perspective Path</span>` : edge.isSharedBridge ? `<span class="tip-pill is-bridge">Shared Bridge</span>` : "",
     siblings.length > 1 ? `<span class="tip-pill is-multi">${siblings.length} linked roles</span>` : ""
   ]
     .filter(Boolean)
@@ -4494,7 +5165,7 @@ function buildEdgeTooltipHtml(edge) {
   return `
     <div class="tip-header">
       <div class="tip-title-cluster">
-        <span class="tip-lens-badge" data-group="${escapeHtml(group)}">${escapeHtml(cgMeta.headerLabel)}</span>
+        <span class="tip-lens-badge" data-group="${escapeHtml(group)}">${escapeHtml(roleHeaderBadge)}</span>
         <strong>${escapeHtml(primaryLabel)}</strong>
       </div>
       <span class="tip-tier-badge" data-tier="${escapeHtml(rank)}">${escapeHtml(rank)}</span>
@@ -4629,6 +5300,13 @@ async function runEntityMapAnalysis(entityRefs, options = {}) {
   setStatus(`Building Cala map for ${refs.map((r) => r.name).join(", ")}...`);
 
   try {
+    const activePersp = state.perspectiveEntity?.id || state.perspectiveEntity?.name ? state.perspectiveEntity : null;
+    const validPrimary =
+      state.primaryTargetId && refs.some((r) => String(r.id) === String(state.primaryTargetId))
+        ? state.primaryTargetId
+        : null;
+    if (state.primaryTargetId && !validPrimary) state.primaryTargetId = null;
+
     const payload = {
       mode: "entity",
       entityRefs: refs,
@@ -4636,6 +5314,10 @@ async function runEntityMapAnalysis(entityRefs, options = {}) {
       entityId: refs[0].id || undefined,
       compareEntityIds: refs.slice(1).map((r) => r.id).filter(Boolean),
       entityName: refs[0].name,
+      perspectiveEntityId: activePersp?.id || undefined,
+      perspectiveEntityName: activePersp?.name || undefined,
+      perspectiveEntity: activePersp || undefined,
+      primaryTargetId: validPrimary || undefined,
       hideMegaHubs: state.hideMegaHubs,
       discoverLive: options.discoverLive !== false
     };
@@ -4647,6 +5329,10 @@ async function runEntityMapAnalysis(entityRefs, options = {}) {
 
     const canonicalRefs = asList(result.focalEntities).map(toEntityRef).filter((r) => r.id && r.name);
     state.pinnedEntities = canonicalRefs.length ? canonicalRefs : refs;
+    if (result.perspectiveEntity?.id && result.perspectiveEntity?.name) {
+      state.perspectiveEntity = toEntityRef(result.perspectiveEntity);
+      savePerspectiveToStorage();
+    }
     state.focalEntities = canonicalRefs;
     state.comparedEntities = asList(result.comparedEntities);
     state.entityProfile = result.entityProfile || null;
@@ -4840,6 +5526,9 @@ async function addEntityToMap(entity) {
 
 async function removePinnedEntity(entityId) {
   const remaining = state.pinnedEntities.filter((p) => p.id !== entityId && p.key !== entityId);
+  if (state.primaryTargetId && String(state.primaryTargetId) === String(entityId)) {
+    state.primaryTargetId = null;
+  }
   if (!remaining.length) {
     clearMapToEmpty();
     return;
@@ -4849,6 +5538,7 @@ async function removePinnedEntity(entityId) {
 
 function resetMapView({ stayOnMap = false } = {}) {
   state.pinnedEntities = [];
+  state.primaryTargetId = null;
   state.bridgeMap = null;
   state.analysis = null;
   state.decisionAnalysisRequestId += 1;
@@ -5134,17 +5824,29 @@ function clickableChipHtml(label, record, attrName) {
 
 function dossierAiCacheKey(dossier) {
   if (!dossier) return "";
-  if (dossier.mode === "connection") return `conn:${dossier.edge?.id || ""}`;
-  return `entity:${dossier.node?.id || idOf(dossier.data) || ""}`;
+  const am = getActiveAnalysisMode();
+  const pId = state.perspectiveEntity?.id || "";
+  if (dossier.mode === "connection") return `conn:${am}:${pId}:${dossier.edge?.id || ""}`;
+  return `entity:${am}:${pId}:${dossier.node?.id || idOf(dossier.data) || ""}`;
 }
 
 function buildDossierAiInsightPacket(dossier) {
   if (!dossier) return null;
+  const activeMode = getActiveAnalysisMode();
+  const perspectiveEntityName = state.perspectiveEntity?.name || state.bridgeMap?.perspectiveEntity?.name || "";
+  const primaryTargetObj = state.primaryTargetId
+    ? state.pinnedEntities.find((p) => String(p.id) === String(state.primaryTargetId))
+    : null;
+  const primaryTargetName = primaryTargetObj?.name || "";
+
   if (dossier.mode === "connection") {
     const { edge, ctx } = dossier;
     const { citations } = collectEdgeCitations(ctx.siblings, { limit: 12 });
     return {
       mode: "connection",
+      analysisMode: activeMode,
+      perspectiveEntityName: perspectiveEntityName || undefined,
+      primaryTargetName: primaryTargetName || undefined,
       title: `${ctx.fromName} ${ctx.arrowSymbol} ${ctx.toName}`,
       hopType: ctx.hopTypeLabel,
       relation: ctx.rawRelations.join(", "),
@@ -5198,6 +5900,9 @@ function buildDossierAiInsightPacket(dossier) {
 
   return {
     mode: "entity",
+    analysisMode: activeMode,
+    perspectiveEntityName: perspectiveEntityName || undefined,
+    primaryTargetName: primaryTargetName || undefined,
     title: formatReadableEntityLabel(nameOf(data), data.date),
     hopType: "Entity Dossier",
     relation: typeBadge(data),
@@ -6360,6 +7065,204 @@ function bindFilterAndHudEvents() {
       group: focusBtn.dataset.focusGroup || ""
     });
   });
+
+  const closePerspectivePopover = () => {
+    state.perspectivePopoverOpen = false;
+    const pop = $("#perspectivePopover");
+    if (pop) pop.hidden = true;
+    $("#perspectivePickerBtn")?.setAttribute("aria-expanded", "false");
+  };
+
+  const renderPerspectiveResults = (items = [], query = "") => {
+    const box = $("#perspectiveResults");
+    if (!box) return;
+    state.perspectiveResults = items;
+    if (!query || query.length < 2) {
+      box.innerHTML = "";
+      return;
+    }
+    if (!items.length) {
+      box.innerHTML = `<div class="perspective-empty">No Cala matches for "${escapeHtml(query)}"</div>`;
+      return;
+    }
+    box.innerHTML = items
+      .slice(0, 6)
+      .map(
+        (item, idx) => `
+          <button type="button" class="perspective-result-item" role="option" data-perspective-index="${idx}">
+            <span class="perspective-result-name">${escapeHtml(item.name || item.label)}</span>
+            <span class="perspective-result-type">${escapeHtml(typeBadge(item))}</span>
+          </button>
+        `
+      )
+      .join("");
+  };
+
+  const setPerspectiveEntity = async (entityOrNull, { rerun = true } = {}) => {
+    state.perspectiveEntity = entityOrNull ? toEntityRef(entityOrNull) : null;
+    savePerspectiveToStorage();
+    state.decisionAnalysisResult = null;
+    state.decisionAnalysisKey = null;
+    state.decisionAnalysisStatus = "idle";
+    state.decisionAnalysisError = "";
+    state.decisionDetailView = false;
+    state.decisionAnalysisStarted = false;
+    closePerspectivePopover();
+    syncPerspectiveControl();
+    if (rerun && state.pinnedEntities.length) {
+      await runEntityMapAnalysis(state.pinnedEntities, { fit: true, discoverLive: Boolean(state.perspectiveEntity) });
+      return;
+    }
+    if (!state.pinnedEntities.length && state.perspectiveEntity) {
+      showToast(`Perspective set to ${state.perspectiveEntity.name} — search a target to run Origination Triage.`);
+    }
+  };
+
+  $("#perspectivePickerBtn")?.addEventListener("click", () => {
+    const nextOpen = !state.perspectivePopoverOpen;
+    state.perspectivePopoverOpen = nextOpen;
+    const pop = $("#perspectivePopover");
+    if (pop) pop.hidden = !nextOpen;
+    $("#perspectivePickerBtn")?.setAttribute("aria-expanded", String(nextOpen));
+    if (nextOpen) {
+      const inp = $("#perspectiveSearchInput");
+      if (inp) {
+        inp.value = "";
+        renderPerspectiveResults([], "");
+        inp.focus();
+      }
+    }
+  });
+  $("#perspectiveCloseBtn")?.addEventListener("click", closePerspectivePopover);
+  $("#perspectiveClearBtn")?.addEventListener("click", async () => {
+    await setPerspectiveEntity(null);
+  });
+
+  $("#perspectiveQuickRow")?.addEventListener("click", async (e) => {
+    if (e.target.closest("[data-perspective-reset]")) {
+      await setPerspectiveEntity(null);
+      return;
+    }
+    const quickBtn = e.target.closest("[data-perspective-quick]");
+    if (!quickBtn) return;
+    const q = cleanText(quickBtn.dataset.perspectiveQuick);
+    if (!q) return;
+    updateLiveStatusPill(`Setting perspective to ${q}...`);
+    try {
+      const matches = await searchCalaEntities(q);
+      if (matches[0]) {
+        await setPerspectiveEntity(matches[0]);
+      } else {
+        await setPerspectiveEntity({ id: q, name: q, entityType: "Organization" });
+      }
+    } finally {
+      updateLiveStatusPill(null);
+    }
+  });
+
+  const pInput = $("#perspectiveSearchInput");
+  pInput?.addEventListener("input", () => {
+    clearTimeout(state.perspectiveSearchTimer);
+    const cleaned = cleanText(pInput.value);
+    if (cleaned.length < 2) {
+      renderPerspectiveResults([], "");
+      return;
+    }
+    const seq = ++state.perspectiveSeq;
+    state.perspectiveSearchTimer = setTimeout(async () => {
+      try {
+        const items = await searchCalaEntities(cleaned);
+        if (seq === state.perspectiveSeq && cleanText(pInput.value) === cleaned) {
+          renderPerspectiveResults(items, cleaned);
+        }
+      } catch {
+        if (seq === state.perspectiveSeq) renderPerspectiveResults([], "");
+      }
+    }, 220);
+  });
+
+  pInput?.addEventListener("keydown", async (e) => {
+    if (e.key === "Enter" && cleanText(pInput.value)) {
+      e.preventDefault();
+      const first = state.perspectiveResults[0];
+      if (first) {
+        await setPerspectiveEntity(first);
+      } else {
+        const matches = await searchCalaEntities(pInput.value);
+        if (matches[0]) await setPerspectiveEntity(matches[0]);
+        else showToast(`No Cala entity found for "${cleanText(pInput.value)}".`, true);
+      }
+    } else if (e.key === "Escape") {
+      closePerspectivePopover();
+    }
+  });
+
+  $("#perspectiveResults")?.addEventListener("click", async (e) => {
+    const row = e.target.closest("[data-perspective-index]");
+    if (!row) return;
+    const item = state.perspectiveResults[Number(row.dataset.perspectiveIndex)];
+    if (item) await setPerspectiveEntity(item);
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!state.perspectivePopoverOpen) return;
+    if (!e.target.closest("#perspectivePickerWrap")) {
+      closePerspectivePopover();
+    }
+  });
+
+  $("#decisionModeMetaBar")?.addEventListener("click", async (e) => {
+    if (e.target.closest("[data-cta-add-peer]")) {
+      if (window.innerWidth <= 900) closeDecisionPopover();
+      state.compareBoxOpen = true;
+      renderExploredEntitiesBox();
+      requestAnimationFrame(() => $("#compareEntityInput")?.focus());
+      return;
+    }
+    if (e.target.closest("[data-cta-set-perspective]")) {
+      if (window.innerWidth <= 900) closeDecisionPopover();
+      state.perspectivePopoverOpen = true;
+      const pop = $("#perspectivePopover");
+      if (pop) pop.hidden = false;
+      $("#perspectivePickerBtn")?.setAttribute("aria-expanded", "true");
+      requestAnimationFrame(() => $("#perspectiveSearchInput")?.focus());
+      return;
+    }
+    if (e.target.closest("[data-reset-perspective]")) {
+      await setPerspectiveEntity(null);
+      return;
+    }
+    if (e.target.closest("[data-copy-triage-brief]")) {
+      if (!state.bridgeMap) return;
+      const s = buildFourFactorDecisionSummary(state.bridgeMap);
+      const pName = state.perspectiveEntity?.name || s.executive?.perspectiveEntity?.name || "My Firm";
+      const targets = state.pinnedEntities.map((p) => p.name).join(", ");
+      const warm = asList(s.executive?.warmIntroChains).slice(0, 3).map((c) => `  - ${c.chainText}`);
+      const conflicts = asList(s.executive?.portfolioConflicts).slice(0, 3).map((c) => `  - ${c.reason}`);
+      const lines = [
+        `VentureLink Origination Triage (${pName} -> ${targets})`,
+        `Overall: ${s.overall.label} — ${s.investmentEffect}`,
+        ...s.factors.map((f) => `- ${f.displayLabel || f.label} [${f.effect}]: ${f.line}`),
+        ...(warm.length ? ["Warm Paths:", ...warm] : ["Warm Paths: None in Cala (cold outreach)"]),
+        ...(conflicts.length ? ["Portfolio Conflicts:", ...conflicts] : [])
+      ].join("\n");
+      try {
+        await navigator.clipboard?.writeText(lines);
+        showToast("Copied origination triage brief to clipboard.");
+      } catch {
+        showToast("Unable to access clipboard.", true);
+      }
+      return;
+    }
+    const targetBtn = e.target.closest("[data-primary-target-id]");
+    if (targetBtn) {
+      const nextTarget = targetBtn.dataset.primaryTargetId || null;
+      state.primaryTargetId = state.primaryTargetId === nextTarget ? null : nextTarget;
+      if (state.pinnedEntities.length) {
+        await runEntityMapAnalysis(state.pinnedEntities, { fit: false, discoverLive: false });
+      }
+    }
+  });
   $("#decisionSummaryPopover")?.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     e.preventDefault();
@@ -6968,6 +7871,13 @@ function bindDossierEvents() {
           closeCompareSuggest();
           return;
         }
+        if (state.perspectivePopoverOpen) {
+          state.perspectivePopoverOpen = false;
+          const pPop = $("#perspectivePopover");
+          if (pPop) pPop.hidden = true;
+          $("#perspectivePickerBtn")?.setAttribute("aria-expanded", "false");
+          return;
+        }
         if (state.legendPopoverOpen) {
           state.legendPopoverOpen = false;
           const pop = $("#mapLegendPopover");
@@ -7038,6 +7948,9 @@ async function initApp() {
     state.calaBudget = budget;
     updateTelemetryPill(budget);
   } catch (_) {}
+
+  state.perspectiveEntity = loadPerspectiveFromStorage();
+  syncPerspectiveControl();
 
   const saved = loadPinnedEntitiesFromStorage();
   if (saved.length) {

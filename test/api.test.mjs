@@ -697,3 +697,80 @@ test('POST /api/connection-insight validates packet and returns grounded respons
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test('POST /api/analyze supports neutral teardown and perspective_triage mode with perspectiveEntity', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rte-api-persp-'));
+  const targetEntity = {
+    id: 'ent-target-api',
+    name: 'Anthropic Test Co',
+    entity_type: 'Company',
+    relationships: {
+      outgoing: { OPERATES_IN_INDUSTRY: [{ id: 'ind-ai', name: 'Foundation Models' }] },
+      incoming: {
+        INVESTED_IN: [
+          {
+            id: 'ent-persp-api',
+            name: 'Sequoia Test Fund',
+            entity_type: 'Organization',
+            properties: { sources: [{ name: 'Press', document: 'https://example.com/seq-anth', published_time: '2026-05-01' }] }
+          }
+        ]
+      }
+    }
+  };
+  const perspEntity = {
+    id: 'ent-persp-api',
+    name: 'Sequoia Test Fund',
+    entity_type: 'Organization',
+    relationships: {
+      outgoing: {
+        INVESTED_IN: [
+          {
+            id: 'ent-target-api',
+            name: 'Anthropic Test Co',
+            entity_type: 'Company',
+            properties: { sources: [{ name: 'Press', document: 'https://example.com/seq-anth', published_time: '2026-05-01' }] }
+          }
+        ]
+      },
+      incoming: {}
+    }
+  };
+
+  const server = createAppServer({
+    calaClient: createCalaClient({ apiKey: '', cacheFile: path.join(tmpDir, 'cala.json') }),
+    registryClient: createRegistryClient({ cachePath: path.join(tmpDir, 'reg.json') })
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const neutralRes = await fetch(`${url}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'entity', entities: [targetEntity] })
+    });
+    assert.equal(neutralRes.status, 200);
+    const neutralData = await neutralRes.json();
+    assert.equal(neutralData.analysisMode, 'single_teardown');
+    assert.equal(neutralData.perspectiveEntity, null);
+
+    const triageRes = await fetch(`${url}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'entity',
+        entities: [targetEntity],
+        perspectiveEntity: perspEntity,
+        primaryTargetId: targetEntity.id
+      })
+    });
+    assert.equal(triageRes.status, 200);
+    const triageData = await triageRes.json();
+    assert.equal(triageData.analysisMode, 'perspective_triage');
+    assert.equal(triageData.perspectiveEntity?.id, perspEntity.id);
+    assert.equal(triageData.bridgeMap.perspectiveEntity?.isColdOutreach, false);
+    assert.equal(triageData.bridgeMap.primaryTargetId, targetEntity.id);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

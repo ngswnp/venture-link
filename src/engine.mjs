@@ -3681,40 +3681,78 @@ export function buildBridgeMapPayload(thesis, shortlist = [], options = {}) {
   };
 }
 
+export const STRUCTURAL_ROLES = ['capital', 'governance', 'commercial', 'strategic_event'];
+
+export function classifyTimingRecency(dateStr = '', referenceDate = null) {
+  const raw = String(dateStr || '').trim();
+  if (!raw) {
+    return { timingRecency: 'undated', isRecentCatalyst: false, isHistoricalMilestone: false, monthsAgo: null };
+  }
+  let normalized = raw.slice(0, 10);
+  if (/^\d{4}$/.test(raw)) normalized = `${raw}-06-15`;
+  else if (/^\d{4}-\d{2}$/.test(raw)) normalized = `${raw}-15`;
+  const evtMs = Date.parse(normalized);
+  if (!Number.isFinite(evtMs)) {
+    return { timingRecency: 'undated', isRecentCatalyst: false, isHistoricalMilestone: false, monthsAgo: null };
+  }
+  const refStr = referenceDate || new Date().toISOString().slice(0, 10);
+  const refMs = Date.parse(refStr);
+  const baseRef = Number.isFinite(refMs) ? refMs : Date.now();
+  const rawMonths = (baseRef - evtMs) / (1000 * 60 * 60 * 24 * 30.4375);
+  const monthsAgo = Math.round(rawMonths * 10) / 10;
+  if (rawMonths <= 18 && rawMonths >= -12) {
+    return {
+      timingRecency: 'active_catalyst',
+      isRecentCatalyst: true,
+      isHistoricalMilestone: false,
+      monthsAgo: Math.max(0, monthsAgo)
+    };
+  }
+  if (rawMonths > 18) {
+    return {
+      timingRecency: 'historical_milestone',
+      isRecentCatalyst: false,
+      isHistoricalMilestone: true,
+      monthsAgo
+    };
+  }
+  return { timingRecency: 'undated', isRecentCatalyst: false, isHistoricalMilestone: false, monthsAgo: null };
+}
+
 const ENTITY_MAP_RELATION_META = {
-  PARTNERED_WITH: { label: 'Partnered with', group: 'access', family: 'co_investor' },
-  SUPPLIES: { label: 'Supplies', group: 'access', family: 'co_investor' },
-  SUPPLIED_BY: { label: 'Supplied by', group: 'access', family: 'co_investor' },
-  INVESTED_IN: { label: 'Invested in', group: 'access', family: 'co_investor' },
-  CO_INVESTED_WITH: { label: 'Co-invested with', group: 'access', family: 'co_investor' },
-  ADVISED: { label: 'Advised', group: 'access', family: 'co_investor' },
-  FOUNDED: { label: 'Founded', group: 'lineage', family: 'alumni_spinout' },
-  CO_FOUNDED: { label: 'Co-founded', group: 'lineage', family: 'alumni_spinout' },
-  IS_CEO_OF: { label: 'Leads as CEO of', group: 'lineage', family: 'alumni_spinout' },
-  IS_CTO_OF: { label: 'Leads as CTO of', group: 'lineage', family: 'alumni_spinout' },
-  IS_CFO_OF: { label: 'Serves as CFO of', group: 'lineage', family: 'alumni_spinout' },
-  IS_COO_OF: { label: 'Serves as COO of', group: 'lineage', family: 'alumni_spinout' },
-  IS_CSO_OF: { label: 'Serves as CSO of', group: 'lineage', family: 'alumni_spinout' },
-  IS_CRO_OF: { label: 'Serves as CRO of', group: 'lineage', family: 'alumni_spinout' },
-  IS_CMO_OF: { label: 'Serves as CMO of', group: 'lineage', family: 'alumni_spinout' },
-  IS_CCO_OF: { label: 'Serves as CCO of', group: 'lineage', family: 'alumni_spinout' },
-  IS_VICEPRESIDENT_OF: { label: 'Served as VP at', group: 'lineage', family: 'alumni_spinout' },
-  IS_PRESIDENT_OF: { label: 'Served as President of', group: 'lineage', family: 'alumni_spinout' },
-  IS_CHAIR_OF: { label: 'Chairs', group: 'lineage', family: 'alumni_spinout' },
-  IS_BOARD_MEMBER_OF: { label: 'Serves on the board of', group: 'lineage', family: 'alumni_spinout' },
-  WORKS_AT: { label: 'Works at', group: 'lineage', family: 'alumni_spinout' },
-  IS_MEMBER_OF: { label: 'Is a member of', group: 'lineage', family: 'alumni_spinout' },
-  IS_SUBSIDIARY_OF: { label: 'Is a subsidiary of', group: 'lineage', family: 'portfolio_twin' },
-  IS_DIRECT_PARENT_OF: { label: 'Direct parent of', group: 'lineage', family: 'portfolio_twin' },
-  IS_ULTIMATE_PARENT_OF: { label: 'Ultimate parent of', group: 'lineage', family: 'portfolio_twin' },
-  IS_CONTROL_PERSON_OF: { label: 'Control person of', group: 'lineage', family: 'portfolio_twin' },
-  SPUN_OUT_OF: { label: 'Spun out of', group: 'lineage', family: 'alumni_spinout' },
-  ACQUIRED: { label: 'Acquired', group: 'caution', family: 'portfolio_twin' },
-  COMPETES_WITH: { label: 'Competes with', group: 'caution', family: 'portfolio_twin' },
-  PARTICIPATES_IN_FUNDING_ROUND: { label: 'Participated in funding round', group: 'timing', family: 'event' },
-  HAS_FUNDING_ROUND: { label: 'Has funding round', group: 'timing', family: 'event' },
-  PARTICIPATES_IN_CORPORATE_EVENT: { label: 'Participated in corporate event', group: 'timing', family: 'event' },
-  PARTICIPATES_IN_EVENT: { label: 'Participated in event', group: 'timing', family: 'event' }
+  PARTNERED_WITH: { label: 'Partnered with', group: 'access', family: 'co_investor', structuralRole: 'commercial' },
+  SUPPLIES: { label: 'Supplies', group: 'access', family: 'co_investor', structuralRole: 'commercial' },
+  SUPPLIED_BY: { label: 'Supplied by', group: 'access', family: 'co_investor', structuralRole: 'commercial' },
+  INVESTED_IN: { label: 'Invested in', group: 'access', family: 'co_investor', structuralRole: 'capital' },
+  CO_INVESTED_WITH: { label: 'Co-invested with', group: 'access', family: 'co_investor', structuralRole: 'capital' },
+  ADVISED: { label: 'Advised', group: 'access', family: 'co_investor', structuralRole: 'commercial' },
+  FOUNDED: { label: 'Founded', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  CO_FOUNDED: { label: 'Co-founded', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_CEO_OF: { label: 'Leads as CEO of', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_CTO_OF: { label: 'Leads as CTO of', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_CFO_OF: { label: 'Serves as CFO of', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_COO_OF: { label: 'Serves as COO of', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_CSO_OF: { label: 'Serves as CSO of', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_CRO_OF: { label: 'Serves as CRO of', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_CMO_OF: { label: 'Serves as CMO of', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_CCO_OF: { label: 'Serves as CCO of', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_VICEPRESIDENT_OF: { label: 'Served as VP at', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_PRESIDENT_OF: { label: 'Served as President of', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_CHAIR_OF: { label: 'Chairs', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_BOARD_MEMBER_OF: { label: 'Serves on the board of', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  WORKS_AT: { label: 'Works at', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_MEMBER_OF: { label: 'Is a member of', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  IS_SUBSIDIARY_OF: { label: 'Is a subsidiary of', group: 'lineage', family: 'portfolio_twin', structuralRole: 'governance' },
+  IS_DIRECT_PARENT_OF: { label: 'Direct parent of', group: 'lineage', family: 'portfolio_twin', structuralRole: 'governance' },
+  IS_ULTIMATE_PARENT_OF: { label: 'Ultimate parent of', group: 'lineage', family: 'portfolio_twin', structuralRole: 'governance' },
+  IS_CONTROL_PERSON_OF: { label: 'Control person of', group: 'lineage', family: 'portfolio_twin', structuralRole: 'governance' },
+  SPUN_OUT_OF: { label: 'Spun out of', group: 'lineage', family: 'alumni_spinout', structuralRole: 'governance' },
+  ACQUIRED: { label: 'Acquired', group: 'lineage', family: 'portfolio_twin', structuralRole: 'governance', isAcquisition: true },
+  COMPETES_WITH: { label: 'Competes with', group: 'caution', family: 'portfolio_twin', structuralRole: 'strategic_event' },
+  PARTICIPATES_IN_FUNDING_ROUND: { label: 'Participated in funding round', group: 'timing', family: 'event', structuralRole: 'capital' },
+  HAS_FUNDING_ROUND: { label: 'Has funding round', group: 'timing', family: 'event', structuralRole: 'capital' },
+  PARTICIPATES_IN_CORPORATE_EVENT: { label: 'Participated in corporate event', group: 'timing', family: 'event', structuralRole: 'strategic_event' },
+  PARTICIPATES_IN_EVENT: { label: 'Participated in event', group: 'timing', family: 'event', structuralRole: 'strategic_event' }
 };
 
 const ENTITY_MAP_STATIC_RELATIONS = new Set([
@@ -3876,17 +3914,35 @@ function resolveEntityMapRelationMeta(relationType = '') {
 
   let group = 'access';
   let family = 'co_investor';
-  if (/COMPET|LAWSUIT|LITIG|SUED|REGULAT|SANCTION|AFFECT|RISK|CONFLICT|DEBT|BANKRUPT|INVESTIGAT|TERMINAT|ACQUIR|MERG/i.test(key)) {
+  let structuralRole = 'commercial';
+  let isAcquisition = false;
+  if (/COMPET|LAWSUIT|LITIG|SUED|REGULAT|SANCTION|AFFECT|RISK|CONFLICT|DEBT|BANKRUPT|INVESTIGAT|TERMINAT|DISPUTE/i.test(key)) {
     group = 'caution';
     family = 'portfolio_twin';
+    structuralRole = 'strategic_event';
+  } else if (/ACQUIR|MERG/i.test(key)) {
+    group = 'lineage';
+    family = 'portfolio_twin';
+    structuralRole = 'governance';
+    isAcquisition = true;
   } else if (/ROUND|EVENT|FILING|IPO|LIST|ANNOUNCE|LAUNCH|DIVIDEND|TRANCHE|EXPIRE/i.test(key)) {
     group = 'timing';
     family = 'event';
+    structuralRole = 'strategic_event';
+  } else if (/INVEST|SHAREHOLD|EQUITY|BACK/i.test(key)) {
+    group = 'access';
+    family = 'co_investor';
+    structuralRole = 'capital';
   } else if (/FOUND|CEO|CTO|CFO|COO|CMO|CRO|CSO|EXEC|BOARD|CHAIR|WORK|ALUM|EMPLOY|PARENT|SUBSIDIAR|OWN|CONTROL|MEMBER|SPIN|AFFILIAT/i.test(key)) {
     group = 'lineage';
     family = 'alumni_spinout';
+    structuralRole = 'governance';
+  } else if (/SUPPL|PARTNER|CUSTOM|DISTRIB|RESELL|CLIENT|ADVIS|LICENS|INTEGRAT/i.test(key)) {
+    group = 'access';
+    family = 'co_investor';
+    structuralRole = 'commercial';
   }
-  return { label, group, family };
+  return { label, group, family, structuralRole, isAcquisition };
 }
 
 function formatCompactRoundValue(amount, units = 'USD') {
@@ -4113,7 +4169,11 @@ function registerEntityMapSource(anchor, relation, fallbackRank = null) {
   };
 }
 
-function addEntityMapNode(nodeMap, entity, { isAnchor = false, topSourceRank = null, sourceIds = [] } = {}) {
+function addEntityMapNode(
+  nodeMap,
+  entity,
+  { isAnchor = false, isPerspectiveEntity = false, topSourceRank = null, sourceIds = [] } = {}
+) {
   const id = String(entity?.id || '');
   if (!id) return null;
   const existing = nodeMap.get(id);
@@ -4121,6 +4181,7 @@ function addEntityMapNode(nodeMap, entity, { isAnchor = false, topSourceRank = n
     const existingPriority = SOURCE_RANK_PRIORITY[String(existing.topSourceRank || '').toUpperCase()] || 0;
     const newPriority = SOURCE_RANK_PRIORITY[String(topSourceRank || '').toUpperCase()] || 0;
     if (newPriority > existingPriority) existing.topSourceRank = topSourceRank;
+    if (isPerspectiveEntity) existing.isPerspectiveEntity = true;
     existing.sourceIds = [...new Set([...(existing.sourceIds || []), ...sourceIds])];
     return existing;
   }
@@ -4131,6 +4192,7 @@ function addEntityMapNode(nodeMap, entity, { isAnchor = false, topSourceRank = n
     entityType: entityMapType(entity),
     entityCategory: entity?.entityCategory || null,
     contributionGroup: isAnchor ? 'all' : null,
+    ...(isPerspectiveEntity ? { isPerspectiveEntity: true } : {}),
     topSourceRank,
     sourceIds: [...new Set(sourceIds)],
     description: entity?.description || entity?.properties?.description?.value || null
@@ -4160,9 +4222,25 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
     throw err;
   }
 
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const referenceDate = options.referenceDate || (todayIso >= REFERENCE_DATE ? todayIso : REFERENCE_DATE);
+  const perspectiveEntity = options.perspectiveEntity?.id && options.perspectiveEntity?.name ? options.perspectiveEntity : null;
+  const perspectiveId = perspectiveEntity ? String(perspectiveEntity.id) : null;
+  const analysisMode = perspectiveId
+    ? 'perspective_triage'
+    : focalEntities.length === 1
+      ? 'single_teardown'
+      : 'ecosystem_compare';
+
   const anchorEntityResolved = focalEntities[0];
   const focalById = new Map(focalEntities.map((entity) => [String(entity.id), entity]));
   const focalEntityIds = focalEntities.map((entity) => String(entity.id));
+  const primaryTargetId =
+    options.primaryTargetId && focalById.has(String(options.primaryTargetId))
+      ? String(options.primaryTargetId)
+      : focalEntities.length === 1
+        ? focalEntityIds[0]
+        : null;
   const focalByName = new Map(focalEntities.map((entity) => [normalizeLookupName(entity.name), entity]));
   const focalByCanonicalName = new Map();
   for (const entity of focalEntities) {
@@ -4174,6 +4252,9 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
       .filter((entity) => entity?.id)
       .map((entity) => [String(entity.id), entity])
   );
+  if (perspectiveEntity && !relatedById.has(perspectiveId)) {
+    relatedById.set(perspectiveId, perspectiveEntity);
+  }
   const nonFocalByCanonicalKey = new Map();
   const getCanonicalBucketKey = (entity = {}) => {
     const canon = canonicalMapEntityName(entity.name || '');
@@ -4249,8 +4330,34 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
       name: `${entity.name || 'Cala entity'} record`,
       properties: { sources: entitySource ? [entitySource] : [] }
     });
-    const node = addEntityMapNode(nodeMap, entity, { isAnchor: true, topSourceRank: sourceRank, sourceIds: [sourceId] });
+    const node = addEntityMapNode(nodeMap, entity, {
+      isAnchor: true,
+      isPerspectiveEntity: Boolean(perspectiveId && String(entity.id) === perspectiveId),
+      topSourceRank: sourceRank,
+      sourceIds: [sourceId]
+    });
     if (node) node.isFocalEntity = true;
+  }
+
+  if (perspectiveEntity && !focalById.has(perspectiveId)) {
+    const pSource = Object.values(perspectiveEntity.properties || {})
+      .flatMap((property) => property?.sources || [])
+      .find(Boolean) || null;
+    const { sourceId, sourceRank } = registerEntityMapSource(perspectiveEntity, {
+      id: 'perspective-record',
+      name: `${perspectiveEntity.name || 'Perspective entity'} record`,
+      properties: { sources: pSource ? [pSource] : [] }
+    });
+    const pNode = addEntityMapNode(nodeMap, perspectiveEntity, {
+      isAnchor: true,
+      isPerspectiveEntity: true,
+      topSourceRank: sourceRank,
+      sourceIds: [sourceId]
+    });
+    if (pNode) {
+      pNode.isFocalEntity = false;
+      pNode.isPerspectiveEntity = true;
+    }
   }
 
   // In single-center mode, comparison entities stay visible as disconnected
@@ -4392,6 +4499,19 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
       rawRecord?.properties?.valid_since ||
       rawRecord?.properties?.sources?.[0]?.date ||
       null;
+    const normalizedEdgeDate = resolvedDate ? String(resolvedDate).slice(0, 10) : null;
+    const recency = classifyTimingRecency(normalizedEdgeDate || '', referenceDate);
+    const defaultRoleByGroup =
+      relationMeta.group === 'access'
+        ? 'capital'
+        : relationMeta.group === 'lineage'
+          ? 'governance'
+          : 'strategic_event';
+    const structuralRole =
+      relationMeta.structuralRole ||
+      ENTITY_MAP_RELATION_META[relationType]?.structuralRole ||
+      defaultRoleByGroup;
+    const isAcquisition = Boolean(relationMeta.isAcquisition || relationType === 'ACQUIRED');
     const rawRoleValue = role || rawRecord?.properties?.role || null;
     const readableRole = formatReadableEdgeRole(rawRoleValue);
     const normalizedLabel = String(relationMeta.label || '').toLowerCase();
@@ -4425,13 +4545,19 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
       isLead: Boolean(isLead),
       isRoundExpanded: Boolean(isRoundExpanded),
       isBulkCrawlNoise: Boolean(isBulkCrawlNoise),
+      structuralRole,
+      isAcquisition,
+      timingRecency: recency.timingRecency,
+      isRecentCatalyst: recency.isRecentCatalyst,
+      isHistoricalMilestone: recency.isHistoricalMilestone,
+      monthsAgo: recency.monthsAgo,
       contributionGroup: relationMeta.group,
       bridgeFamily: relationMeta.family,
       topSourceRank: sourceRank,
       sourceIds,
       evidenceSources,
       sourceCount,
-      date: resolvedDate ? String(resolvedDate).slice(0, 10) : null,
+      date: normalizedEdgeDate,
       role: readableRole || null,
       detail: computedDetail,
       verified: true
@@ -4509,11 +4635,18 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
             const title = [roundTypeVal, amount].filter(Boolean).join(' · ');
             const registeredSource = registerEntityMapSource(assignedFocal, rawTarget);
             const hasOriginSource = Boolean(origin);
+            const normalizedEventDate = date ? String(date).slice(0, 10) : null;
+            const evtRecency = classifyTimingRecency(normalizedEventDate || '', referenceDate);
             recordTimingCatalyst(focalId, {
               id: String(target.id),
               kind: isFundingRoundEntity(target) ? 'funding_round' : 'corporate_event',
+              structuralRole: isFundingRoundEntity(target) ? 'capital' : 'strategic_event',
+              timingRecency: evtRecency.timingRecency,
+              isRecentCatalyst: evtRecency.isRecentCatalyst,
+              isHistoricalMilestone: evtRecency.isHistoricalMilestone,
+              monthsAgo: evtRecency.monthsAgo,
               title,
-              date: date ? String(date).slice(0, 10) : null,
+              date: normalizedEventDate,
               amount: amount || null,
               role: roundRole || null,
               sourceRank: registeredSource.sourceRank,
@@ -4667,7 +4800,8 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
           relationMeta: {
             label: investor.isLead ? 'Led round' : 'Invested in',
             group: 'access',
-            family: 'co_investor'
+            family: 'co_investor',
+            structuralRole: 'capital'
           },
           direction: 'outgoing',
           focalId: primaryFocalId,
@@ -4717,7 +4851,8 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
           relationMeta: {
             label: 'Co-invested with',
             group: 'access',
-            family: 'co_investor'
+            family: 'co_investor',
+            structuralRole: 'capital'
           },
           direction: 'outgoing',
           focalId: String(focalInv.entity.id),
@@ -5033,6 +5168,7 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
       .sort(
         (a, b) =>
           Number(Boolean(a.isAnomaly)) - Number(Boolean(b.isAnomaly)) ||
+          Number(Boolean(b.isRecentCatalyst)) - Number(Boolean(a.isRecentCatalyst)) ||
           (SOURCE_RANK_PRIORITY[b.sourceRank] || 0) - (SOURCE_RANK_PRIORITY[a.sourceRank] || 0) ||
           String(b.date || '').localeCompare(String(a.date || ''))
       )
@@ -5052,6 +5188,16 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
       if (seenTimingTitles.has(normKey)) continue;
       seenTimingTitles.add(normKey);
 
+      const evtRecency = evt.timingRecency
+        ? evt
+        : classifyTimingRecency(evt.date || '', referenceDate);
+      const evtStructuralRole = evt.structuralRole || (evt.kind === 'funding_round' ? 'capital' : 'strategic_event');
+      const evtEntityType = evtRecency.isRecentCatalyst
+        ? 'Active Catalyst'
+        : evtRecency.isHistoricalMilestone
+          ? 'Historical Milestone'
+          : 'Timing Catalyst';
+
       const evtNodeId = `event:${slugifyBridgeId(`${focalId}-${evtLabel}-${evt.date}`).slice(0, 48)}`;
       const shortName = evtLabel.length > 38 ? `${evtLabel.slice(0, 35)}...` : evtLabel;
       if (!nodeMap.has(evtNodeId)) {
@@ -5061,9 +5207,14 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
           label: shortName,
           fullTitle: evtLabel,
           kind: 'event',
-          entityType: 'Timing Catalyst',
+          entityType: evtEntityType,
           contributionGroup: 'timing',
-          isTimingCatalyst: true,
+          structuralRole: evtStructuralRole,
+          timingRecency: evtRecency.timingRecency,
+          isRecentCatalyst: Boolean(evtRecency.isRecentCatalyst),
+          isHistoricalMilestone: Boolean(evtRecency.isHistoricalMilestone),
+          monthsAgo: evtRecency.monthsAgo ?? null,
+          isTimingCatalyst: Boolean(evtRecency.isRecentCatalyst),
           isAnomaly: Boolean(evt.isAnomaly),
           date: evt.date,
           topSourceRank: evt.sourceRank || 'PRESS',
@@ -5084,7 +5235,12 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
           label: `${shortName} (${evt.date})`,
           date: evt.date,
           contributionGroup: 'timing',
-          isTimingCatalyst: true,
+          structuralRole: evtStructuralRole,
+          timingRecency: evtRecency.timingRecency,
+          isRecentCatalyst: Boolean(evtRecency.isRecentCatalyst),
+          isHistoricalMilestone: Boolean(evtRecency.isHistoricalMilestone),
+          monthsAgo: evtRecency.monthsAgo ?? null,
+          isTimingCatalyst: Boolean(evtRecency.isRecentCatalyst),
           isAnomaly: Boolean(evt.isAnomaly),
           anomalyReason: evt.anomalyReason || null,
           topSourceRank: evt.sourceRank || 'PRESS',
@@ -5093,7 +5249,11 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
           evidenceSources: evt.evidenceSources || [],
           sourceCount: evt.sourceCount || eventSourceIds.length,
           focalEntityId: focalId,
-          whyMatters: evt.anomalyReason || `Verified dated milestone (${evt.date}) indicating active operational or financing timing.`
+          whyMatters:
+            evt.anomalyReason ||
+            (evtRecency.isRecentCatalyst
+              ? `Active catalyst (${evt.date}, within 18 months) indicating current financing or operating momentum.`
+              : `Historical milestone (${evt.date}, >18 months ago) providing background capital context.`)
         });
       }
       promotedTiming += 1;
@@ -5160,6 +5320,7 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
           kind: 'caution',
           entityType: 'Competitive Overlap',
           contributionGroup: 'caution',
+          structuralRole: 'strategic_event',
           isCautionFlag: true,
           isSharedBridge: true,
           sharedByFocalEntityIds: focalList,
@@ -5178,6 +5339,7 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
             relation: 'SECTOR_COMPETITION',
             label: `Direct ${entry.label} overlap`,
             contributionGroup: 'caution',
+            structuralRole: 'strategic_event',
             isCautionFlag: true,
             isSharedBridge: true,
             sharedBridgeNodeId: cautionNodeId,
@@ -5213,6 +5375,361 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
     }
   }
 
+  let perspectiveContext = null;
+  if (perspectiveEntity && perspectiveId) {
+    const connectedNodeById = new Map();
+    const connectedNodeByKey = new Map();
+    for (const edge of edges) {
+      for (const nId of [edge.from, edge.to]) {
+        if (focalById.has(nId) || nId === perspectiveId) continue;
+        const n = nodeMap.get(nId);
+        if (!n) continue;
+        connectedNodeById.set(nId, relatedById.get(nId) || { id: n.id, name: n.label, entity_type: n.entityType, ...n });
+        const bKey = getCanonicalBucketKey({ name: n.label, entity_type: n.entityType });
+        if (bKey && !connectedNodeByKey.has(bKey)) {
+          connectedNodeByKey.set(bKey, connectedNodeById.get(nId));
+        }
+      }
+    }
+
+    const extractIndustrySet = (entityObj = {}) => {
+      const set = new Set();
+      const skip = /^(entity|company|organization|person|unknown|investor|venture capital)$/i;
+      const addTag = (raw) => {
+        const cleaned = formatIndustryName(raw);
+        if (!cleaned || skip.test(cleaned)) return;
+        set.add(cleaned);
+      };
+      addTag(entityObj.category || entityObj.sector || entityObj.industry);
+      for (const ind of entityObj.relationships?.outgoing?.OPERATES_IN_INDUSTRY || []) {
+        addTag(ind?.name);
+      }
+      return set;
+    };
+
+    const PORTFOLIO_OUTGOING_RELS = new Set(['INVESTED_IN', 'ACQUIRED']);
+    const portfolioHoldings = new Map();
+    const portfolioHoldingsByCanon = new Map();
+    const recordPortfolioHolding = (rawTarget, relType, fallbackSrcIds = []) => {
+      if (!rawTarget?.id || !rawTarget?.name) return;
+      const resolved = relatedById.get(String(rawTarget.id)) || rawTarget;
+      const hId = String(resolved.id);
+      if (hId === perspectiveId) return;
+      const canon = canonicalMapEntityName(resolved.name) || normalizeLookupName(resolved.name);
+      const { sourceIds: pSrcIds } = registerEntityMapSource(perspectiveEntity, rawTarget);
+      if (!portfolioHoldings.has(hId)) {
+        const entry = {
+          id: hId,
+          name: resolved.name,
+          canon,
+          relation: relType,
+          entity: resolved,
+          industries: extractIndustrySet(resolved),
+          sourceIds: [...new Set([...(fallbackSrcIds || []), ...pSrcIds])].filter(Boolean)
+        };
+        portfolioHoldings.set(hId, entry);
+        if (canon && !portfolioHoldingsByCanon.has(canon)) {
+          portfolioHoldingsByCanon.set(canon, entry);
+        }
+      }
+    };
+
+    if (!focalById.has(perspectiveId)) {
+      const pRelationships = perspectiveEntity.relationships || {};
+      for (const direction of ['outgoing', 'incoming']) {
+        for (const [relationType, rawTargets] of Object.entries(pRelationships[direction] || {})) {
+          const relationMeta = resolveEntityMapRelationMeta(relationType);
+          if (!relationMeta) continue;
+          for (const rawTarget of rawTargets || []) {
+            if (!rawTarget?.id || !rawTarget?.name) continue;
+            if (isFundingRoundEntity(rawTarget) || isGenericEventContainerNode(rawTarget, relationType)) continue;
+            const target = resolveTargetEntity(rawTarget);
+            if (isHonorificPersonStub(target)) continue;
+
+            if (direction === 'outgoing' && PORTFOLIO_OUTGOING_RELS.has(relationType)) {
+              recordPortfolioHolding(target, relationType);
+            } else if (direction === 'incoming' && relationType === 'IS_SUBSIDIARY_OF') {
+              recordPortfolioHolding(target, relationType);
+            }
+
+            const matchedFocal = resolveFocalEntity(target);
+            const tId = String(target.id);
+            const tKey = getCanonicalBucketKey(target);
+            const matchedBridge = connectedNodeById.get(tId) || (tKey ? connectedNodeByKey.get(tKey) : null) || null;
+            if (matchedFocal || matchedBridge) {
+              const targetForEdge = matchedFocal || matchedBridge;
+              emitVerifiedEdge({
+                sourceEntity: perspectiveEntity,
+                targetEntity: targetForEdge,
+                relationType,
+                relationMeta,
+                direction,
+                focalId: perspectiveId,
+                rawRecord: rawTarget
+              });
+            }
+          }
+        }
+      }
+    } else {
+      for (const rawTarget of perspectiveEntity.relationships?.outgoing?.INVESTED_IN || []) {
+        recordPortfolioHolding(rawTarget, 'INVESTED_IN');
+      }
+      for (const rawTarget of perspectiveEntity.relationships?.outgoing?.ACQUIRED || []) {
+        recordPortfolioHolding(rawTarget, 'ACQUIRED');
+      }
+    }
+
+    // Also include Pass 2 hydrated FundingRounds where perspectiveEntity invested
+    for (const roundEntity of relatedById.values()) {
+      if (!isFundingRoundEntity(roundEntity)) continue;
+      const roundParts = [
+        ...(roundEntity.relationships?.incoming?.PARTICIPATES_IN_FUNDING_ROUND || []),
+        ...(roundEntity.relationships?.outgoing?.PARTICIPATES_IN_FUNDING_ROUND || [])
+      ];
+      const pPart = roundParts.find((p) => {
+        if (String(p?.id) === perspectiveId) return true;
+        return canonicalMapEntityName(p?.name || '') === canonicalMapEntityName(perspectiveEntity.name || '') && Boolean(p?.name);
+      });
+      if (!pPart) continue;
+      const pRole = String(pPart.properties?.role || '').toUpperCase();
+      if (!['INVESTOR', 'LEAD_INVESTOR', 'LENDER', ''].includes(pRole)) continue;
+      const isLead = Boolean(pPart.properties?.is_lead) || pRole === 'LEAD_INVESTOR';
+      const roundDateVal =
+        roundEntity.properties?.event_date?.value ||
+        roundEntity.properties?.announcement_date?.value ||
+        roundEntity.properties?.close_date?.value ||
+        null;
+      const roundType =
+        roundEntity.properties?.round_label?.value ||
+        roundEntity.properties?.round_type?.value ||
+        'Funding Round';
+      const roundAmt = formatCompactRoundValue(
+        roundEntity.properties?.transaction_value?.value,
+        roundEntity.properties?.transaction_value_units?.value
+      );
+      const roundSum = [roundType, roundAmt, roundDateVal ? String(roundDateVal).slice(0, 7) : null].filter(Boolean).join(' · ');
+
+      for (const part of roundParts) {
+        if (!part?.id || !part?.name) continue;
+        const role = String(part.properties?.role || '').toUpperCase();
+        const resolved = resolveTargetEntity(part);
+        const rId = String(resolved.id);
+        if (rId === perspectiveId) continue;
+        if (role === 'ISSUER' || role === 'BORROWER' || role === 'TARGET') {
+          recordPortfolioHolding(resolved, 'INVESTED_IN', []);
+          const matchedFocal = resolveFocalEntity(resolved);
+          const rKey = getCanonicalBucketKey(resolved);
+          const matchedBridge = connectedNodeById.get(rId) || (rKey ? connectedNodeByKey.get(rKey) : null);
+          if (matchedFocal || matchedBridge) {
+            emitVerifiedEdge({
+              sourceEntity: perspectiveEntity,
+              targetEntity: matchedFocal || matchedBridge,
+              relationType: 'INVESTED_IN',
+              relationMeta: { label: isLead ? 'Led round' : 'Invested in', group: 'access', family: 'co_investor', structuralRole: 'capital' },
+              direction: 'outgoing',
+              focalId: perspectiveId,
+              rawRecord: {
+                id: `${roundEntity.id}-${perspectiveId}-${rId}`,
+                name: `${perspectiveEntity.name} -> ${resolved.name} (${roundSum})`,
+                properties: { sources: [...(pPart.properties?.sources || []), ...(part.properties?.sources || [])].filter(Boolean), event_date: roundDateVal }
+              },
+              date: roundDateVal,
+              role: isLead ? 'LEAD_INVESTOR' : 'INVESTOR',
+              roundLabel: roundSum,
+              roundType,
+              roundAmount: roundAmt || null,
+              roundDate: roundDateVal ? String(roundDateVal).slice(0, 10) : null,
+              isLead,
+              isRoundExpanded: true
+            });
+          }
+        } else if (role === 'INVESTOR' || role === 'LEAD_INVESTOR') {
+          const matchedFocal = resolveFocalEntity(resolved);
+          const rKey = getCanonicalBucketKey(resolved);
+          const matchedBridge = connectedNodeById.get(rId) || (rKey ? connectedNodeByKey.get(rKey) : null);
+          if (matchedFocal || matchedBridge) {
+            emitVerifiedEdge({
+              sourceEntity: perspectiveEntity,
+              targetEntity: matchedFocal || matchedBridge,
+              relationType: 'CO_INVESTED_WITH',
+              relationMeta: { label: 'Co-invested with', group: 'access', family: 'co_investor', structuralRole: 'capital' },
+              direction: 'outgoing',
+              focalId: perspectiveId,
+              rawRecord: {
+                id: `${roundEntity.id}-pcoinv-${perspectiveId}-${rId}`,
+                name: `${perspectiveEntity.name} co-invested with ${resolved.name} (${roundSum})`,
+                properties: { sources: [...(pPart.properties?.sources || []), ...(part.properties?.sources || [])].filter(Boolean), event_date: roundDateVal }
+              },
+              date: roundDateVal,
+              roundLabel: roundSum,
+              roundType,
+              roundAmount: roundAmt || null,
+              roundDate: roundDateVal ? String(roundDateVal).slice(0, 10) : null,
+              isRoundExpanded: true
+            });
+          }
+        }
+      }
+    }
+
+    const warmIntroChains = [];
+    const seenChainKeys = new Set();
+    const edgesTouchingPerspective = edges.filter((e) => e.from === perspectiveId || e.to === perspectiveId);
+    const pAdjacentTargetByNode = new Map();
+    for (const pe of edgesTouchingPerspective) {
+      pe.touchesPerspective = true;
+      const otherId = pe.from === perspectiveId ? pe.to : pe.from;
+      if (focalById.has(otherId)) {
+        pe.isPerspectiveBridge = true;
+        pe.perspectivePathType = 'direct_relationship';
+        const targetNode = nodeMap.get(otherId);
+        const chainText = `${perspectiveEntity.name} -> ${pe.label} -> ${targetNode?.label || otherId}`;
+        pe.perspectiveChain = [perspectiveEntity.name, targetNode?.label || otherId];
+        if (!seenChainKeys.has(chainText)) {
+          seenChainKeys.add(chainText);
+          warmIntroChains.push({
+            type: 'direct',
+            bridgeNodeId: null,
+            bridgeLabel: null,
+            targetId: otherId,
+            targetLabel: targetNode?.label || otherId,
+            relationLabel: pe.label,
+            chainText,
+            topSourceRank: pe.topSourceRank,
+            sourceIds: pe.sourceIds || []
+          });
+        }
+      } else {
+        if (!pAdjacentTargetByNode.has(otherId)) pAdjacentTargetByNode.set(otherId, []);
+        pAdjacentTargetByNode.get(otherId).push(pe);
+      }
+    }
+
+    for (const [bridgeId, pEdges] of pAdjacentTargetByNode.entries()) {
+      const bridgeNode = nodeMap.get(bridgeId);
+      if (!bridgeNode) continue;
+      const tEdges = edges.filter(
+        (e) =>
+          (e.from === bridgeId && focalById.has(e.to) && e.to !== perspectiveId) ||
+          (e.to === bridgeId && focalById.has(e.from) && e.from !== perspectiveId)
+      );
+      if (!tEdges.length) continue;
+
+      bridgeNode.isPerspectiveBridge = true;
+      bridgeNode.isSharedBridge = true;
+      if (!sharedBridgeNodeIds.includes(bridgeId)) sharedBridgeNodeIds.push(bridgeId);
+      const touchedFocals = new Set(bridgeNode.sharedByFocalEntityIds || []);
+      for (const te of tEdges) {
+        const fid = focalById.has(te.from) ? te.from : te.to;
+        touchedFocals.add(fid);
+      }
+      bridgeNode.sharedByFocalEntityIds = [...touchedFocals];
+
+      for (const pe of pEdges) {
+        pe.touchesPerspective = true;
+        pe.isPerspectiveBridge = true;
+        pe.isSharedBridge = true;
+        pe.sharedBridgeNodeId = bridgeId;
+        pe.perspectivePathType = 'warm_2hop_intro';
+      }
+      for (const te of tEdges) {
+        const fid = focalById.has(te.from) ? te.from : te.to;
+        const fLabel = focalById.get(fid)?.name || fid;
+        const pEdgeLead = pEdges[0];
+        te.touchesPerspective = true;
+        te.isPerspectiveBridge = true;
+        te.isSharedBridge = true;
+        te.sharedBridgeNodeId = bridgeId;
+        te.sharedByFocalEntityIds = bridgeNode.sharedByFocalEntityIds;
+        te.perspectivePathType = 'warm_2hop_intro';
+        te.perspectiveChain = [perspectiveEntity.name, bridgeNode.label, fLabel];
+        if (pEdgeLead && !pEdgeLead.perspectiveChain) {
+          pEdgeLead.perspectiveChain = [perspectiveEntity.name, bridgeNode.label, fLabel];
+        }
+        const chainText = `${perspectiveEntity.name} (${pEdgeLead?.label || 'linked'}) -> ${bridgeNode.label} -> ${fLabel} (${te.label})`;
+        if (!seenChainKeys.has(chainText)) {
+          seenChainKeys.add(chainText);
+          warmIntroChains.push({
+            type: 'warm_2hop',
+            bridgeNodeId: bridgeId,
+            bridgeLabel: bridgeNode.label,
+            targetId: fid,
+            targetLabel: fLabel,
+            relationLabel: `${pEdgeLead?.label || 'Connected'} -> ${te.label}`,
+            chainText,
+            topSourceRank: te.topSourceRank || pEdgeLead?.topSourceRank || 'PRESS',
+            sourceIds: [...new Set([...(pEdgeLead?.sourceIds || []), ...(te.sourceIds || [])])]
+          });
+        }
+      }
+    }
+
+    const portfolioConflicts = [];
+    const seenConflictKeys = new Set();
+    for (const focalId of focalEntityIds) {
+      if (focalId === perspectiveId) continue;
+      const fEnt = focalById.get(focalId) || {};
+      const fIndustries = extractIndustrySet(fEnt);
+      const fCanon = canonicalMapEntityName(fEnt.name || '') || normalizeLookupName(fEnt.name || '');
+
+      // Check direct COMPETES_WITH edges against perspective portfolio holdings
+      for (const edge of edges) {
+        if (edge.relation !== 'COMPETES_WITH') continue;
+        if (edge.from !== focalId && edge.to !== focalId) continue;
+        const rivalId = edge.from === focalId ? edge.to : edge.from;
+        const rivalCanon = canonicalMapEntityName(nodeMap.get(rivalId)?.label || '') || normalizeLookupName(nodeMap.get(rivalId)?.label || '');
+        const holding = portfolioHoldings.get(rivalId) || (rivalCanon ? portfolioHoldingsByCanon.get(rivalCanon) : null);
+        if (!holding) continue;
+        const cKey = `DIRECT:${focalId}:${holding.canon}`;
+        if (seenConflictKeys.has(cKey)) continue;
+        seenConflictKeys.add(cKey);
+        portfolioConflicts.push({
+          kind: 'DIRECT_RIVAL',
+          portfolioId: holding.id,
+          portfolioName: holding.name,
+          targetId: focalId,
+          targetName: fEnt.name,
+          industry: [...fIndustries][0] || 'Direct competitor',
+          reason: `${perspectiveEntity.name} backs ${holding.name}, which Cala records as competing directly with ${fEnt.name}.`,
+          sourceIds: [...new Set([...(edge.sourceIds || []), ...(holding.sourceIds || [])])].slice(0, 4)
+        });
+      }
+
+      // Check shared industry / category overlap between perspective holdings and focal targets
+      for (const holding of portfolioHoldings.values()) {
+        if (holding.id === focalId || holding.canon === fCanon) continue;
+        const sharedInds = [...fIndustries].filter((ind) => holding.industries.has(ind));
+        if (!sharedInds.length) continue;
+        const preferredInd = sharedInds.find((ind) => !/^(technology|software|business)$/i.test(ind)) || sharedInds[0];
+        const cKey = `SECTOR:${focalId}:${holding.canon}`;
+        if (seenConflictKeys.has(cKey)) continue;
+        seenConflictKeys.add(cKey);
+        const fSrcs = nodeMap.get(focalId)?.sourceIds || [];
+        portfolioConflicts.push({
+          kind: 'SECTOR_OVERLAP',
+          portfolioId: holding.id,
+          portfolioName: holding.name,
+          targetId: focalId,
+          targetName: fEnt.name,
+          industry: preferredInd,
+          reason: `${perspectiveEntity.name} backs ${holding.name} in ${preferredInd}, overlapping ${fEnt.name}'s category.`,
+          sourceIds: [...new Set([...fSrcs, ...(holding.sourceIds || [])])].slice(0, 4)
+        });
+      }
+    }
+
+    perspectiveContext = {
+      id: perspectiveId,
+      name: perspectiveEntity.name,
+      entityType: entityMapType(perspectiveEntity),
+      portfolioCount: portfolioHoldings.size,
+      warmIntroChains: warmIntroChains.slice(0, 12),
+      isColdOutreach: warmIntroChains.length === 0,
+      portfolioConflicts: portfolioConflicts.slice(0, 6)
+    };
+  }
+
   // A deep Cala record can contain hundreds of true relationships. The map is
   // a projection of that record, not the record itself: retain every shared
   // bridge and direct focal-to-focal fact, then show a compact, provenance-led
@@ -5235,7 +5752,7 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
     String(left.id).localeCompare(String(right.id));
   const selectedEdgeIds = new Set(
     edges
-      .filter((edge) => edge.isSharedBridge || directFocalEdge(edge))
+      .filter((edge) => edge.isSharedBridge || edge.touchesPerspective || edge.isPerspectiveBridge || directFocalEdge(edge))
       .map((edge) => edge.id)
   );
   const maxNonsharedPerGroup = focalEntityIds.length === 1 ? 3 : 2;
@@ -5283,7 +5800,7 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
     const rarityScore = Math.round((basePts + sharedPts + datePts) * 10) / 10;
     const formulaBreakdown = {
       formula: 'sourceRankWeight + sharedBridgeBonus + datedRecordBonus',
-      inputs: `${rank} (+${basePts})${sharedPts ? ` + shared path (+${sharedPts})` : ''}${datePts ? ` + dated ${edge.date} (+${datePts})` : ''} = ${rarityScore} pts`,
+      inputs: `${rank} (+${basePts})${sharedPts ? ` + shared path (+${sharedPts})` : ''}${datePts ? ` + dated ${edge.date} (+${datePts})` : ''} | weight ${rarityScore}`,
       plainMeaning: edge.detail
     };
     return {
@@ -5293,7 +5810,7 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
     };
   });
 
-  const visibleNodeIds = new Set(focalEntityIds);
+  const visibleNodeIds = new Set(perspectiveId ? [...focalEntityIds, perspectiveId] : focalEntityIds);
   for (const edge of displayEdges) {
     visibleNodeIds.add(edge.from);
     visibleNodeIds.add(edge.to);
@@ -5310,6 +5827,12 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
       node.rarityScore = bestEdge.rarityScore;
       node.formulaBreakdown = bestEdge.formulaBreakdown;
       if (bestEdge.date && !node.date) node.date = bestEdge.date;
+      if (!node.structuralRole && bestEdge.structuralRole) node.structuralRole = bestEdge.structuralRole;
+      if (!node.timingRecency && bestEdge.timingRecency) node.timingRecency = bestEdge.timingRecency;
+      if (bestEdge.isRecentCatalyst) node.isRecentCatalyst = true;
+      if (bestEdge.isHistoricalMilestone && !node.isRecentCatalyst) node.isHistoricalMilestone = true;
+      if (incEdges.some((e) => e.touchesPerspective)) node.touchesPerspective = true;
+      if (incEdges.some((e) => e.isPerspectiveBridge) && nodeId !== perspectiveId) node.isPerspectiveBridge = true;
     }
     const cleanLbl = formatEntityDisplayLabel(node.label, node.date || bestEdge?.date);
     if (cleanLbl !== node.label) {
@@ -5406,7 +5929,7 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
       significanceScore: g.significanceScore,
       visualWeight,
       significanceFormula: 'topSignalRarity + mean(top3Paths) + min(4.5, FILING_count * 1.5)',
-      significanceInputs: `Top: ${g.topRarity.toFixed(1)} + Top3 avg: ${g.top3MeanRarity.toFixed(1)} + ${g.filingCount} FILING (+${g.filingBonus.toFixed(1)}) = ${g.significanceScore.toFixed(1)} pts | ${stat.nodeIds.size} ${entityWord}`,
+      significanceInputs: `Top: ${g.topRarity.toFixed(1)} + Top3 avg: ${g.top3MeanRarity.toFixed(1)} + ${g.filingCount} FILING (+${g.filingBonus.toFixed(1)}) = ${g.significanceScore.toFixed(1)} | ${stat.nodeIds.size} ${entityWord}`,
       topContributors: g.sortedEntries.slice(0, 3)
     };
   });
@@ -5430,12 +5953,20 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
     edges: displayEdges,
     timingEventsByEntity,
     sourcesById: SOURCES,
-    anomalies: quarantinedAnomalies
+    anomalies: quarantinedAnomalies,
+    analysisMode,
+    perspectiveEntity: perspectiveContext,
+    primaryTargetId,
+    referenceDate
   });
 
   return {
     anchor,
     focalEntityIds,
+    analysisMode,
+    perspectiveEntity: perspectiveContext,
+    primaryTargetId,
+    referenceDate,
     sharedBridgeNodeIds: displayedSharedBridgeNodeIds,
     clusters,
     contributionClusters,
@@ -8040,7 +8571,13 @@ export function runFullAnalysis(input, options = {}) {
       ? input.entities
       : [input.entity || input.anchorEntity, ...(input.relatedEntities || options.relatedEntities || [])].filter(Boolean);
     const relatedEntities = input.relatedEntities || options.relatedEntities || [];
-    const bridgeMap = buildEntityBridgeMap(requestedEntities, relatedEntities, { ...options, multiCenter: true });
+    const bridgeMap = buildEntityBridgeMap(requestedEntities, relatedEntities, {
+      ...options,
+      multiCenter: true,
+      perspectiveEntity: input.perspectiveEntity || options.perspectiveEntity || null,
+      primaryTargetId: input.primaryTargetId || options.primaryTargetId || null,
+      referenceDate: input.referenceDate || options.referenceDate || null
+    });
     const anchor = bridgeMap.anchor;
     const entityNodes = bridgeMap.nodes.filter((node) => node.id !== anchor.id);
     const entitySourceRanks = bridgeMap.edges
