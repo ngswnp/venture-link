@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   analyzeConnectionWithCitationGate,
   applyCitationAndNumericGate,
@@ -597,4 +600,171 @@ test('factor grounding rejects unsupported validation, authority, performance an
   assert.doesNotMatch(`${byGroup.get('lineage').decisionEffect.text} ${byGroup.get('timing').decisionEffect.text}`, /validation|institutional capital|decision-maker|performance|runway|burn/i);
   assert.equal(byGroup.get('timing').nextCheck, '');
   assert.match(byGroup.get('lineage').nextCheck, /^Confirm whether the listed CEO role/);
+});
+
+test('grounding preserves abbreviations, decimals, domains, equivalent acronyms, and valid factor nextChecks', async () => {
+  const packet = {
+    mode: 'entity',
+    title: 'Northstar AI',
+    decisionFactors: [
+      {
+        group: 'lineage',
+        label: 'Lineage',
+        impact: 'Supports operator reference checks.',
+        evidence: 'Jane Doe serves as Chief Executive Officer at Northstar Ltd.',
+        sourceIds: ['src-ceo', 'src-cto'],
+        records: [
+          { id: 'lin-1', type: 'RELATION', path: 'Jane Doe → Northstar Ltd.', relation: 'Chief executive officer', detail: 'Jane Doe serves as chief executive officer at Northstar Ltd.', date: '2025-02-01', sourceIds: ['src-ceo'] },
+          { id: 'lin-2', type: 'RELATION', path: 'John Smith → Northstar Ltd.', relation: 'Chief technology officer', detail: 'John Smith leads engineering at Northstar Ltd.', date: '2024-06-01', sourceIds: ['src-cto'] }
+        ]
+      },
+      {
+        group: 'timing',
+        label: 'Timing',
+        impact: 'Dated acquisition milestone.',
+        evidence: 'Astral.sh acquisition and $5.0B financing recorded in 2026.',
+        sourceIds: ['src-mna'],
+        records: [
+          { id: 'tim-1', type: 'DATED_MILESTONE', path: 'Northstar → Astral.sh', relation: 'Mna Completed', detail: 'Acquired Astral.sh alongside $5.0B financing in 2026.', date: '2026-03-19', sourceIds: ['src-mna'] }
+        ]
+      }
+    ],
+    sources: [
+      { id: 'src-ceo', title: 'Northstar Ltd. Officer Registry', publisher: 'Companies House' },
+      { id: 'src-cto', title: 'Northstar Ltd. CTO Announcement', publisher: 'Northstar' },
+      { id: 'src-mna', title: 'Astral.sh Acquisition Notice', publisher: 'Astral' }
+    ]
+  };
+  const answer = {
+    factorAnalyses: [
+      {
+        group: 'lineage',
+        decisionEffect: { text: 'Jane Doe (CEO of Northstar Ltd.) gives a direct executive contact.', sourceIds: ['src-ceo'] },
+        reasoning: [{ text: 'Jane Doe is listed at Northstar Ltd. since 2025-02-01.', sourceIds: ['src-ceo'] }],
+        limitation: 'Tenure records do not establish commercial execution.',
+        nextCheck: 'Confirm whether John Smith remains active alongside Jane Doe at Northstar Ltd.'
+      },
+      {
+        group: 'timing',
+        decisionEffect: { text: 'Northstar completed the Astral.sh acquisition on 2026-03-19 alongside $5.0B financing.', sourceIds: ['src-mna'] },
+        reasoning: [{ text: 'Astral.sh M&A completed on 2026-03-19 ($5.0B financing).', sourceIds: ['src-mna'] }],
+        limitation: 'Acquisition record does not verify integration status.',
+        nextCheck: 'Verify whether Astral.sh integration milestones are complete.'
+      }
+    ],
+    insights: []
+  };
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(answer) }] })
+  });
+  const result = await analyzeConnectionWithCitationGate(packet, { apiKey: 'test-key', cache: new Map(), fetchFn });
+  const byGroup = new Map(result.factorAnalyses.map((f) => [f.group, f]));
+  assert.match(byGroup.get('lineage').decisionEffect.text, /Northstar Ltd\./);
+  assert.match(byGroup.get('lineage').nextCheck, /John Smith.*Northstar Ltd\./);
+  assert.match(byGroup.get('timing').decisionEffect.text, /Astral\.sh.*\$5\.0B/);
+  assert.match(byGroup.get('timing').reasoning[0].text, /Astral\.sh M&A completed/);
+  assert.match(byGroup.get('timing').nextCheck, /Astral\.sh/);
+});
+
+test('analyzeConnectionWithCitationGate persists verified results to disk cache and never caches HTTP errors', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vl-claude-disk-'));
+  const diskCachePath = path.join(tmpDir, 'claude-insight-cache.json');
+  const packet = {
+    mode: 'connection',
+    title: 'Northstar -> Apex',
+    hopType: '1-hop direct',
+    relation: 'INVESTED_IN',
+    whyMatters: 'Direct backer.',
+    facts: [{ text: 'Northstar invested in Apex in 2025.', sourceIds: ['src-1'] }],
+    sources: [{ id: 'src-1', title: 'Apex Form D', publisher: 'SEC EDGAR', sourceRank: 'FILING' }]
+  };
+  let calls = 0;
+  try {
+    const failingFetch = async () => {
+      calls += 1;
+      return { ok: false, status: 500, json: async () => ({}) };
+    };
+    const errRes = await analyzeConnectionWithCitationGate(packet, { apiKey: 'test-key', diskCachePath, fetchFn: failingFetch });
+    assert.equal(errRes.controlPlaneMode, 'deterministic-fallback');
+    assert.equal(fs.existsSync(diskCachePath), false, 'Failed HTTP 500 fallback must not write disk cache');
+
+    const okPayload = {
+      summary: 'Northstar invested in Apex per Form D.',
+      insights: [{ text: 'Verified Form D filing documents Northstar investing in Apex in 2025.', sourceIds: ['src-1'] }],
+      question: 'Confirm whether Northstar holds follow-on rights.'
+    };
+    const okFetch = async () => {
+      calls += 1;
+      return { ok: true, status: 200, json: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(okPayload) }] }) };
+    };
+    const uniquePacket = { ...packet, title: `Northstar -> Apex ${Date.now()}` };
+    const first = await analyzeConnectionWithCitationGate(uniquePacket, { apiKey: 'test-key', diskCachePath, fetchFn: okFetch });
+    assert.equal(first.controlPlaneMode, 'anthropic-connection-analyst');
+    assert.equal(fs.existsSync(diskCachePath), true);
+
+    // Ensure disk cache works without calling fetch again
+    const callsBeforeDisk = calls;
+    const saved = JSON.parse(fs.readFileSync(diskCachePath, 'utf8'));
+    assert.equal(Object.keys(saved).length, 1);
+    assert.equal(callsBeforeDisk, 2);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('compact currency tokens ($30B, $40M) pass while ungrounded $99B drops and record #2 nextCheck passes', async () => {
+  const packet = {
+    mode: 'entity',
+    title: 'Alpha & Beta',
+    decisionFactors: [
+      {
+        group: 'timing',
+        label: 'Timing',
+        effect: 'Active',
+        impact: 'Dated rounds establish cadence.',
+        evidence: '2 dated milestones through 2026-02-12',
+        sourceIds: ['src-t1'],
+        records: [
+          { id: 't1', type: 'FUNDING_ROUND', path: 'Alpha → Series B · $40M', relation: 'Series B · $40M (2025-01-01)', detail: 'Raised $40M Series B.', date: '2025-01-01', sourceIds: ['src-t1'] },
+          { id: 't2', type: 'FUNDING_ROUND', path: 'Beta → Series G · $30B', relation: 'Series G · $30B (2026-02-12)', detail: 'Beta closed $30B Series G round.', date: '2026-02-12', sourceIds: ['src-t2'] }
+        ]
+      }
+    ],
+    sources: [
+      { id: 'src-t1', title: 'Alpha Series B filing', publisher: 'SEC', sourceRank: 'FILING', date: '2025-01-01' },
+      { id: 'src-t2', title: 'Beta Series G report', publisher: 'Press', sourceRank: 'PRESS', date: '2026-02-12' }
+    ]
+  };
+  const payload = {
+    executiveTakeaway: { text: 'Beta $30B Series G and Alpha $40M Series B anchor timing momentum.', sourceIds: ['src-t1', 'src-t2'] },
+    factorAnalyses: [
+      {
+        group: 'timing',
+        decisionEffect: { text: 'Alpha $40M Series B and Beta $30B Series G confirm active financing cadence.', sourceIds: ['src-t1', 'src-t2'] },
+        reasoning: [
+          { text: 'Beta closed its $30B Series G on 2026-02-12 following Alpha $40M Series B.', sourceIds: ['src-t2', 'src-t1'] },
+          { text: 'Rumor claims Gamma raised $99B in 2026-02-12.', sourceIds: ['src-t2'] }
+        ],
+        limitation: 'Closed $30B and $40M financings do not establish current net retention.',
+        nextCheck: 'Confirm whether Beta Series G closed on 2026-02-12 per Series G record.'
+      }
+    ],
+    insights: []
+  };
+  const mockFetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(payload) }] })
+  });
+  const res = await analyzeConnectionWithCitationGate(packet, { apiKey: 'test-key', cache: new Map(), disableDiskCache: true, fetchFn: mockFetch });
+  assert.equal(res.controlPlaneMode, 'anthropic-connection-analyst');
+  assert.equal(res.summary, 'Beta $30B Series G and Alpha $40M Series B anchor timing momentum.');
+  const timing = res.factorAnalyses.find((f) => f.group === 'timing');
+  assert.equal(timing.decisionEffectSource, 'anthropic');
+  assert.match(timing.decisionEffect.text, /\$30B/);
+  assert.equal(timing.reasoning.length, 1);
+  assert.doesNotMatch(timing.reasoning[0].text, /\$99B/);
+  assert.match(timing.nextCheck, /Beta Series G/);
 });

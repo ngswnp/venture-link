@@ -1,4 +1,12 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { enforceFactCitations } from './engine.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DEFAULT_INSIGHT_DISK_CACHE = path.resolve(__dirname, '..', '.cache', 'claude-insight-cache.json');
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -21,6 +29,39 @@ export const ALLOWED_SECTORS = new Set([
 const queryCompilerCache = new Map();
 const briefNarratorCache = new Map();
 const connectionInsightCache = new Map();
+const loadedDiskCaches = new Map();
+
+function loadDiskInsightStore(diskCachePath) {
+  if (!diskCachePath) return {};
+  if (loadedDiskCaches.has(diskCachePath)) return loadedDiskCaches.get(diskCachePath);
+  let store = {};
+  try {
+    if (fs.existsSync(diskCachePath)) {
+      const parsed = JSON.parse(fs.readFileSync(diskCachePath, 'utf8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) store = parsed;
+    }
+  } catch {
+    store = {};
+  }
+  loadedDiskCaches.set(diskCachePath, store);
+  return store;
+}
+
+function saveDiskInsightEntry(diskCachePath, hashKey, value) {
+  if (!diskCachePath || !hashKey || !value) return;
+  try {
+    const store = loadDiskInsightStore(diskCachePath);
+    const keys = Object.keys(store);
+    if (keys.length >= 200) {
+      delete store[keys[0]];
+    }
+    store[hashKey] = { cachedAt: new Date().toISOString(), value };
+    fs.mkdirSync(path.dirname(diskCachePath), { recursive: true });
+    fs.writeFileSync(diskCachePath, JSON.stringify(store), 'utf8');
+  } catch {
+    // Non-fatal in read-only test scenarios
+  }
+}
 
 function sanitizeShortText(value, maxLen = 80) {
   if (typeof value !== 'string') return null;
@@ -76,6 +117,15 @@ const factorAnalysisOutputSchema = {
         required: ['group', 'decisionEffect', 'reasoning', 'limitation', 'nextCheck'],
         additionalProperties: false
       }
+    },
+    executiveTakeaway: {
+      type: 'object',
+      properties: {
+        text: { type: 'string' },
+        sourceIds: { type: 'array', items: { type: 'string' } }
+      },
+      required: ['text', 'sourceIds'],
+      additionalProperties: false
     },
     insights: {
       type: 'array',
@@ -350,6 +400,16 @@ export async function compileSearchQuery(rawQuery, context = {}, options = {}) {
   }
 }
 
+export function extractAllowedNumbers(str = '') {
+  const numbers = new Set();
+  const matches = String(str || '').matchAll(/(?<![A-Za-z0-9_.])(\d+(?:\.\d+)?)(?!\.\d)(?=[MBKmbk%]?(?:[^A-Za-z0-9_]|$))/g);
+  for (const m of matches) {
+    const num = Number(m[1]);
+    if (Number.isFinite(num)) numbers.add(num);
+  }
+  return numbers;
+}
+
 export function extractAllowedGroundings(briefPacket) {
   const groundedPayload = {
     id: briefPacket?.id || null,
@@ -407,9 +467,7 @@ export function extractAllowedGroundings(briefPacket) {
 
   const jsonStr = JSON.stringify(groundedPayload);
   const allowedYears = new Set(jsonStr.match(/\b(?:19|20)\d{2}\b/g) || []);
-  const allowedNumbers = new Set(
-    (jsonStr.match(/\b\d+(?:\.\d+)?\b/g) || []).map((token) => Number(token))
-  );
+  const allowedNumbers = extractAllowedNumbers(jsonStr);
   const allowedSourceIds = new Set(
     [
       ...(groundedPayload.sources || []).map((s) => s.id),
@@ -473,7 +531,6 @@ function filterVerifiedBullets(rawBullets = [], { allowedYears, allowedNumbers, 
 const restrictedClaimTerms = new Set([
   'board', 'governance', 'right', 'rights', 'information', 'lp', 'lps', 'limited', 'ownership',
   'cap', 'table', 'fund', 'funds', 'portfolio', 'vintage', 'follow', 'capacity', 'deployment',
-  'cap', 'table', 'fund', 'funds', 'portfolio', 'vintage', 'follow', 'capacity', 'deployment',
   'velocity', 'dispute', 'disputes', 'sanction', 'sanctions', 'sec', 'finra', 'exit', 'window',
   'traction', 'customer', 'customers', 'revenue', 'arr', 'valuation', 'fundraising', 'raise',
   'term', 'terms', 'deal', 'market', 'product', 'allocation', 'commitment', 'passed', 'early', 'stage',
@@ -481,22 +538,63 @@ const restrictedClaimTerms = new Set([
   'runway', 'burn', 'cash', 'liquidity', 'financial', 'financials', 'margin', 'debt', 'experience', 'experienced', 'track'
 ]);
 
-function filterUnsupportedFactorClaims(text, factor, citedIds, maxLength = 520) {
+const ACRONYM_EQUIVALENTS = {
+  ceo: ['chief executive', 'is_ceo_of', 'ceo'],
+  cto: ['chief technology', 'is_cto_of', 'cto'],
+  coo: ['chief operating', 'is_coo_of', 'coo'],
+  cfo: ['chief financial', 'is_cfo_of', 'cfo'],
+  cso: ['chief scientific', 'chief strategy', 'is_cso_of', 'cso'],
+  cmo: ['chief marketing', 'is_cmo_of', 'cmo'],
+  cro: ['chief revenue', 'chief research', 'is_cro_of', 'cro'],
+  vp: ['vice president', 'is_vicepresident_of', 'vp'],
+  ai: ['artificial intelligence', 'openai', 'anthropic', 'software', 'ai'],
+  ml: ['machine learning', 'ai', 'ml'],
+  us: ['united states', 'usd', 'us'],
+  uk: ['united kingdom', 'gbp', 'uk'],
+  eu: ['european', 'eur', 'eu'],
+  hq: ['headquarters', 'hq'],
+  ip: ['intellectual property', 'non-compete', 'ip'],
+  ma: ['mna', 'merger', 'acquisition', 'acquired'],
+  mna: ['mna', 'merger', 'acquisition', 'acquired']
+};
+
+function splitSentencesPreservingAbbreviations(text = '') {
+  const DOT_TOKEN = '\u0000';
+  let masked = String(text || '');
+  masked = masked.replace(/(\d)\.(\d)/g, `$1${DOT_TOKEN}$2`);
+  masked = masked.replace(/\b(Inc|Ltd|Corp|Co|Dr|Mr|Ms|Mrs|Prof|vs|etc|e\.g|i\.e|U\.S|U\.K)\./gi, (m) => m.replace(/\./g, DOT_TOKEN));
+  masked = masked.replace(/\b([a-z0-9-]+)\.(ai|io|sh|com|org|net|vc|eu|co|gov|uk)\b/gi, `$1${DOT_TOKEN}$2`);
+  const parts = masked.match(/[^.!?]+[.!?]?/g) || [];
+  return parts.map((p) => p.replaceAll(DOT_TOKEN, '.').trim()).filter(Boolean);
+}
+
+function filterUnsupportedFactorClaims(text, factor, citedIds, maxLength = 520, { isLimitation = false } = {}) {
+  const effectiveCited = Array.isArray(citedIds) && citedIds.length ? citedIds : (factor.sourceIds || []);
   const referencedRecords = (factor.records || []).filter((record) =>
-    (record.sourceIds || []).some((id) => citedIds.includes(id))
+    (record.sourceIds || []).some((id) => effectiveCited.includes(id))
   );
   const evidenceText = [factor.label, factor.effect, factor.impact, factor.evidence, ...referencedRecords.flatMap((record) => [
-    record.id, record.type, record.path, record.relation, record.detail, record.date
+    record.id, record.type, record.path, record.relation, record.detail, record.date, record.sourceRank
   ])].filter(Boolean).join(' ');
-  const evidenceWords = new Set(evidenceText.toLowerCase().match(/[a-z0-9]+/g) || []);
+  const evidenceLower = evidenceText.toLowerCase();
+  const evidenceWords = new Set(evidenceLower.match(/[a-z0-9]+/g) || []);
   const evidenceAcronyms = new Set((evidenceText.match(/[A-Z]{2,}/g) || []).map((word) => word.toLowerCase()));
-  const sentences = String(text || '').match(/[^.!?]+[.!?]?/g) || [];
-  const accepted = sentences.map((sentence) => sentence.trim()).filter(Boolean).filter((sentence) => {
+  for (const [acro, cues] of Object.entries(ACRONYM_EQUIVALENTS)) {
+    if (cues.some((cue) => evidenceLower.includes(cue))) evidenceAcronyms.add(acro);
+  }
+  const sentences = splitSentencesPreservingAbbreviations(text);
+  const accepted = sentences.filter((sentence) => {
     const words = sentence.toLowerCase().match(/[a-z0-9]+/g) || [];
-    const unsupportedHighRiskTerm = words.some((word) => restrictedClaimTerms.has(word) && !evidenceWords.has(word));
+    const isNegatedLimitation =
+      isLimitation &&
+      /\b(?:do(?:es)? not|cannot|can't|couldn't|won't|without|lack|lacks|unverified|unknown|unclear|neither|nor|missing|only show|insufficient|never|no )\b/i.test(sentence);
+    const unsupportedHighRiskTerm =
+      !isNegatedLimitation && words.some((word) => restrictedClaimTerms.has(word) && !evidenceWords.has(word));
     const acronyms = sentence.match(/[A-Z]{2,}/g) || [];
     const unsupportedAcronym = acronyms.some((word) => !evidenceAcronyms.has(word.toLowerCase()));
-    const hasEvidenceAnchor = words.some((word) => word.length > 2 && evidenceWords.has(word));
+    const hasEvidenceAnchor =
+      words.some((word) => word.length > 2 && evidenceWords.has(word)) ||
+      (isNegatedLimitation && words.length >= 4);
     return hasEvidenceAnchor && !unsupportedHighRiskTerm && !unsupportedAcronym;
   });
   return sanitizeShortText(accepted.join(' '), maxLength) || '';
@@ -678,6 +776,11 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
       impact: sanitizeShortText(factor.impact || '', 150) || '',
       evidence: sanitizeShortText(factor.evidence || '', 240) || '',
       sourceIds: [...new Set((Array.isArray(factor.sourceIds) ? factor.sourceIds : []).map(String).filter((id) => sourceIdSet.has(id)))].slice(0, 12),
+      metrics: factor.metrics && typeof factor.metrics === 'object' ? {
+        signalStrength: Number.isFinite(Number(factor.metrics.signalStrength)) ? Number(factor.metrics.signalStrength) : undefined,
+        sharedCount: Number.isFinite(Number(factor.metrics.sharedCount)) ? Number(factor.metrics.sharedCount) : undefined,
+        verifiedSharePct: Number.isFinite(Number(factor.metrics.verifiedSharePct)) ? Number(factor.metrics.verifiedSharePct) : undefined
+      } : undefined,
       records: (Array.isArray(factor.records) ? factor.records : []).slice(0, 6).map((record, index) => ({
         id: sanitizeShortText(record?.id || `${factor.group}-${index + 1}`, 48) || `${factor.group}-${index + 1}`,
         type: sanitizeShortText(record?.type || '', 60),
@@ -685,6 +788,8 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
         relation: sanitizeShortText(record?.relation || '', 100),
         detail: sanitizeShortText(record?.detail || '', 220),
         date: record?.date ? String(record.date).slice(0, 24) : null,
+        sourceRank: record?.sourceRank ? sanitizeShortText(String(record.sourceRank), 16) : undefined,
+        isSharedBridge: record?.isSharedBridge === true ? true : undefined,
         sourceIds: [...new Set((Array.isArray(record?.sourceIds) ? record.sourceIds : []).map(String).filter((id) => sourceIdSet.has(id)))].slice(0, 4)
       }))
     }));
@@ -697,13 +802,18 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
     roundSummary: sanitizeShortText(packet.roundSummary || '', 90),
     date: packet.date ? String(packet.date).slice(0, 10) : null,
     whyMatters: sanitizeShortText(packet.whyMatters || '', 220),
-    facts: (Array.isArray(packet.facts) ? packet.facts : []).slice(0, 8).map((f) => ({
+    facts: decisionFactors.length ? [] : (Array.isArray(packet.facts) ? packet.facts : []).slice(0, 8).map((f) => ({
       text: String(f?.text || '').slice(0, 220),
       date: f?.date ? String(f.date).slice(0, 10) : null,
       tier: f?.tier || null,
       sourceIds: Array.isArray(f?.sourceIds) ? f.sourceIds.filter((id) => sourceIdSet.has(id)).slice(0, 4) : []
     })),
     decisionFactors,
+    anomalies: (Array.isArray(packet.anomalies) ? packet.anomalies : []).slice(0, 4).map((a) => ({
+      kind: sanitizeShortText(a?.kind || '', 40),
+      path: sanitizeShortText(a?.path || '', 80),
+      detail: sanitizeShortText(a?.detail || '', 160)
+    })).filter((a) => a.detail),
     syndicatePeers: (Array.isArray(packet.syndicatePeers) ? packet.syndicatePeers : []).slice(0, 8),
     gaps: (Array.isArray(packet.gaps) ? packet.gaps : []).slice(0, 6),
     sources: cleanSources
@@ -744,34 +854,65 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
   }
 
   const cache = options.cache || connectionInsightCache;
-  const cacheKey = `${groundedPacket.mode}:${JSON.stringify(groundedPacket)}`;
+  const useDiskCache = !options.cache && !options.disableDiskCache;
+  const diskCachePath = options.diskCachePath || DEFAULT_INSIGHT_DISK_CACHE;
+  const cacheKey = `v6:${groundedPacket.mode}:${JSON.stringify(groundedPacket)}`;
+  const diskHash = useDiskCache ? crypto.createHash('sha256').update(cacheKey).digest('hex') : null;
   if (cache.has(cacheKey)) {
     return { ...cache.get(cacheKey), fromCache: true };
   }
+  if (useDiskCache && diskHash) {
+    const diskStore = loadDiskInsightStore(diskCachePath);
+    if (diskStore[diskHash]?.value?.controlPlaneMode === 'anthropic-connection-analyst') {
+      cache.set(cacheKey, diskStore[diskHash].value);
+      return { ...diskStore[diskHash].value, fromCache: true };
+    }
+  }
+
+  const realToWireId = new Map();
+  const wireToRealId = new Map();
+  let aliasSeq = 1;
+  for (const s of cleanSources) {
+    const wireId = s.id.length > 18 ? `s${aliasSeq++}` : s.id;
+    realToWireId.set(s.id, wireId);
+    wireToRealId.set(wireId, s.id);
+  }
+  const toWireIds = (ids = []) => (Array.isArray(ids) ? ids.map((id) => realToWireId.get(id) || id) : []);
+  const fromWireIds = (ids = []) => (Array.isArray(ids) ? ids.map((id) => wireToRealId.get(id) || id) : []);
+  const wirePacket = {
+    ...groundedPacket,
+    facts: groundedPacket.facts.map((f) => ({ ...f, sourceIds: toWireIds(f.sourceIds) })),
+    decisionFactors: groundedPacket.decisionFactors.map((factor) => ({
+      ...factor,
+      sourceIds: toWireIds(factor.sourceIds),
+      records: factor.records.map((r) => ({ ...r, sourceIds: toWireIds(r.sourceIds) }))
+    })),
+    sources: groundedPacket.sources.map((s) => ({ ...s, id: realToWireId.get(s.id) || s.id }))
+  };
+  const wireJsonStr = JSON.stringify(wirePacket);
 
   const jsonStr = JSON.stringify(groundedPacket);
   const groundings = {
     allowedYears: new Set(jsonStr.match(/\b(?:19|20)\d{2}\b/g) || []),
-    allowedNumbers: new Set((jsonStr.match(/\b\d+(?:\.\d+)?\b/g) || []).map((n) => Number(n))),
+    allowedNumbers: extractAllowedNumbers(jsonStr),
     allowedSourceIds: new Set(cleanSources.map((s) => s.id)),
     useRegistryCheck: false
   };
 
   const systemPrompt = decisionFactors.length ? [
-    'You are a skeptical venture investment analyst. Analyze only the supplied Cala records and citations; do not infer company quality from network position.',
-    'For EACH factor, state the concrete effect on the investment decision, explain how the named records support that effect, and name a limitation or diligence check.',
-    'Use record paths, relations, dates, and details explicitly when present. If the records do not establish a conclusion, say what remains unknown instead of guessing.',
-    'Keep each decisionEffect to 35-60 words and each reasoning point to 15-35 words. Use 2-3 reasoning points when the records support them.',
-    'NEVER invent numbers, dates, entities, conflicts, or evidence. Every factual decisionEffect or reasoning point MUST cite exact sourceIds from that factor.',
+    'You are a concise, skeptical venture investment analyst. Analyze only the supplied Cala records and citations; do not infer company quality from network position.',
+    'For EACH populated factor, emit a concrete decisionEffect, 1-2 crisp reasoning bullets naming specific paths/dates/amounts, one limitation, and one specific nextCheck.',
+    'Also emit executiveTakeaway: one crisp 16-24 word IC synthesis balancing upside (access/lineage/timing) and caution, citing exact sourceIds.',
+    'Keep decisionEffect to 22-38 words, each reasoning bullet to 12-22 words, limitation to 10-18 words, and nextCheck to 10-20 words.',
+    'NEVER invent numbers, dates, entities, conflicts, or evidence. Every factual executiveTakeaway, decisionEffect, or reasoning bullet MUST cite exact short sourceIds from input.',
+    'Never write wire source IDs (like s1, s10) inside prose text; put source IDs only in sourceIds arrays.',
     'Output ONE compact single-line JSON only (no markdown fences):',
-    '{"factorAnalyses":[{"group":"access|lineage|timing|caution","decisionEffect":{"text":"35-60 words","sourceIds":["exact-source-id"]},"reasoning":[{"text":"15-35 words on a specific supplied record","sourceIds":["exact-source-id"]}],"limitation":"what these records cannot establish","nextCheck":"one concrete diligence check"}],"insights":[{"text":"additional cross-record insight","sourceIds":["exact-source-id"]}]}.',
-    'Include all four factors, including factors with no evidence. For an empty factor, say no mapped evidence was supplied and do not create an effect.',
-    'Each citation must belong to the same factor and be attached to a record or factor source in input JSON. Do not return an overall investment summary.',
-    'Keep the observed Cala record separate from the investment implication already supplied in each factor impact. Do not turn an implication into an observed fact.',
-    'Frame nextCheck as an unknown to verify, starting with “Verify whether”, “Confirm whether”, or “Ask whether”. Do not imply the unknown is already true.',
-    'Do not infer validation, institutional capital, decision-making authority, operating performance, runway, or burn from a role, relationship, funding-round label, or date unless those claims are explicit in the cited record.',
-    'Keep nextCheck tied to the supplied connection, role, event label, or event date. Do not introduce generic startup diligence topics or metrics.',
-    'At most 2 additional cross-record insights; cite each with at least one exact source ID.'
+    '{"executiveTakeaway":{"text":"16-24 words balancing signal and risk","sourceIds":["s1","s2"]},"factorAnalyses":[{"group":"access|lineage|timing|caution","decisionEffect":{"text":"22-38 words","sourceIds":["s1"]},"reasoning":[{"text":"12-22 words on a supplied record","sourceIds":["s1"]}],"limitation":"what these records do not establish","nextCheck":"Verify whether ..."}],"insights":[{"text":"cross-record insight","sourceIds":["s1"]}]}.',
+    'Include all four factors, including factors with no evidence. For an empty factor, state no mapped evidence was supplied and do not create an effect.',
+    'Each citation must belong to the same factor and appear on a record or factor source in input JSON. Keep observed records separate from investment implications.',
+    'ALWAYS emit a non-empty nextCheck starting with “Verify whether”, “Confirm whether”, or “Ask whether” naming ONLY entities, roles, or event labels verbatim in that factor.',
+    'Use plain evidence nouns from the records (investors, backers, founders, roles, milestones, sector overlap). Do NOT use restricted words like institutional, deal, stage, early, fundraising, raise, traction, validation, governance, information, window, cap, table, ownership, market, board rights, runway, burn, liquidity, performance, authority, primary, fund, portfolio, allocation, VC, IP, or LP unless verbatim in THAT factor.',
+    'At most 2 cross-record insights; cite each with exact source IDs.'
   ].join('\n') : [
     'Strict VC investment-diligence analyst grounded ONLY in input JSON.',
     'Analyze why the connection or entity graph matters for deal access, operator lineage, timing, or competitive caution.',
@@ -794,7 +935,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
           systemPrompt: attempt === 0
             ? systemPrompt
             : `${systemPrompt}\nReturn the complete required JSON object for every requested factor. Keep the wording concise so it fits the output limit.`,
-          userContent: jsonStr,
+          userContent: wireJsonStr,
           maxTokens: attempt === 0 ? 1800 : 3600,
           timeoutMs: options.timeoutMs ?? 30000,
           fetchFn,
@@ -822,22 +963,43 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
           analysisCode: 'invalid_structured_response'
         });
       }
+      for (const fa of parsed.factorAnalyses || []) {
+        if (fa?.decisionEffect?.sourceIds) fa.decisionEffect.sourceIds = fromWireIds(fa.decisionEffect.sourceIds);
+        for (const r of fa?.reasoning || []) {
+          if (r?.sourceIds) r.sourceIds = fromWireIds(r.sourceIds);
+        }
+      }
+      if (parsed?.executiveTakeaway?.sourceIds) {
+        parsed.executiveTakeaway.sourceIds = fromWireIds(parsed.executiveTakeaway.sourceIds);
+      }
+      for (const ins of parsed?.insights || []) {
+        if (ins?.sourceIds) ins.sourceIds = fromWireIds(ins.sourceIds);
+      }
     } else {
       const rawText = await callAnthropicMessages({
         apiKey,
         model,
         systemPrompt,
-        userContent: jsonStr,
+        userContent: wireJsonStr,
         maxTokens: 1800,
         timeoutMs: options.timeoutMs ?? 30000,
         fetchFn
       });
       parsed = JSON.parse(stripJsonCodeFences(rawText));
+      for (const ins of parsed?.insights || []) {
+        if (ins?.sourceIds) ins.sourceIds = fromWireIds(ins.sourceIds);
+      }
+      if (Array.isArray(parsed?.summarySourceIds)) {
+        parsed.summarySourceIds = fromWireIds(parsed.summarySourceIds);
+      }
     }
     const gated = filterVerifiedBullets(parsed?.insights || [], { ...groundings, useRegistryCheck: false });
     const rawFactorAnalyses = Array.isArray(parsed?.factorAnalyses) ? parsed.factorAnalyses : [];
     const factorAnalyses = decisionFactors.map((factor) => {
-      const groupIds = new Set(factor.sourceIds);
+      const groupIds = new Set([
+        ...(factor.sourceIds || []),
+        ...(factor.records || []).flatMap((record) => record.sourceIds || [])
+      ]);
       const rawFactor = rawFactorAnalyses
         .find((item) => item?.group === factor.group);
       const rawEffect = rawFactor?.decisionEffect || (Array.isArray(parsed?.factorSummaries) ? parsed.factorSummaries : [])
@@ -864,14 +1026,15 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
         text: groundedEffectText || fallbackEffect?.text || 'No verified signal in this factor.',
         sourceIds: groundedEffectText ? modelEffect.sourceIds : (fallbackEffect?.sourceIds || [])
       };
+      const groupSourceIdList = [...groupIds];
       return {
         group: factor.group,
         decisionEffect,
         decisionEffectSource: groundedEffectText ? 'anthropic' : 'map-fallback',
         reasoning: groundedReasoning,
-        limitation: filterUnsupportedFactorClaims(rawFactor?.limitation || '', factor, modelEffect?.sourceIds || [], 220) || fallbackFactorAnalyses.find((item) => item.group === factor.group)?.limitation || '',
+        limitation: filterUnsupportedFactorClaims(rawFactor?.limitation || '', factor, groupSourceIdList, 220, { isLimitation: true }) || fallbackFactorAnalyses.find((item) => item.group === factor.group)?.limitation || '',
         nextCheck: /^(verify|confirm|ask|check) whether\b/i.test(rawFactor?.nextCheck || '')
-          ? filterUnsupportedFactorClaims(rawFactor.nextCheck, factor, modelEffect?.sourceIds || [], 220)
+          ? filterUnsupportedFactorClaims(rawFactor.nextCheck, factor, groupSourceIdList, 220)
           : ''
       };
     });
@@ -884,9 +1047,18 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
         analysis.decisionEffect?.text !== [fallbackAnalysis?.decisionEffect?.text, ''].filter(Boolean).join(' ')
       );
     });
-    const summarySourceIds = Array.isArray(parsed?.summarySourceIds) ? parsed.summarySourceIds : [];
+    const summarySourceIds = Array.isArray(parsed?.executiveTakeaway?.sourceIds)
+      ? parsed.executiveTakeaway.sourceIds
+      : Array.isArray(parsed?.summarySourceIds)
+        ? parsed.summarySourceIds
+        : [];
+    const rawSummaryInput = typeof parsed?.executiveTakeaway?.text === 'string'
+      ? parsed.executiveTakeaway.text
+      : typeof parsed?.summary === 'string'
+        ? parsed.summary
+        : '';
     const gatedSummary = filterVerifiedBullets([{
-      text: typeof parsed?.summary === 'string' ? parsed.summary.slice(0, 180) : '',
+      text: rawSummaryInput.slice(0, 320),
       sourceIds: summarySourceIds
     }], { ...groundings, useRegistryCheck: false }).bullets[0];
     if (
@@ -909,7 +1081,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
     const rawSummary = gatedSummary?.text || '';
     const summaryYears = rawSummary.match(/\b(?:19|20)\d{2}\b/g) || [];
     const safeSummary = rawSummary && !summaryYears.some((y) => !groundings.allowedYears.has(y))
-      ? rawSummary.slice(0, 260)
+      ? rawSummary.slice(0, 320)
       : fallback.summary;
     const rawQuestion = typeof parsed?.question === 'string' ? parsed.question.trim() : '';
     const safeQuestion = rawQuestion ? rawQuestion.slice(0, 220) : fallback.question;
@@ -928,6 +1100,9 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
       cache.delete(firstKey);
     }
     cache.set(cacheKey, result);
+    if (useDiskCache && diskHash) {
+      saveDiskInsightEntry(diskCachePath, diskHash, result);
+    }
     return result;
   } catch (err) {
     const status = Number(err?.statusCode) || 0;

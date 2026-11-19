@@ -3899,6 +3899,17 @@ function formatCompactRoundValue(amount, units = 'USD') {
   return `${sym}${num}`;
 }
 
+const TIMING_TOKEN_LABELS = {
+  mna: 'M&A',
+  ipo: 'IPO',
+  sec: 'SEC',
+  spv: 'SPV',
+  pe: 'PE',
+  vc: 'VC',
+  ai: 'AI',
+  or: '/'
+};
+
 function formatTimingContainerLabel(rawName = '') {
   const str = String(rawName || '').trim();
   if (!str) return 'Corporate milestone';
@@ -3907,7 +3918,7 @@ function formatTimingContainerLabel(rawName = '') {
       .toLowerCase()
       .split('_')
       .filter(Boolean)
-      .map((w) => (w === 'or' ? '/' : w.charAt(0).toUpperCase() + w.slice(1)))
+      .map((w) => TIMING_TOKEN_LABELS[w] || (w.charAt(0).toUpperCase() + w.slice(1)))
       .slice(0, 4)
       .join(' ');
   }

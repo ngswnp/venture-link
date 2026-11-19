@@ -145,8 +145,10 @@ function computeSaturatedSignalScore(records = [], sharedCount = 0) {
 function collectSourceIds(items = [], limit = 12) {
   const out = [];
   const seen = new Set();
-  for (const item of items) {
-    for (const sid of item?.sourceIds || []) {
+  const maxDepth = Math.max(0, ...items.map((item) => (item?.sourceIds || []).length));
+  for (let depth = 0; depth < maxDepth; depth += 1) {
+    for (const item of items) {
+      const sid = item?.sourceIds?.[depth];
       const id = String(sid || '').trim();
       if (!id || seen.has(id)) continue;
       seen.add(id);
@@ -501,8 +503,11 @@ export function buildDecisionIntelligence({
           `${records.length} dated milestones${latest?.date ? ` · latest ${latest.date}` : ''}${anomCount ? ` (${anomCount} flag)` : ''}`
         );
         investmentImpact = `Dated catalysts${latest?.date ? ` through ${latest.date}` : ''} establish financing cadence${anomCount ? '; verify flagged sequence conflict' : ''}.`;
+        const cleanRelation = latest
+          ? String(latest.relation || '').replace(/\s*\(\d{4}(?:-\d{2}-\d{2})?\)\s*$/, '').trim()
+          : '';
         actionableCheck = latest
-          ? `Confirm whether ${latest.canonicalFrom}'s ${latest.relation} (${latest.date || 'dated'}) reflects the latest completed round.`
+          ? `Confirm whether ${latest.canonicalFrom}'s ${cleanRelation || 'corporate milestone'} (${latest.date || 'dated'}) reflects the latest completed corporate event.`
           : factorConfigs.timing.defaultQuestion;
       } else {
         headline = 'No dated funding milestones or corporate events verified in Cala.';

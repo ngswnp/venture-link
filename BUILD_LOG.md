@@ -39,3 +39,14 @@ Tested live on `OpenAI + Anthropic` (`POST /api/analyze` + `POST /api/connection
   - Produces executive synthesis (`verdict`, `evidenceScore`, `reliabilityGrade`, `sharedBridgeHighlights`, `warmIntroRoutes`, `dataAnomalies`, `topDiligenceActions`) wired into `buildEntityBridgeMap` (`src/engine.mjs`).
 - **Checks Passed**: Added `test/decisionEngine.test.mjs` and wired into `package.json`; `npm test` passed (`65/65`). On `OpenAI + Anthropic`, `decisionIntelligence` yields `evidenceScore: 86` (`Grade A`, `72%` verified), `Verdict: Actionable · Verify Risks`, `Access` `98` (`13` shared paths), `Lineage` `98` (`5` cross-hub leaders), `Timing` `56`, `Caution` `87` (`6` grounded flags).
 
+## Step 3: Claude Control-Plane Grounding, Wire Aliasing & Persistent Cache (`src/llmControlPlane.mjs`, `src/engine.mjs`, `src/decisionEngine.mjs`)
+- **Implemented**:
+  - Added schema-versioned persistent disk insight cache (`.cache/claude-insight-cache.json`, prefix `v6:`, skipping disk when `options.cache` or `options.disableDiskCache` is set and never caching deterministic fallbacks or HTTP errors).
+  - Added `splitSentencesPreservingAbbreviations` (`$5.0B`, `Astral.sh`, `Inc.`/`Ltd.`/`Corp.`), `extractAllowedNumbers` supporting compact currency/percent tokens (`$30B`, `$40M`, `$580M`, `€5.5M`, `72%`), `ip`/`ma`/`mna` acronym equivalents, `record.sourceRank` grounding visibility (`FILING`/`PRIMARY`/`PRESS`/`AGGREGATOR`), `[...groupIds]` evidence pooling for `limitation`/`nextCheck`, and allowed negated caveats on `limitation`.
+  - Added wire-level short source ID aliasing (`s1..s32`) before calling Anthropic API and restored full Cala citation IDs on parse; calibrated 4-factor prompt to generate `executiveTakeaway` alongside factor analyses and prevent wire alias leaks in prose.
+  - Added round-robin source collection per ranked record in `src/decisionEngine.mjs`, cleaned duplicate date formatting in `timing.actionableCheck`, and mapped `MNA_COMPLETED` to `M&A Completed` in `src/engine.mjs`.
+- **Checks & Calibration Metrics**:
+  - `npm test`: `68/68` pass across 8 suites (including 3 new `llmControlPlane.test.mjs` tests).
+  - **Before -> After (`OpenAI + Anthropic`)**: Cold latency `35,633 ms -> 14,356 ms` (~2.48x faster), warm cache hit `3 ms` (`fromCache: true`), grounded factor `decisionEffectSource === 'anthropic'` improved to `4/4` (`access`, `lineage`, `timing`, `caution`) with `dropped: 0` and grounded `executiveTakeaway` (`M&A Completed (2026-03-19)`, `$30B`, `$13B`, `$40M`).
+  - **Cross-Scenario Verification (`NVIDIA + OpenAI`)**: Cold `15,655 ms`, `4/4` `decisionEffectSource === 'anthropic'`, `4/4` non-empty record-grounded `nextCheck` checks, `dropped: 0`.
+
