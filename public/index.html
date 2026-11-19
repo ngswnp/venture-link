@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Revealed Thesis · Cala Entity &amp; Bridge Map</title>
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem("rte_theme_v2");
+        if (saved === "dark" || saved === "light") {
+          document.documentElement.setAttribute("data-theme", saved);
+        }
+      } catch (_) {}
+    })();
+  </script>
+  <meta
+    name="description"
+    content="Explore verified Cala entities, contribution groups, and documented multi-entity bridges on an interactive constellation map."
+  />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="is-map-workspace">
+  <!-- Minimal Header Bar -->
+  <header class="top" id="dashboardMasthead">
+    <a href="#search" class="brand" id="brandHomeLink">
+      <div class="mark">R</div>
+      <div>
+        Revealed Thesis
+        <small>Cala Entity &amp; Bridge Map</small>
+      </div>
+    </a>
+
+    <div class="top-right" id="inlineCalibrationBar">
+      <span id="mapStatus" class="map-status-note" aria-live="polite">Initializing Cala map...</span>
+
+      <button
+        type="button"
+        class="theme-toggle-btn"
+        id="themeToggleBtn"
+        title="Switch light or dark theme"
+        aria-label="Switch color theme"
+      >
+        <svg class="ui-icon theme-sun" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="8" cy="8" r="3.2" stroke="currentColor" stroke-width="1.4" />
+          <path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+        </svg>
+        <span class="theme-toggle-label">Light</span>
+      </button>
+
+      <span id="telemetryLine" class="telemetry-pill"><span class="dot"></span>250/250 Cala</span>
+    </div>
+  </header>
+
+  <!-- Main Workspace: Command Dock + Constellation Map -->
+  <main class="workspace" id="dashboardMain">
+    <section
+      id="panel-search"
+      class="screen workspace-panel bridge-workspace-panel"
+      aria-label="Entity bridge constellation workspace"
+    >
+      <div class="command-stage" id="commandStage">
+        <div class="hero-intro-block" id="heroIntroBlock">
+          <div class="hero-kicker-pill">Cala Knowledge Graph Explorer</div>
+          <h1 class="hero-main-title">
+            Map <em>verified entities</em> and documented Cala relationships.
+          </h1>
+          <p class="hero-sub-tagline" id="searchHeroSub">
+            Search Cala for startups, public companies, venture funds, or people, then explore verified relationships on the map.
+          </p>
+        </div>
+
+        <div class="command-row-bar">
+          <form id="aiSearchForm" class="floating-search-bar" role="search">
+            <label for="aiSearchInput" class="sr-only">Search startups, companies, investors, funds, or people</label>
+            <svg
+              class="search-lead-icon"
+              width="19"
+              height="19"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="11" cy="11" r="8"></circle>
+              <path d="m21 21-4.3-4.3"></path>
+            </svg>
+            <div id="pendingEntityChips" class="pending-entity-chips" aria-live="polite"></div>
+            <input
+              type="text"
+              id="aiSearchInput"
+              class="floating-search-input"
+              placeholder="Search Cala for a company, investor, fund, or person (e.g. Nvidia, OpenAI, Sequoia)..."
+              autocomplete="off"
+            />
+            <button type="submit" class="floating-search-btn" id="aiSearchSubmitBtn">
+              Cala Search
+            </button>
+            <div
+              id="searchSuggestPopup"
+              class="search-suggest-popup"
+              role="listbox"
+              aria-label="Cala entity suggestions"
+              hidden
+            ></div>
+          </form>
+
+          <div class="dock-right-controls" id="dockRightControls">
+            <button
+              type="button"
+              class="filter-drawer-toggle"
+              id="toggleFiltersBtn"
+              aria-expanded="false"
+              aria-controls="constellationFilterRibbon"
+            >
+              <span>Filters</span>
+              <span class="filter-active-badge num-tabular" id="filterCountPill" hidden>0</span>
+              <span aria-hidden="true">&#9662;</span>
+            </button>
+            <button
+              type="button"
+              class="live-cala-pill-btn"
+              id="searchLiveCalaBtn"
+              title="Refresh active entity paths from live Cala graph"
+            >
+              <span class="live-dot" aria-hidden="true"></span>
+              <span>Check Cala</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Quick Starter Picks (shown when hero is open) -->
+        <div class="starter-prompts-wrap" id="aiExamplesBar">
+          <div class="starter-prompts-grid">
+            <button type="button" class="starter-pill-btn" data-entity-query="OpenAI">
+              <span class="starter-pill-kicker">Organization &amp; People</span>
+              <span class="starter-pill-text">OpenAI</span>
+            </button>
+            <button type="button" class="starter-pill-btn" data-entity-query="Nvidia">
+              <span class="starter-pill-kicker">Public Company &amp; Leadership</span>
+              <span class="starter-pill-text">NVIDIA Corporation</span>
+            </button>
+            <button type="button" class="starter-pill-btn" data-entity-query="Sequoia Capital">
+              <span class="starter-pill-kicker">Venture Firm &amp; Holdings</span>
+              <span class="starter-pill-text">Sequoia Capital</span>
+            </button>
+            <button type="button" class="starter-pill-btn" data-entity-query="Nvidia, OpenAI">
+              <span class="starter-pill-kicker">Explorer Graph</span>
+              <span class="starter-pill-text">Nvidia + OpenAI network</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Floating Constellation Filter Ribbon -->
+        <div class="constellation-filter-ribbon" id="constellationFilterRibbon" hidden>
+          <button
+            type="button"
+            class="ribbon-toggle-btn"
+            id="toggleSharedOnlyBtn"
+            aria-pressed="false"
+            title="Show only shared bridge paths connecting 2+ focal entities"
+          >
+            <span class="toggle-indicator-dot" aria-hidden="true"></span>
+            <span>Shared paths only</span>
+          </button>
+
+          <div class="bridge-family-segmented" id="bridgeFamilySwitcher" role="radiogroup" aria-label="Contribution group lens filter">
+            <button type="button" class="fam-seg-btn is-active" data-contribution-group="all">All Lenses <span class="fam-count num-tabular" data-contrib-count="all"></span></button>
+            <button type="button" class="fam-seg-btn" data-contribution-group="access">
+              <span class="fam-dot fam-dot-feeder" aria-hidden="true"></span>Access <span class="fam-count num-tabular" data-contrib-count="access"></span>
+            </button>
+            <button type="button" class="fam-seg-btn" data-contribution-group="lineage">
+              <span class="fam-dot fam-dot-alumni" aria-hidden="true"></span>Lineage <span class="fam-count num-tabular" data-contrib-count="lineage"></span>
+            </button>
+            <button type="button" class="fam-seg-btn" data-contribution-group="timing">
+              <span class="fam-dot fam-dot-event" aria-hidden="true"></span>Timing <span class="fam-count num-tabular" data-contrib-count="timing"></span>
+            </button>
+            <button type="button" class="fam-seg-btn" data-contribution-group="caution">
+              <span class="fam-dot fam-dot-twin" aria-hidden="true"></span>Caution <span class="fam-count num-tabular" data-contrib-count="caution"></span>
+            </button>
+          </div>
+
+          <div class="ribbon-chips-right">
+            <button type="button" class="ribbon-chip-btn" id="chipFilingOnlyBtn" aria-pressed="false" title="Show only paths backed by statutory regulatory filings">
+              FILING only
+            </button>
+            <button type="button" class="ribbon-chip-btn ribbon-reset-btn" id="workspaceResetBtn">
+              Reset
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Full-Bleed Interactive Contribution Tree Constellation Stage -->
+      <div class="constellation-stage" id="constellationStage">
+        <div
+          id="bridgeMapCanvas"
+          class="bridge-map-canvas"
+          tabindex="0"
+          aria-label="Interactive entity relationship constellation map"
+        >
+          <div id="mapPanZoomViewport" class="map-panzoom-viewport">
+            <svg
+              id="constellationSvg"
+              class="constellation-svg"
+              viewBox="0 0 1960 1400"
+              width="1960"
+              height="1400"
+              aria-label="Entity bridge constellation paths"
+            ></svg>
+            <div id="constellationNodesLayer" class="constellation-nodes-layer"></div>
+          </div>
+
+          <!-- Top-left Compact Explored Entities Bar & Quick Add Drawer -->
+          <aside class="explored-entities-box" id="exploredEntitiesBox" aria-label="Entities on this map">
+            <div class="explored-compact-bar" id="exploredCompactBar">
+              <div id="pinnedEntitiesList" class="pinned-entities-list"></div>
+              <span class="anchor-mode-badge" id="anchorModePill">Explorer</span>
+              <button
+                type="button"
+                class="explored-compare-toggle-btn"
+                id="toggleCompareBoxBtn"
+                aria-expanded="false"
+                aria-controls="exploredCompareDrawer"
+                title="Add another entity or manage canvas"
+              >
+                + Add
+              </button>
+              <button
+                type="button"
+                class="explored-compact-clear-btn"
+                id="clearMapQuickBtn"
+                title="Clear map and return to search home"
+                hidden
+              >
+                Reset
+              </button>
+            </div>
+
+            <div class="explored-compare-drawer" id="exploredCompareDrawer" hidden>
+              <div class="compare-entity-wrap">
+                <input
+                  type="text"
+                  id="compareEntityInput"
+                  class="compare-entity-input"
+                  placeholder="+ Add entity to map (company, fund, person)"
+                  autocomplete="off"
+                  aria-label="Add another entity to this map"
+                />
+                <div id="compareEntitySuggest" class="compare-entity-suggest" hidden></div>
+              </div>
+              <div class="explored-box-footer">
+                <span class="explored-hint-copy">Searching above also adds to map</span>
+                <button type="button" class="explored-clear-btn" id="clearExploredEntitiesBtn" title="Clear all entities from canvas">Clear all</button>
+              </div>
+            </div>
+          </aside>
+
+          <!-- Top-center Drill-Down Return Pill & Transient Live Status -->
+          <div class="map-top-center-bar" id="mapTopCenterBar">
+            <button type="button" class="map-drilldown-back-btn" id="mapDrilldownBackBtn" hidden>
+              <span>&larr; Back to 4 Groups</span>
+              <span class="drilldown-group-chip" id="mapDrilldownGroupBadge">LINEAGE</span>
+            </button>
+            <button
+              type="button"
+              class="map-clear-focus-btn"
+              id="mapClearFocusBtn"
+              title="Exit highlight and show the full map (Esc)"
+              aria-label="Clear highlight and show the full map"
+              hidden
+            >
+              <span>Show all paths</span>
+              <span class="clear-focus-x" aria-hidden="true">&times;</span>
+            </button>
+            <div class="map-live-status-pill" id="mapLiveStatusPill" hidden aria-live="polite"></div>
+          </div>
+
+          <!-- Empty State when filters hide all paths or no entity loaded -->
+          <div id="constellationEmptyState" class="constellation-empty-state" hidden>
+            <div class="empty-kicker" id="constellationEmptyKicker">No verified Cala paths in view</div>
+            <h3 id="constellationEmptyTitle">Adjust filters or explore another entity</h3>
+            <p id="constellationEmptyDesc">
+              Only verified Cala relationships with evidence are drawn. Reset active filters or search a new entity above.
+            </p>
+            <div class="empty-actions">
+              <button type="button" class="btn primary sm" id="emptyResetFiltersBtn">Reset filters</button>
+            </div>
+          </div>
+
+          <!-- Top-right Vertical Translucent Zoom Rail -->
+          <div class="map-zoom-controls map-vertical-controls" id="mapZoomToolbar" aria-label="Map controls">
+            <button type="button" class="zoom-icon-btn" id="mapZoomInBtn" aria-label="Zoom in" title="Zoom in">+</button>
+            <span class="zoom-readout num-tabular" id="mapZoomReadout">100%</span>
+            <button type="button" class="zoom-icon-btn" id="mapZoomOutBtn" aria-label="Zoom out" title="Zoom out">-</button>
+            <span class="zoom-sep" aria-hidden="true"></span>
+            <button type="button" class="zoom-text-btn" id="mapFitViewBtn" title="Fit constellation to viewport">Fit</button>
+            <button type="button" class="zoom-text-btn" id="mapCenterBtn" title="Center constellation">Ctr</button>
+          </div>
+
+          <!-- Bottom-left Key Toggle Pill + Legend Popover -->
+          <div class="map-bottom-left-overlay map-minimal-hud" id="mapMinimalHud">
+            <div class="map-legend-popover" id="mapLegendPopover" role="dialog" aria-label="Constellation key and controls" hidden>
+              <div class="legend-pop-header">
+                <span class="legend-pop-title">Constellation Key</span>
+                <button type="button" class="legend-pop-close" id="mapLegendCloseBtn" aria-label="Close key">x</button>
+              </div>
+              <div class="legend-pop-grid">
+                <span class="leg-item"><span class="fam-dot fam-dot-feeder"></span> Access (Partners &amp; Syndicate)</span>
+                <span class="leg-item"><span class="fam-dot fam-dot-alumni"></span> Lineage (Founders &amp; Leadership)</span>
+                <span class="leg-item"><span class="fam-dot fam-dot-event"></span> Timing (Funding &amp; Events)</span>
+                <span class="leg-item"><span class="fam-dot fam-dot-twin"></span> Caution (Acquisitions &amp; Rivals)</span>
+              </div>
+              <div class="legend-pop-strokes">
+                <span class="leg-item"><span class="leg-line leg-line-solid"></span> FILING / PRIMARY</span>
+                <span class="leg-item"><span class="leg-line leg-line-dashed"></span> PRESS / AGG</span>
+                <span class="leg-item"><span class="leg-line leg-line-peer"></span> Hover relation path</span>
+              </div>
+              <div class="legend-pop-controls">
+                Click a Group Hub to expand paths &middot; Click any Entity orb for full Cala Dossier &middot; Scroll/trackpad pans &amp; zooms
+              </div>
+            </div>
+            <button
+              type="button"
+              class="map-key-toggle-pill"
+              id="mapLegendToggleBtn"
+              aria-expanded="false"
+              aria-controls="mapLegendPopover"
+            >
+              <span class="key-pill-dots" aria-hidden="true">
+                <span class="fam-dot fam-dot-feeder"></span>
+                <span class="fam-dot fam-dot-alumni"></span>
+                <span class="fam-dot fam-dot-event"></span>
+                <span class="fam-dot fam-dot-twin"></span>
+              </span>
+              <span>Key &middot; ?</span>
+            </button>
+          </div>
+
+          <div class="map-bottom-right-overlay" id="mapDecisionHud">
+            <div class="decision-summary-popover" id="decisionSummaryPopover" role="dialog" aria-label="4-Factor Investment Decision Summary" hidden>
+              <div class="decision-pop-header">
+                <div class="decision-pop-title-row">
+                  <span class="decision-pop-title">4-Factor Decision</span>
+                  <span class="decision-verdict-badge is-neutral" id="decisionOverallBadge">Ready</span>
+                </div>
+                <div class="decision-pop-actions">
+                  <button type="button" class="legend-pop-close" id="decisionSummaryCloseBtn" aria-label="Close decision summary">x</button>
+                </div>
+              </div>
+              <div class="decision-factor-list" id="decisionFactorList" role="tablist" aria-label="Decision factors" aria-orientation="vertical"></div>
+              <div class="decision-ai-prompt" id="decisionAiPrompt">Choose a factor to see its Claude analysis.</div>
+              <div class="decision-ai-output" id="decisionAiOutput" role="tabpanel" hidden></div>
+            </div>
+            <button
+              type="button"
+              class="map-decision-toggle-pill"
+              id="decisionSummaryToggleBtn"
+              aria-expanded="false"
+              aria-controls="decisionSummaryPopover"
+            >
+              <span class="decision-pill-dot" id="decisionPillDot" aria-hidden="true"></span>
+              <span id="decisionPillLabel">Decision &middot; 4 Factors</span>
+            </button>
+          </div>
+
+          <!-- Floating Hover Math-First Tooltip -->
+          <div id="mapHoverTooltip" class="map-hover-tooltip" hidden></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Entity Dossier Modal (6 Evidence Tabs, Zero Startups-to-Call Features) -->
+  <div id="entityDossierBackdrop" class="drawer-backdrop" hidden>
+    <section
+      id="entityDossierModal"
+      class="inspector-drawer entity-dossier-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="dossierTitle"
+      tabindex="-1"
+    >
+      <header class="drawer-header dossier-header">
+        <div class="drawer-top-row">
+          <div class="drawer-identity">
+            <button id="dossierBackBtn" type="button" class="btn sm" aria-label="Back to previous dossier" hidden>&larr; Back</button>
+            <div class="drawer-logo dossier-initials" id="dossierInitials" aria-hidden="true">E</div>
+            <div style="min-width: 0">
+              <div class="dossier-kicker-row">
+                <span class="dossier-type-badge" id="dossierTypeBadge">Entity</span>
+                <span class="source-tier-pill" id="dossierTier">Not found in Cala</span>
+              </div>
+              <h2 class="drawer-title" id="dossierTitle">Entity</h2>
+              <p class="drawer-meta" id="dossierMeta">Not found in Cala</p>
+            </div>
+          </div>
+
+          <div class="drawer-header-right dossier-actions">
+            <button id="dossierShowMapBtn" type="button" class="btn sm">Locate on map</button>
+            <button id="dossierCenterBtn" type="button" class="btn sm">Focus only this</button>
+            <button id="dossierAddBtn" type="button" class="btn sm primary" hidden>+ Expand on map</button>
+            <button id="dossierCloseBtn" type="button" class="drawer-close-btn" aria-label="Close entity dossier">
+              <span aria-hidden="true">&times;</span>
+            </button>
+          </div>
+        </div>
+        <p class="dossier-description" id="dossierDescription">Not found in Cala</p>
+      </header>
+
+      <nav class="dossier-tabs" role="tablist" aria-label="Entity dossier sections">
+        <button id="dossierTabOverview" type="button" class="dossier-tab is-active" role="tab" aria-selected="true" aria-controls="dossierBody" tabindex="0" data-dossier-tab="overview">Overview</button>
+        <button id="dossierTabPeople" type="button" class="dossier-tab" role="tab" aria-selected="false" aria-controls="dossierBody" tabindex="-1" data-dossier-tab="people">People</button>
+        <button id="dossierTabFunding" type="button" class="dossier-tab" role="tab" aria-selected="false" aria-controls="dossierBody" tabindex="-1" data-dossier-tab="funding">Funding &amp; Investors</button>
+        <button id="dossierTabConnections" type="button" class="dossier-tab" role="tab" aria-selected="false" aria-controls="dossierBody" tabindex="-1" data-dossier-tab="connections">Connections</button>
+        <button id="dossierTabTimeline" type="button" class="dossier-tab" role="tab" aria-selected="false" aria-controls="dossierBody" tabindex="-1" data-dossier-tab="timeline">Timeline</button>
+        <button id="dossierTabSources" type="button" class="dossier-tab" role="tab" aria-selected="false" aria-controls="dossierBody" tabindex="-1" data-dossier-tab="sources">Sources &amp; Gaps</button>
+      </nav>
+
+      <div id="dossierBody" class="dossier-body" role="tabpanel" aria-labelledby="dossierTabOverview" tabindex="0" aria-live="polite"></div>
+    </section>
+  </div>
+
+  <!-- Transient Non-Intrusive Toast Banner -->
+  <div id="uiToastBanner" class="ui-toast" role="status" aria-live="polite" hidden></div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
