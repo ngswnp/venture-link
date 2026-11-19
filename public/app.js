@@ -5977,6 +5977,7 @@ function clearMapToEmpty() {
 
 function clearMapToHero() {
   resetMapView();
+  switchHeroInfoTab("explorer");
 }
 
 // ---------- Entity Dossier Modal (6 Evidence Tabs, Strict Cala Provenance) ----------
@@ -8388,6 +8389,9 @@ async function initApp() {
   bindCanvasAndMapInteractions();
   bindDossierEvents();
 
+  setWorkspaceMode("hero");
+  switchHeroInfoTab("explorer");
+
   try {
     const [boot, budget] = await Promise.all([
       fetchJson("/api/bootstrap").catch(() => null),
@@ -8401,23 +8405,7 @@ async function initApp() {
   state.perspectiveEntity = loadPerspectiveFromStorage();
   syncPerspectiveControl();
 
-  const saved = loadPinnedEntitiesFromStorage();
-  if (saved.length) {
-    await runEntityMapAnalysis(saved, { fit: true, discoverLive: true });
-    return;
-  }
-
-  // Boot directly into a calm verified entity constellation if Cala/cache has OpenAI
-  try {
-    const matches = await searchCalaEntities("OpenAI");
-    if (matches.length) {
-      await runEntityMapAnalysis([toEntityRef(matches[0])], { fit: true, discoverLive: true });
-      return;
-    }
-  } catch (_) {}
-
-  setWorkspaceMode("hero");
-  setStatus("Search any entity above or click a quick pick to map Cala paths.");
+  setStatus("Live Cala graph ready");
 }
 
 initApp();

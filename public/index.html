@@ -26,12 +26,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,700;0,9..144,800;1,9..144,700;1,9..144,800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
     rel="stylesheet"
   />
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body class="is-map-workspace">
+<body class="is-search-hero">
   <!-- Minimal Header Bar -->
   <header class="top" id="dashboardMasthead">
     <a href="#search" class="brand" id="brandHomeLink" aria-label="VentureLink Home">
@@ -58,7 +58,7 @@
     </nav>
 
     <div class="top-right" id="inlineCalibrationBar">
-      <span id="mapStatus" class="map-status-note" aria-live="polite">Initializing Cala map...</span>
+      <span id="mapStatus" class="map-status-note" aria-live="polite">Live Cala graph ready</span>
 
       <button
         type="button"
@@ -142,10 +142,10 @@
         <div class="hero-main-grid" id="heroMainGrid">
           <div class="hero-intro-block" id="heroIntroBlock">
             <h1 class="hero-main-title">
-              Real Cala data that<br />maps every link.
+              <em class="hero-real-highlight">Real data</em> that maps every link,<br />powered by <strong class="hero-cala-highlight">Cala.</strong>
             </h1>
             <p class="hero-sub-tagline" id="searchHeroSub">
-              Investors, suppliers, leadership ties, and dated milestones sourced directly from live Cala Knowledge Graph filings &mdash; zero synthetic estimates.
+              Cala is a trusted data provider delivering verified corporate, investor, leadership, and statutory filing records &mdash; powering context-aware relationship analysis that sharpens every investment decision.
             </p>
           </div>
 
@@ -267,7 +267,7 @@
 
         <!-- Bottom 5-Column Editorial Cala Reliability Strip (hero only) -->
         <div class="hero-bottom-strip" id="heroBottomStrip" aria-label="Cala data guarantees">
-          <div class="hero-strip-item is-featured" data-strip-index="0">
+          <div class="hero-strip-item" data-strip-index="0">
             <svg class="hero-strip-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.35" />
             </svg>
@@ -313,16 +313,16 @@
                 <span class="cala-trust-dot" aria-hidden="true"></span>
                 <span>100% Real &amp; Reliable Cala Knowledge Graph Provenance</span>
               </div>
-              <h2 class="hero-info-title">Every relationship is contributed by real, auditable Cala data.</h2>
+              <h2 class="hero-info-title"><em class="hero-real-highlight">Real data</em> behind every relationship, powered by <strong class="hero-cala-highlight">Cala.</strong></h2>
               <p class="hero-info-lead">
-                VentureLink never invents edges, estimates funding sizes, or extrapolates unverified claims. Every entity orb, relationship path, and decision takeaway is grounded directly in live Cala Knowledge Graph records and statutory filings.
+                Cala is a reliable institutional data provider delivering verified company, investor, leadership, and statutory filing records. VentureLink turns Cala&rsquo;s real-world data into structured relationship analysis &mdash; giving analysts auditable evidence to drive high-conviction investment decisions without synthetic estimates.
               </p>
             </div>
 
             <div class="hero-info-grid is-three-col">
-              <article class="hero-info-card is-highlight">
+              <article class="hero-info-card">
                 <div class="hero-info-card-top">
-                  <span class="hero-info-tag is-coral">Tier 1 &amp; Tier 2</span>
+                  <span class="hero-info-tag">Tier 1 &amp; Tier 2</span>
                   <span class="hero-info-stat">FILING &middot; PRIMARY</span>
                 </div>
                 <h3>Statutory &amp; Primary Source Hierarchy</h3>
@@ -388,7 +388,7 @@
               </div>
               <h2 class="hero-info-title">What analysts uncover from each mapped connection.</h2>
               <p class="hero-info-lead">
-                VentureLink decouples objective corporate roles (Capital, Governance, Commercial Value Chain, Strategic Events) from your active decision mode &mdash; replacing arbitrary numeric scores with clear qualitative verdicts (<b>Strong signal</b>, <b>Watch item</b>, <b>Red flag</b>).
+                VentureLink decouples objective corporate roles (Capital, Governance, Commercial Value Chain, Strategic Events) from your active decision mode &mdash; turning reliable Cala records into qualitative investment signals (<b>Strong signal</b>, <b>Watch item</b>, <b>Red flag</b>).
               </p>
             </div>
 
@@ -409,9 +409,9 @@
                 </div>
               </article>
 
-              <article class="hero-info-card is-highlight">
+              <article class="hero-info-card">
                 <div class="hero-info-card-top">
-                  <span class="hero-info-tag is-coral">2&ndash;4 Entities &middot; Neutral</span>
+                  <span class="hero-info-tag">2&ndash;4 Entities &middot; Neutral</span>
                   <span class="hero-info-stat">Ecosystem Compare</span>
                 </div>
                 <h3>Multi-Entity Bottlenecks &amp; Conflicts</h3>
@@ -499,9 +499,9 @@
                 </p>
               </article>
 
-              <article class="hero-info-card is-highlight">
+              <article class="hero-info-card">
                 <div class="hero-info-card-top">
-                  <span class="hero-info-step is-coral">04</span>
+                  <span class="hero-info-step">04</span>
                   <span class="hero-info-stat">Citation Gate</span>
                 </div>
                 <h3>Deterministic Claim &amp; Numeric Gate</h3>
@@ -563,7 +563,7 @@
       </div>
 
       <!-- Full-Bleed Interactive Contribution Tree Constellation Stage -->
-      <div class="constellation-stage" id="constellationStage">
+      <div class="constellation-stage" id="constellationStage" hidden>
         <div
           id="bridgeMapCanvas"
           class="bridge-map-canvas"
