@@ -266,11 +266,13 @@ export function buildDecisionIntelligence({
       edge.isPerspectiveBridge ||
       (perspectiveObj && (fromId === String(perspectiveObj.id) || toId === String(perspectiveObj.id)))
     );
+    const nodeEntityType = normalizeText(nodeById.get(nonFocalId)?.entityType || 'Organization');
 
     rawByGroup[group].push({
       id: String(edge.id || `${group}-${fromId}-${toId}`),
       edgeId: String(edge.id || ''),
       nodeId: nonFocalId,
+      nodeEntityType,
       focalEntityId: String(edge.focalEntityId || (focalById.has(fromId) ? fromId : toId)),
       type: normalizeText(edge.relation || edge.bridgeFamily || relationText),
       path: `${fromName} → ${toName}`,
@@ -312,6 +314,7 @@ export function buildDecisionIntelligence({
           id: `persp-chain-${idx + 1}`,
           edgeId: pseudoEdgeId,
           nodeId: chain.bridgeNodeId || String(perspectiveObj.id),
+          nodeEntityType: normalizeText(nodeById.get(String(chain.bridgeNodeId || perspectiveObj.id))?.entityType || 'Organization'),
           focalEntityId: String(chain.targetId || focalIds[0] || ''),
           type: chain.type === 'direct' ? 'PERSPECTIVE_DIRECT' : 'PERSPECTIVE_WARM_INTRO',
           path: chain.chainText,
@@ -353,6 +356,7 @@ export function buildDecisionIntelligence({
         id: `caution:portfolio:${idx + 1}`,
         edgeId: '',
         nodeId: String(conflict.portfolioId || ''),
+        nodeEntityType: 'Organization',
         focalEntityId: String(conflict.targetId || focalIds[0] || ''),
         type: 'PORTFOLIO_OVERLAP',
         path: `${perspectiveObj.name} (${conflict.portfolioName}) ↔ ${conflict.targetName}`,
@@ -419,6 +423,7 @@ export function buildDecisionIntelligence({
           id: `caution:dual-investors`,
           edgeId: firstInv.edgeId,
           nodeId: firstInv.nodeId,
+          nodeEntityType: 'Organization',
           focalEntityId: [...firstInv.hubIds][0] || focalIds[0],
           type: 'DUAL_SIDED_INVESTOR_CONFLICT',
           path: `${names} → ${hubList.join(' & ')}`,
@@ -472,6 +477,7 @@ export function buildDecisionIntelligence({
         id: 'caution:talent-overlap',
         edgeId: firstPerson.edgeId,
         nodeId: firstPerson.nodeId,
+        nodeEntityType: 'Person',
         focalEntityId: [...firstPerson.hubIds][0] || focalIds[0],
         type: 'CROSS_HUB_TALENT_OVERLAP',
         path: `${names} ↔ ${hubList.join(' & ')}`,
@@ -604,18 +610,22 @@ export function buildDecisionIntelligence({
     single_teardown: {
       access: {
         displayLabel: 'Capital & Value Chain',
+        shortTabLabel: 'Capital & Stack',
         question: 'Who backs it & who powers its commercial stack?'
       },
       lineage: {
         displayLabel: 'Governance, Leadership & M&A',
+        shortTabLabel: 'Gov & M&A',
         question: 'Who leads, controls, or was acquired by it?'
       },
       timing: {
         displayLabel: 'Recent Catalysts vs. History',
+        shortTabLabel: 'Catalysts',
         question: 'What happened in the last 18 months vs. historical milestones?'
       },
       caution: {
         displayLabel: 'Rivals, Anomalies & Gaps',
+        shortTabLabel: 'Gaps & Rivals',
         question: 'What competitive threats, anomalies, or missing Cala disclosures exist?'
       }
     },
@@ -623,36 +633,44 @@ export function buildDecisionIntelligence({
       displayLabel: null,
       access: {
         displayLabel: 'Shared Backers & Bottlenecks',
+        shortTabLabel: 'Backers & Stack',
         question: 'Where do cap tables, suppliers, or strategic partnerships converge across targets?'
       },
       lineage: {
         displayLabel: 'Talent & Corporate Lineage',
+        shortTabLabel: 'Talent & M&A',
         question: 'Which founders, executives, or M&A links connect the mapped companies?'
       },
       timing: {
         displayLabel: 'Comparative Momentum',
+        shortTabLabel: 'Momentum',
         question: 'Which companies carry recent catalysts (<=18m) vs. older financing history?'
       },
       caution: {
         displayLabel: 'Dual-Backer & Rivalry Risk',
+        shortTabLabel: 'Rivalry & Risk',
         question: 'What dual-backed conflicts, commercial bottlenecks, or direct rivalries appear?'
       }
     },
     perspective_triage: {
       access: {
         displayLabel: 'Warm Intro Access',
+        shortTabLabel: 'Warm Access',
         question: `What verified path connects ${perspectiveObj?.name || 'your firm'} to the target(s)?`
       },
       lineage: {
         displayLabel: 'Team & Spinout Lineage',
+        shortTabLabel: 'Lineage',
         question: 'Are founder and executive tenures current, and who gives a direct backchannel?'
       },
       timing: {
         displayLabel: 'Active Timing Window',
+        shortTabLabel: 'Timing',
         question: 'Do dated catalysts within 18 months establish an active deal window?'
       },
       caution: {
         displayLabel: 'Portfolio & Risk Flags',
+        shortTabLabel: 'Risk Flags',
         question: `What portfolio overlap with ${perspectiveObj?.name || 'your firm'} or competitive risk requires verification?`
       }
     }
@@ -683,8 +701,12 @@ export function buildDecisionIntelligence({
     const rankedRecords = balanceRecordsAcrossHubs(records, focalIds, 8, resolvedPrimaryTargetId);
     const sharedRecords = records.filter((r) => r.isSharedBridge);
     const uniqueBridgeEntities = [...new Set(records.map((r) => r.canonicalFrom).filter((n) => !focalList.some((f) => f.name === n)))];
+    const isPersonRecord = (r) => String(r?.nodeEntityType || nodeById.get(r?.nodeId)?.entityType || '').toLowerCase() === 'person';
+    const prioritizeOrgs = (list) => (group === 'access'
+      ? [...list].sort((a, b) => Number(isPersonRecord(a)) - Number(isPersonRecord(b)))
+      : list);
     const sharedBridgeNames = [...new Set(
-      [...rankedRecords.filter((r) => r.isSharedBridge), ...sharedRecords].map((r) => {
+      prioritizeOrgs([...rankedRecords.filter((r) => r.isSharedBridge), ...sharedRecords]).map((r) => {
         const n = nodeById.get(r.nodeId);
         return n?.label || n?.name || r.canonicalFrom;
       }).filter(Boolean)
@@ -745,13 +767,14 @@ export function buildDecisionIntelligence({
 
     if (group === 'access') {
       const leadNames = sharedBridgeNames.slice(0, 2);
-      const capitalRecords = records.filter((r) => r.structuralRole === 'capital');
-      const commercialRecords = records.filter((r) => r.structuralRole === 'commercial');
-      const directNames = rankedRecords.slice(0, 2).map((r) => (focalById.has(r.nodeId) ? r.canonicalFrom : nodeLabel(r.nodeId)));
+      const orderedAccessRecords = prioritizeOrgs([...rankedRecords, ...records]);
+      const capitalRecords = orderedAccessRecords.filter((r) => r.structuralRole === 'capital');
+      const commercialRecords = orderedAccessRecords.filter((r) => r.structuralRole === 'commercial');
+      const directNames = [...new Set(orderedAccessRecords.map((r) => (focalById.has(r.nodeId) ? r.canonicalFrom : nodeLabel(r.nodeId))).filter(Boolean))].slice(0, 2);
 
       if (resolvedMode === 'perspective_triage' && perspectiveObj) {
         if (records.length > 0) {
-          headline = truncateLine(`${records.length} warm path(s) from ${perspectiveObj.name} (${[...new Set(directNames)].join(', ')})`);
+          headline = truncateLine(`${records.length} warm path(s) from ${perspectiveObj.name} (${directNames.join(', ')})`);
           investmentImpact = `${perspectiveObj.name} connects directly or via ${leadNames[0] || directNames[0] || 'a shared syndicate bridge'} to the target.`;
           actionableCheck = `Confirm whether ${leadNames[0] || directNames[0] || 'the mapped bridge'} can sponsor a direct partner introduction.`;
         } else {
@@ -760,11 +783,11 @@ export function buildDecisionIntelligence({
           actionableCheck = `Verify outside-Cala relationships or advisor ties from ${perspectiveObj.name} before initiating cold outreach.`;
         }
       } else if (resolvedMode === 'single_teardown') {
-        const capCount = capitalRecords.length;
-        const comCount = commercialRecords.length;
+        const capCount = structuralBreakdown.capitalCount;
+        const comCount = structuralBreakdown.commercialCount;
         if (records.length > 0) {
-          const capLead = capitalRecords.slice(0, 2).map((r) => nodeLabel(r.nodeId)).filter(Boolean);
-          const comLead = commercialRecords.slice(0, 2).map((r) => nodeLabel(r.nodeId)).filter(Boolean);
+          const capLead = [...new Set(capitalRecords.map((r) => nodeLabel(r.nodeId)).filter(Boolean))].slice(0, 2);
+          const comLead = [...new Set(commercialRecords.map((r) => nodeLabel(r.nodeId)).filter(Boolean))].slice(0, 2);
           headline = truncateLine(
             [capCount ? `${capCount} capital backer${capCount === 1 ? '' : 's'}` : '', comCount ? `${comCount} commercial link${comCount === 1 ? '' : 's'}` : '']
               .filter(Boolean)
@@ -903,6 +926,7 @@ export function buildDecisionIntelligence({
       group,
       label: factorConfigs[group].label,
       displayLabel: MODE_DISPLAY_LABELS[resolvedMode][group].displayLabel,
+      shortTabLabel: MODE_DISPLAY_LABELS[resolvedMode][group].shortTabLabel,
       sectionQuestion: MODE_DISPLAY_LABELS[resolvedMode][group].question,
       count: records.length,
       sharedCount: sharedRecords.length,

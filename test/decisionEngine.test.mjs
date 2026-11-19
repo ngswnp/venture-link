@@ -331,3 +331,63 @@ test('buildDecisionIntelligence adapts labels, timing recency, ACQUIRED M&A, col
   assert.equal(eco.executive.primaryTargetName, 'Anthropic');
   assert.equal(eco.executive.sharedCommercialBottlenecks[0]?.name, 'NVIDIA');
 });
+
+test('decisionEngine provides concise shortTabLabel across modes, nodeEntityType on records, and prioritizes organizations ahead of persons in access headlines', () => {
+  const nodes = [
+    { id: 'co-1', label: 'OpenAI', entityType: 'Company', isFocalEntity: true },
+    { id: 'co-2', label: 'Anthropic', entityType: 'Company', isFocalEntity: true },
+    { id: 'person-1', label: 'Daniela Amodei', entityType: 'Person', isSharedBridge: true, sharedByFocalEntityIds: ['co-1', 'co-2'] },
+    { id: 'org-1', label: 'Microsoft Corporation', entityType: 'Organization', isSharedBridge: true, sharedByFocalEntityIds: ['co-1', 'co-2'] }
+  ];
+  const edges = [
+    {
+      id: 'e-person-1',
+      from: 'person-1',
+      to: 'co-1',
+      focalEntityId: 'co-1',
+      relation: 'PARTICIPATED_IN_FUNDING',
+      label: 'Invested in',
+      contributionGroup: 'access',
+      structuralRole: 'capital',
+      isSharedBridge: true,
+      sharedByFocalEntityIds: ['co-1', 'co-2'],
+      topSourceRank: 'FILING',
+      sourceIds: ['s-p1']
+    },
+    {
+      id: 'e-org-1',
+      from: 'org-1',
+      to: 'co-2',
+      focalEntityId: 'co-2',
+      relation: 'INVESTED_IN',
+      label: 'Invested in',
+      contributionGroup: 'access',
+      structuralRole: 'capital',
+      isSharedBridge: true,
+      sharedByFocalEntityIds: ['co-1', 'co-2'],
+      topSourceRank: 'PRIMARY',
+      sourceIds: ['s-o1']
+    }
+  ];
+
+  for (const mode of ['single_teardown', 'ecosystem_compare', 'perspective_triage']) {
+    const out = buildDecisionIntelligence({
+      focalEntities: mode === 'ecosystem_compare'
+        ? [{ id: 'co-1', name: 'OpenAI' }, { id: 'co-2', name: 'Anthropic' }]
+        : [{ id: 'co-1', name: 'OpenAI' }],
+      nodes,
+      edges,
+      analysisMode: mode,
+      perspectiveEntity: mode === 'perspective_triage' ? { id: 'org-1', name: 'Microsoft Corporation', warmIntroChains: [], portfolioConflicts: [] } : null,
+      referenceDate: '2026-11-19'
+    });
+    for (const grp of ['access', 'lineage', 'timing', 'caution']) {
+      const f = out.factors[grp];
+      assert.ok(f.shortTabLabel && f.shortTabLabel.length <= 18, `${mode}.${grp} shortTabLabel "${f.shortTabLabel}" must be <= 18 chars`);
+    }
+    if (mode === 'ecosystem_compare') {
+      assert.ok(out.factors.access.rankedRecords.every((r) => Boolean(r.nodeEntityType)), 'Every record should carry nodeEntityType');
+      assert.match(out.factors.access.headline, /Microsoft Corporation/, 'Organization bridge should headline ahead of Person bridge in access');
+    }
+  }
+});

@@ -2404,6 +2404,14 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
       { r: 342 * spacing, cls: "orbit-guide-ring is-dashed" }
     ];
     const anchorPos = layout.posMap.get(layout.displayNodes?.[0]?.id) || { x: CONSTELLATION_CX, y: CONSTELLATION_CY };
+    const nodeObstacles = outerNodes
+      .map((n) => layout.posMap.get(n.id))
+      .filter(Boolean)
+      .map((p) => ({ x1: p.x - 84, x2: p.x + 84, y1: p.y - 28, y2: p.y + 48 }));
+    nodeObstacles.push({ x1: anchorPos.x - 95, x2: anchorPos.x + 95, y1: anchorPos.y - 68, y2: anchorPos.y + 68 });
+
+    const boxesOverlap = (a, b) => a.x1 < b.x2 && a.x2 > b.x1 && a.y1 < b.y2 && a.y2 > b.y1;
+
     const sectorLabelsMarkup = asList(layout.populatedSectors)
       .map((sec) => {
         const sectorNodes = outerNodes.filter((n) => layout.posMap.get(n.id)?.placedRole === sec.role);
@@ -2423,14 +2431,23 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
         const labelAngle = sectorNodes.length
           ? (Math.atan2(angleSumSin, angleSumCos) * 180) / Math.PI
           : sec.midDeg;
-        const labelR = maxR + 58;
-        const pt = polarToCartesian(anchorPos.x, anchorPos.y, labelR, labelAngle);
         const anchorAlign = Math.abs(Math.cos((labelAngle * Math.PI) / 180)) < 0.25
           ? "middle"
           : Math.cos((labelAngle * Math.PI) / 180) > 0
             ? "start"
             : "end";
-        return `<text class="sector-cluster-label" x="${pt.x.toFixed(1)}" y="${pt.y.toFixed(1)}" text-anchor="${anchorAlign}">${escapeHtml(sec.label.toUpperCase())} (${sec.count})</text>`;
+        const labelStr = `${sec.label.toUpperCase()} (${sec.count})`;
+        const labelW = labelStr.length * 7.2 + 24;
+        let labelR = maxR + 64;
+        let pt = polarToCartesian(anchorPos.x, anchorPos.y, labelR, labelAngle);
+        for (let pass = 0; pass < 4; pass += 1) {
+          const x1 = anchorAlign === "start" ? pt.x : anchorAlign === "end" ? pt.x - labelW : pt.x - labelW / 2;
+          const box = { x1, x2: x1 + labelW, y1: pt.y - 16, y2: pt.y + 8 };
+          if (!nodeObstacles.some((ob) => boxesOverlap(box, ob))) break;
+          labelR += 36;
+          pt = polarToCartesian(anchorPos.x, anchorPos.y, labelR, labelAngle);
+        }
+        return `<text class="sector-cluster-label" x="${pt.x.toFixed(1)}" y="${pt.y.toFixed(1)}" text-anchor="${anchorAlign}">${escapeHtml(labelStr)}</text>`;
       })
       .join("");
 
@@ -2977,22 +2994,22 @@ function buildFourFactorDecisionSummary(bridgeMap) {
   const fallbackMode = getActiveAnalysisMode(bridgeMap);
   const modeDefaultLabels = {
     single_teardown: {
-      access: { displayLabel: "Capital & Value Chain", question: "Who backs it & who powers its commercial stack?" },
-      lineage: { displayLabel: "Governance, Leadership & M&A", question: "Who leads, controls, or was acquired by it?" },
-      timing: { displayLabel: "Recent Catalysts vs. History", question: "What happened in the last 18 months vs. historical rounds?" },
-      caution: { displayLabel: "Rivals, Anomalies & Gaps", question: "What competitive threats, anomalies, or missing Cala disclosures exist?" }
+      access: { displayLabel: "Capital & Value Chain", shortTabLabel: "Capital & Stack", question: "Who backs it & who powers its commercial stack?" },
+      lineage: { displayLabel: "Governance, Leadership & M&A", shortTabLabel: "Gov & M&A", question: "Who leads, controls, or was acquired by it?" },
+      timing: { displayLabel: "Recent Catalysts vs. History", shortTabLabel: "Catalysts", question: "What happened in the last 18 months vs. historical rounds?" },
+      caution: { displayLabel: "Rivals, Anomalies & Gaps", shortTabLabel: "Gaps & Rivals", question: "What competitive threats, anomalies, or missing Cala disclosures exist?" }
     },
     ecosystem_compare: {
-      access: { displayLabel: "Shared Backers & Bottlenecks", question: "Where do cap tables, suppliers, or partnerships converge?" },
-      lineage: { displayLabel: "Talent & Corporate Lineage", question: "Which leaders, founders, or M&A links span multiple peers?" },
-      timing: { displayLabel: "Comparative Momentum", question: "Which peers carry recent catalysts (<=18m) vs. older history?" },
-      caution: { displayLabel: "Dual-Backer & Rivalry Risk", question: "What dual-backed conflicts, bottlenecks, or rivalries appear?" }
+      access: { displayLabel: "Shared Backers & Bottlenecks", shortTabLabel: "Backers & Stack", question: "Where do cap tables, suppliers, or partnerships converge?" },
+      lineage: { displayLabel: "Talent & Corporate Lineage", shortTabLabel: "Talent & M&A", question: "Which leaders, founders, or M&A links span multiple peers?" },
+      timing: { displayLabel: "Comparative Momentum", shortTabLabel: "Momentum", question: "Which peers carry recent catalysts (<=18m) vs. older history?" },
+      caution: { displayLabel: "Dual-Backer & Rivalry Risk", shortTabLabel: "Rivalry & Risk", question: "What dual-backed conflicts, bottlenecks, or rivalries appear?" }
     },
     perspective_triage: {
-      access: { displayLabel: "Warm Intro Access", question: "What verified intro bridge connects your firm to the target(s)?" },
-      lineage: { displayLabel: "Team & Spinout Lineage", question: "Who founded or leads here, and where are reference backchannels?" },
-      timing: { displayLabel: "Active Timing Window", question: "Do recent <=18m catalysts establish an active deal window?" },
-      caution: { displayLabel: "Portfolio & Risk Flags", question: "What portfolio overlap or competitive conflict needs diligence?" }
+      access: { displayLabel: "Warm Intro Access", shortTabLabel: "Warm Access", question: "What verified intro bridge connects your firm to the target(s)?" },
+      lineage: { displayLabel: "Team & Spinout Lineage", shortTabLabel: "Lineage", question: "Who founded or leads here, and where are reference backchannels?" },
+      timing: { displayLabel: "Active Timing Window", shortTabLabel: "Timing", question: "Do recent <=18m catalysts establish an active deal window?" },
+      caution: { displayLabel: "Portfolio & Risk Flags", shortTabLabel: "Risk Flags", question: "What portfolio overlap or competitive conflict needs diligence?" }
     }
   };
   if (di?.factors && di?.executive) {
@@ -3004,6 +3021,7 @@ function buildFourFactorDecisionSummary(bridgeMap) {
         group,
         label: f.label || group,
         displayLabel: f.displayLabel || labelCfg[group]?.displayLabel || f.label || group,
+        shortTabLabel: f.shortTabLabel || labelCfg[group]?.shortTabLabel || f.label || group,
         sectionQuestion: f.sectionQuestion || labelCfg[group]?.question || GROUP_DECISION_QUESTIONS[group] || "",
         structuralBreakdown: f.structuralBreakdown || null,
         count: Number(f.count || 0),
@@ -3069,10 +3087,13 @@ function buildFourFactorDecisionSummary(bridgeMap) {
     ...asList(item?.sourceIds),
     item?.sourceId
   ]).filter(Boolean))].slice(0, 4);
+  const fallbackLabelCfg = modeDefaultLabels[fallbackMode] || modeDefaultLabels.ecosystem_compare;
   const factors = [
     {
       group: "access",
       label: "Access",
+      displayLabel: fallbackLabelCfg.access.displayLabel,
+      shortTabLabel: fallbackLabelCfg.access.shortTabLabel,
       count: accessEdges.length,
       sharedCount: accessShared,
       signalStrength: accessEdges.length ? Math.min(95, accessEdges.length * 16 + accessShared * 14) : 0,
@@ -3095,6 +3116,8 @@ function buildFourFactorDecisionSummary(bridgeMap) {
     {
       group: "lineage",
       label: "Lineage",
+      displayLabel: fallbackLabelCfg.lineage.displayLabel,
+      shortTabLabel: fallbackLabelCfg.lineage.shortTabLabel,
       count: lineageEdges.length,
       sharedCount: lineageShared,
       signalStrength: lineageEdges.length ? Math.min(95, lineageEdges.length * 16 + lineageShared * 14) : 0,
@@ -3117,6 +3140,8 @@ function buildFourFactorDecisionSummary(bridgeMap) {
     {
       group: "timing",
       label: "Timing",
+      displayLabel: fallbackLabelCfg.timing.displayLabel,
+      shortTabLabel: fallbackLabelCfg.timing.shortTabLabel,
       count: totalTiming,
       sharedCount: 0,
       signalStrength: totalTiming ? Math.min(95, totalTiming * 18) : 0,
@@ -3137,6 +3162,8 @@ function buildFourFactorDecisionSummary(bridgeMap) {
     {
       group: "caution",
       label: "Caution",
+      displayLabel: fallbackLabelCfg.caution.displayLabel,
+      shortTabLabel: fallbackLabelCfg.caution.shortTabLabel,
       count: cautionEdges.length,
       sharedCount: 0,
       signalStrength: cautionEdges.length ? Math.min(95, cautionEdges.length * 22) : 0,
@@ -3319,7 +3346,7 @@ function renderDecisionSummaryWidget() {
     gradeBadge.hidden = !hasExec;
     if (hasExec) {
       const totalPaths = summary.factors.reduce((sum, f) => sum + Number(f.count || 0), 0);
-      gradeBadge.textContent = `${sourceQualityPhrase(summary.executive.verifiedSharePct)} · ${totalPaths} verified paths`;
+      gradeBadge.textContent = `Real Cala Data · ${sourceQualityPhrase(summary.executive.verifiedSharePct)} · ${totalPaths} paths`;
     }
   }
   if (!summary.factors.some((factor) => factor.group === state.decisionSelectedFactor)) {
@@ -3482,7 +3509,7 @@ function fourFactorClaudeCacheKey(summary, bridgeMap) {
   const title = baseNames.length
     ? `${baseNames.join(" + ")}${pId ? ` (${state.perspectiveEntity?.name || bridgeMap?.perspectiveEntity?.name || pId})` : ""} · ${activeMode}`
     : `Context Analysis · ${activeMode}`;
-  const cacheKey = `4factor:v3:${activeMode}:${pId}:${ptId}:${title}:${JSON.stringify(summary.factors.map((factor) => ({
+  const cacheKey = `4factor:v4:${activeMode}:${pId}:${ptId}:${title}:${JSON.stringify(summary.factors.map((factor) => ({
     group: factor.group,
     count: factor.count,
     signalStrength: factor.signalStrength,
@@ -3521,11 +3548,13 @@ function getDecisionFactorEvidence(bridgeMap, factor) {
   const ranked = asList(factor?.rankedRecords);
   let records = [];
 
+  const nodeMapForType = new Map(asList(bridgeMap?.nodes).map((n) => [String(n.id), n]));
   if (ranked.length > 0) {
     records = ranked.map((r) => ({
       id: r.id || "",
       edgeId: r.edgeId || "",
       nodeId: r.nodeId || "",
+      nodeEntityType: cleanText(r.nodeEntityType || nodeMapForType.get(String(r.nodeId))?.entityType || ""),
       focalEntityId: r.focalEntityId || "",
       type: cleanText(r.type || r.relation || "Mapped path"),
       path: cleanText(r.path || `${r.canonicalFrom || ""} → ${r.canonicalTo || ""}`),
@@ -3572,10 +3601,14 @@ function getDecisionFactorEvidence(bridgeMap, factor) {
         if (id && !sourceById.has(String(id))) sourceById.set(String(id), { ...source, id: String(id) });
       }
       const recency = classifyTimingRecencyFrontend(edge);
+      const nonFocalNode = (!fromNode?.isFocalEntity && fromNode) || (!toNode?.isFocalEntity && toNode) || toNode || fromNode;
       return {
         id: edge.id || "",
         edgeId: edge.id || "",
-        nodeId: edge.to || edge.from || "",
+        nodeId: nonFocalNode?.id || edge.to || edge.from || "",
+        nodeEntityType: cleanText(nonFocalNode?.entityType || "Organization"),
+        canonicalFrom: fromName,
+        canonicalTo: toName,
         type: cleanText(edge.relationType || edge.relation || edge.bridgeFamily || relation),
         path: pathNames,
         relation,
@@ -3744,15 +3777,30 @@ function sourceQualityPhrase(pct) {
   return "Mostly secondary sources";
 }
 
+function isPersonBridgeRecord(rec, bridgeMap = state.bridgeMap) {
+  if (!rec) return false;
+  if (rec.nodeEntityType) return /^person$/i.test(cleanText(rec.nodeEntityType));
+  const nodes = asList(bridgeMap?.nodes);
+  const byId = rec.nodeId ? nodes.find((n) => String(n.id) === String(rec.nodeId)) : null;
+  if (byId?.entityType) return /^person$/i.test(cleanText(byId.entityType));
+  const recFrom = cleanText(rec.canonicalFrom || String(rec.path || "").split(/\s*(?:→|↔)\s*/)[0]).toLowerCase();
+  const byName = recFrom ? nodes.find((n) => cleanText(n.label || n.name).toLowerCase() === recFrom) : null;
+  return /^person$/i.test(cleanText(byName?.entityType));
+}
+
 function deriveConnectionAnalystInsight(rec, factorGroup, findings = []) {
   const recPath = cleanText(rec?.path);
   const recFrom = cleanText(rec?.canonicalFrom || recPath.split(/\s*(?:→|↔)\s*/)[0]);
   const recTo = cleanText(rec?.canonicalTo || recPath.split(/\s*(?:→|↔)\s*/)[1]);
   const firstFromEntity = cleanText(recFrom.split(",")[0]);
+  const isPerson = isPersonBridgeRecord(rec);
   for (const f of asList(findings)) {
     const conn = cleanText(f?.connection);
     const meaning = cleanText(f?.meaning);
     if (!conn || !meaning) continue;
+    if (isPerson && factorGroup === "access" && /\b(?:institutional\s+investor|vc\s+firm)\b/i.test(meaning)) {
+      continue;
+    }
     const connLower = conn.toLowerCase();
     const connLeft = cleanText(conn.split(/\s*(?:→|↔)\s*/)[0]).toLowerCase();
     if (
@@ -3768,6 +3816,19 @@ function deriveConnectionAnalystInsight(rec, factorGroup, findings = []) {
   const sharedHubs = asList(rec?.sharedHubs).filter(Boolean);
   const role = rec?.structuralRole || deriveStructuralRoleFrontend(rec);
   const isAcq = Boolean(rec?.isAcquisition || String(rec?.type || rec?.relation || "").toUpperCase() === "ACQUIRED");
+  const focalNames = new Set([
+    ...asList(state.bridgeMap?.focalEntities).map((f) => cleanText(f.name).toLowerCase()),
+    ...asList(state.pinnedEntities).map((p) => cleanText(p.name).toLowerCase())
+  ].filter(Boolean));
+  const targetHub = (focalNames.has(recTo.toLowerCase()) && recTo)
+    || (focalNames.has(recFrom.toLowerCase()) && recFrom)
+    || recTo
+    || "this hub";
+  const counterparty = (recFrom && !focalNames.has(recFrom.toLowerCase()))
+    ? recFrom
+    : (recTo && !focalNames.has(recTo.toLowerCase()))
+    ? recTo
+    : "";
   if (isAcq) {
     return detail || `Corporate M&A / subsidiary acquisition (${recPath}) shaping asset ownership rather than competitive risk.`;
   }
@@ -3779,7 +3840,13 @@ function deriveConnectionAnalystInsight(rec, factorGroup, findings = []) {
       if (rec?.isSharedBridge && sharedHubs.length >= 2) {
         return `Shared commercial bottleneck serving ${sharedHubs.join(" & ")} — assess supplier/partner concentration.`;
       }
-      return detail || `Commercial supply or partner link with ${recTo || "counterparty"} (value-chain dependency, not investor warm intro).`;
+      return detail || `Commercial supply or partner link with ${counterparty || targetHub} (value-chain dependency, not investor warm intro).`;
+    }
+    if (isPerson) {
+      if (rec?.isSharedBridge && sharedHubs.length >= 2) {
+        return `Shared executive/individual tie across ${sharedHubs.join(" & ")} — verify advisory, angel, or board affiliation.`;
+      }
+      return detail || `Verified individual executive/insider link to ${targetHub} — confirm role vs. personal angel stake.`;
     }
     if (rec?.isSharedBridge && sharedHubs.length >= 2) {
       return mode === "ecosystem_compare"
@@ -3787,12 +3854,12 @@ function deriveConnectionAnalystInsight(rec, factorGroup, findings = []) {
         : `Backs both ${sharedHubs.join(" & ")} — warm intro route and side-by-side co-investor reference.`;
     }
     if (/lead/i.test(`${rel} ${detail}`)) {
-      return `Lead investor in ${recTo || "this hub"} — primary syndicate anchor for ownership and terms.`;
+      return `Lead investor in ${targetHub}${counterparty ? ` (${counterparty})` : ""} — primary syndicate anchor for ownership and terms.`;
     }
     if (/invest|back|round/i.test(`${rel} ${detail}`)) {
-      return `Verified capital backer of ${recTo || "this hub"} (${mode === "perspective_triage" ? "cap-table co-investor reference" : "institutional ownership link"}).`;
+      return `Verified capital backer of ${targetHub}${counterparty ? ` (${counterparty})` : ""} (${mode === "perspective_triage" ? "cap-table co-investor reference" : "institutional ownership link"}).`;
     }
-    return detail || `Strategic value-chain tie with ${recTo || "this hub"}.`;
+    return detail || `Strategic value-chain tie with ${counterparty || targetHub}.`;
   }
   if (factorGroup === "lineage") {
     if (rec?.isSharedBridge && sharedHubs.length >= 2) {
@@ -3864,6 +3931,233 @@ function renderDecisionDrawer(key, title, badgeText, bodyHtml, isOpen) {
   `;
 }
 
+function getConnectionRoleTag(rec, bridgeMap = state.bridgeMap) {
+  if (!rec) return { label: "Verified Link", cls: "is-tag-muted" };
+  const isPerson = isPersonBridgeRecord(rec, bridgeMap);
+  if (rec.isAcquisition || String(rec.type || rec.relation || "").toUpperCase() === "ACQUIRED") {
+    return { label: "M&A", cls: "is-tag-neutral" };
+  }
+  if (rec.isRecentCatalyst || rec.timingRecency === "active_catalyst") {
+    return { label: "<=18m Catalyst", cls: "is-tag-coral" };
+  }
+  if (rec.isHistoricalMilestone || rec.timingRecency === "historical_milestone") {
+    return { label: "Historical >18m", cls: "is-tag-muted" };
+  }
+  if (isPerson && rec.structuralRole !== "governance") {
+    return { label: "Person Tie", cls: "is-tag-neutral" };
+  }
+  if (rec.structuralRole === "commercial") {
+    return { label: "Value Chain", cls: "is-tag-cream" };
+  }
+  if (rec.structuralRole === "capital") {
+    return { label: rec.isLead ? "Lead Capital" : "Capital", cls: "is-tag-cream" };
+  }
+  if (rec.structuralRole === "governance") {
+    return { label: isPerson ? "Leadership" : "Governance", cls: "is-tag-neutral" };
+  }
+  return { label: cleanText(rec.relation).slice(0, 18) || "Verified Link", cls: "is-tag-muted" };
+}
+
+function mergeExpandedConnectionRecords(records = [], factorGroup = "access", bridgeMap = state.bridgeMap) {
+  const rankValue = { FILING: 4, PRIMARY: 3, PRESS: 2, AGGREGATOR: 1 };
+  const focalNames = new Set([
+    ...asList(bridgeMap?.focalEntities).map((f) => cleanText(f.name).toLowerCase()),
+    ...asList(state.pinnedEntities).map((p) => cleanText(p.name).toLowerCase())
+  ].filter(Boolean));
+  let working = [...records];
+
+  if (factorGroup === "caution" && working.length > 1) {
+    const rivalryRecs = working.filter((r) => /rivalry|competitive overlap/i.test(`${r.path} ${r.relation}`));
+    if (rivalryRecs.length >= 2) {
+      const hubs = [...new Set(rivalryRecs.map((r) => cleanText(r.canonicalFrom || r.path.split(/\s*→\s*/)[0])).filter(Boolean))];
+      const target = cleanText(rivalryRecs[0].canonicalTo || rivalryRecs[0].path.split(/\s*→\s*/)[1]);
+      const mergedRivalry = {
+        ...rivalryRecs[0],
+        path: `${hubs.join(" & ")} ↔ ${target}`,
+        sharedHubs: hubs,
+        sourceIds: [...new Set(rivalryRecs.flatMap((r) => asList(r.sourceIds)))]
+      };
+      const nonRivalry = working.filter((r) => !/rivalry|competitive overlap/i.test(`${r.path} ${r.relation}`));
+      working = [mergedRivalry, ...nonRivalry];
+    }
+  }
+
+  if (factorGroup === "timing") {
+    const seen = new Set();
+    return working.filter((rec) => {
+      const k = `${cleanText(rec.path).toLowerCase()}::${cleanText(rec.date)}::${cleanText(rec.relation).toLowerCase()}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
+
+  const grouped = new Map();
+  const order = [];
+  for (const rawRec of working) {
+    let rec = rawRec;
+    let recFrom = cleanText(rec.canonicalFrom || String(rec.path || "").split(/\s*(?:→|↔)\s*/)[0]);
+    let recTo = cleanText(rec.canonicalTo || String(rec.path || "").split(/\s*(?:→|↔)\s*/)[1]);
+    // Orient inbound capital links so backer appears cleanly before focal company (Investor -> Target)
+    if (
+      factorGroup === "access" &&
+      (rec.structuralRole === "capital" || /invest|back|participat/i.test(`${rec.type} ${rec.relation}`)) &&
+      recFrom &&
+      recTo &&
+      focalNames.has(recFrom.toLowerCase()) &&
+      !focalNames.has(recTo.toLowerCase())
+    ) {
+      const flippedFrom = recTo;
+      const flippedTo = recFrom;
+      rec = { ...rec, canonicalFrom: flippedFrom, canonicalTo: flippedTo, path: `${flippedFrom} → ${flippedTo}` };
+      recFrom = flippedFrom;
+      recTo = flippedTo;
+    }
+
+    const isSynthetic = String(rec.id || "").startsWith("caution:") || String(rec.id || "").startsWith("persp-chain-");
+    const canGroup = !isSynthetic && recFrom && !focalNames.has(recFrom.toLowerCase());
+    const key = canGroup
+      ? `entity::${recFrom.toLowerCase()}::${rec.structuralRole || factorGroup}`
+      : `uniq::${cleanText(rec.path).toLowerCase()}::${rec.relation || ""}::${rec.date || ""}`;
+    if (!grouped.has(key)) {
+      const targets = [...new Set([...asList(rec.sharedHubs), recTo].filter((t) => t && cleanText(t).toLowerCase() !== recFrom.toLowerCase()))];
+      grouped.set(key, {
+        rec: { ...rec, canonicalFrom: recFrom, canonicalTo: recTo, sourceIds: [...new Set(asList(rec.sourceIds))] },
+        targets
+      });
+      order.push(key);
+    } else {
+      const bucket = grouped.get(key);
+      for (const h of [...asList(rec.sharedHubs), recTo]) {
+        if (h && cleanText(h).toLowerCase() !== recFrom.toLowerCase() && !bucket.targets.includes(h)) {
+          bucket.targets.push(h);
+        }
+      }
+      bucket.rec.isSharedBridge = Boolean(bucket.rec.isSharedBridge || rec.isSharedBridge || bucket.targets.length >= 2);
+      bucket.rec.isLead = Boolean(bucket.rec.isLead || rec.isLead);
+      if ((rankValue[String(rec.sourceRank || "").toUpperCase()] || 0) > (rankValue[String(bucket.rec.sourceRank || "").toUpperCase()] || 0)) {
+        bucket.rec.sourceRank = rec.sourceRank;
+      }
+      for (const sid of asList(rec.sourceIds)) {
+        if (!bucket.rec.sourceIds.includes(sid)) bucket.rec.sourceIds.push(sid);
+      }
+      if (!bucket.rec.edgeId && rec.edgeId) bucket.rec.edgeId = rec.edgeId;
+      if (!bucket.rec.date && rec.date) bucket.rec.date = rec.date;
+    }
+  }
+
+  const seenPaths = new Set();
+  const deduped = [];
+  for (const key of order) {
+    const { rec, targets } = grouped.get(key);
+    const outRec = (targets.length >= 2 && rec.canonicalFrom && !String(rec.id || "").startsWith("caution:"))
+      ? { ...rec, sharedHubs: targets, isSharedBridge: true, path: `${rec.canonicalFrom} → ${targets.join(" & ")}` }
+      : rec;
+    const normPath = cleanText(outRec.path).toLowerCase();
+    if (normPath && seenPaths.has(normPath)) continue;
+    if (normPath) seenPaths.add(normPath);
+    deduped.push(outRec);
+  }
+
+  return deduped.sort((a, b) => {
+    const sa = a.isSharedBridge ? 1 : 0;
+    const sb = b.isSharedBridge ? 1 : 0;
+    if (sb !== sa) return sb - sa;
+    const pa = isPersonBridgeRecord(a, bridgeMap) ? 1 : 0;
+    const pb = isPersonBridgeRecord(b, bridgeMap) ? 1 : 0;
+    if (factorGroup === "access" && pa !== pb) return pa - pb;
+    return (rankValue[String(b.sourceRank || "").toUpperCase()] || 0) - (rankValue[String(a.sourceRank || "").toUpperCase()] || 0);
+  });
+}
+
+function buildExpandedModeSnapshotHtml(summary, factor, activeMode) {
+  const exec = summary.executive || {};
+  const byGroup = new Map(asList(summary.factors).map((f) => [f.group, f]));
+  if (activeMode === "single_teardown") {
+    const sbAcc = byGroup.get("access")?.structuralBreakdown || {};
+    const sbLin = byGroup.get("lineage")?.structuralBreakdown || {};
+    const sbTim = byGroup.get("timing")?.structuralBreakdown || {};
+    const gaps = asList(exec.missingDisclosures);
+    const gapHtml = gaps.length
+      ? `<ul class="decision-snapshot-list">${gaps.slice(0, 3).map((g) => `<li>${escapeHtml(g)}</li>`).join("")}</ul>`
+      : `<p class="decision-snapshot-empty">All core governance, capital, commercial, and timing dimensions have verified Cala coverage.</p>`;
+    return `
+      <section class="decision-snapshot-panel" aria-label="Company structural teardown breakdown">
+        <div class="decision-panel-subhead">
+          <strong>Cala Structural Breakdown</strong>
+          <span>Single-Company Teardown</span>
+        </div>
+        <div class="decision-snapshot-tiles">
+          <div class="decision-snapshot-tile"><span>Capital Backers</span><strong>${Number(sbAcc.capitalCount || 0)}</strong><small>Ownership links</small></div>
+          <div class="decision-snapshot-tile"><span>Commercial Stack</span><strong>${Number(sbAcc.commercialCount || 0)}</strong><small>Supply &amp; partners</small></div>
+          <div class="decision-snapshot-tile"><span>Leadership &amp; M&amp;A</span><strong>${Number(sbLin.governanceCount || 0) + Number(sbLin.acquisitionCount || 0)}</strong><small>${Number(sbLin.acquisitionCount || 0)} M&amp;A</small></div>
+          <div class="decision-snapshot-tile"><span>Timing Catalysts</span><strong>${Number(sbTim.activeCatalystCount || 0)}</strong><small>${Number(sbTim.historicalMilestoneCount || 0)} older (&gt;18m)</small></div>
+        </div>
+        <div class="decision-snapshot-subblock">
+          <span class="decision-ai-section-label">Cala Disclosure Gaps</span>
+          ${gapHtml}
+        </div>
+      </section>
+    `;
+  }
+
+  if (activeMode === "perspective_triage") {
+    const pName = state.perspectiveEntity?.name || exec.perspectiveEntity?.name || "My Firm";
+    const warmChains = asList(exec.warmIntroChains);
+    const conflicts = asList(exec.portfolioConflicts);
+    return `
+      <section class="decision-snapshot-panel" aria-label="Origination triage breakdown">
+        <div class="decision-panel-subhead">
+          <strong>Origination Readiness · ${escapeHtml(pName)}</strong>
+          <span>${warmChains.length} warm chain${warmChains.length === 1 ? "" : "s"} · ${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"}</span>
+        </div>
+        <div class="decision-snapshot-subblock">
+          <span class="decision-ai-section-label">Warm Intro Chains</span>
+          ${warmChains.length
+            ? `<ul class="decision-snapshot-list">${warmChains.slice(0, 3).map((c) => `<li>${escapeHtml(String(c.chainText || c.bridgeLabel || "").replace(/\s*<->\s*/g, " ↔ ").replace(/\s*->\s*/g, " → "))}</li>`).join("")}</ul>`
+            : `<p class="decision-snapshot-empty">No shared Cala path from ${escapeHtml(pName)} — plan direct cold outreach or external advisor intros.</p>`}
+        </div>
+        <div class="decision-snapshot-subblock">
+          <span class="decision-ai-section-label">Portfolio &amp; Overlap Flags</span>
+          ${conflicts.length
+            ? `<ul class="decision-snapshot-list">${conflicts.slice(0, 3).map((c) => `<li>${escapeHtml(c.reason || `${c.portfolioName} vs ${c.targetName}`)}</li>`).join("")}</ul>`
+            : `<p class="decision-snapshot-empty">No portfolio overlap or direct competitor conflict indexed in Cala for ${escapeHtml(pName)}.</p>`}
+        </div>
+      </section>
+    `;
+  }
+
+  const hubCoverage = asList(factor.coverage?.hubCoverage);
+  const bottlenecks = asList(exec.sharedCommercialBottlenecks);
+  const highlights = asList(exec.sharedBridgeHighlights);
+  const primaryId = state.primaryTargetId || exec.primaryTargetId || "";
+  return `
+    <section class="decision-snapshot-panel" aria-label="Cross-entity comparison breakdown">
+      <div class="decision-panel-subhead">
+        <strong>Cross-Entity Snapshot</strong>
+        <span>${escapeHtml(factor.shortTabLabel || factor.label)}</span>
+      </div>
+      ${hubCoverage.length ? `
+        <div class="decision-snapshot-subblock">
+          <span class="decision-ai-section-label">Signal Count by Entity</span>
+          <div class="decision-snapshot-chips">
+            ${hubCoverage.map((h) => `<span class="decision-hub-chip ${primaryId && String(h.id) === String(primaryId) ? "is-primary" : ""}"><b>${escapeHtml(h.name)}</b> ${Number(h.count || 0)}</span>`).join("")}
+          </div>
+        </div>
+      ` : ""}
+      <div class="decision-snapshot-subblock">
+        <span class="decision-ai-section-label">Shared Bottlenecks &amp; Cross-Hub Bridges</span>
+        ${(bottlenecks.length || highlights.length)
+          ? `<div class="decision-snapshot-bridge-list">
+              ${bottlenecks.slice(0, 2).map((b) => `<button type="button" class="decision-snapshot-bridge-pill is-bottleneck" data-focus-node-id="${escapeHtml(b.nodeId || "")}" data-focus-edge-id="${escapeHtml(b.edgeId || "")}" data-focus-group="access"><strong>${escapeHtml(b.name)}</strong><span>Bottleneck · ${asList(b.sharedHubs).length || 2} hubs</span></button>`).join("")}
+              ${highlights.slice(0, 3).map((h) => `<button type="button" class="decision-snapshot-bridge-pill" data-focus-node-id="${escapeHtml(h.nodeId || "")}" data-focus-edge-id="${escapeHtml(h.edgeId || "")}" data-focus-group="${escapeHtml(h.group || "access")}"><strong>${escapeHtml(h.name)}</strong><span>${escapeHtml(h.structuralRole === "commercial" ? "Commercial" : h.entityType === "Person" ? "Leader" : "Shared Backer")} · ${asList(h.sharedHubs).length || 2} hubs</span></button>`).join("")}
+            </div>`
+          : `<p class="decision-snapshot-empty">No cross-entity shared nodes indexed for this selection; explore direct links on the right.</p>`}
+      </div>
+    </section>
+  `;
+}
+
 function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(state.bridgeMap)) {
   const outEl = $("#decisionAiOutput");
   const promptEl = $("#decisionAiPrompt");
@@ -3896,10 +4190,11 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
           class="decision-mini-pill ${f.group === factor.group ? "is-active" : ""}"
           role="tab"
           aria-selected="${f.group === factor.group}"
+          title="${escapeHtml(f.displayLabel || f.label)}"
           data-switch-factor="${escapeHtml(f.group)}"
         >
           <span class="fam-dot" style="background:${getContributionColorHex(f.group)}"></span>
-          <span>${escapeHtml(f.displayLabel || f.label)}</span>
+          <span>${escapeHtml(f.shortTabLabel || f.label)}</span>
           <b class="decision-mini-verdict ${escapeHtml(fv.cls)}">${escapeHtml(VERDICT_SHORT_BADGE[fv.label] || fv.label)}</b>
         </button>
       `;
@@ -4075,7 +4370,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
   const kpiStripHtml = `
     <div class="decision-ai-metrics" aria-label="Cala evidence metrics">
       <div><span>Paths</span><strong>${factor.count.toLocaleString()}</strong><small>${factor.sharedCount ? `${factor.sharedCount} shared` : "direct links"}</small></div>
-      <div><span>Verified</span><strong>${factor.provenanceMix?.verifiedSharePct ?? 0}%</strong><small>FILING / PRIMARY</small></div>
+      <div><span>Verified</span><strong>${provMixForDisplay?.verifiedSharePct ?? 0}%</strong><small>FILING / PRIMARY</small></div>
       <div><span>Sources</span><strong>${submittedSourceIds.length}</strong><small>${factor.coverage?.datedCount || 0} dated</small></div>
     </div>
   `;
@@ -4122,7 +4417,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
             <strong id="decisionAiSelectedHeading">${escapeHtml(factorHeadline)}</strong>
           </div>
           <div class="decision-head-meter is-wide">
-            <span class="decision-hero-submeta">${factor.count} verified paths · ${factor.sharedCount ? `${factor.sharedCount} cross-hub shared` : "direct links"} · ${sourceQualityPhrase(factor.provenanceMix?.verifiedSharePct)}</span>
+            <span class="decision-hero-submeta">${factor.count} verified paths · ${factor.sharedCount ? `${factor.sharedCount} cross-hub shared` : "direct links"} · ${provMixForDisplay.verifiedSharePct ?? 0}% Filing/Primary (${submittedSourceIds.length} Cala sources)</span>
           </div>
         </div>
       </div>
@@ -4142,6 +4437,13 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
         </div>
       </div>
     `;
+
+  const compactCalaStripHtml = `
+    <div class="cala-provenance-strip">
+      <span class="cala-provenance-copy"><span class="cala-trust-dot" aria-hidden="true"></span><span class="cala-provenance-text"><strong>Real Cala Data</strong> · ${provMixForDisplay.verifiedSharePct ?? 0}% Primary/Filing · ${submittedSourceIds.length} sources</span></span>
+      <button type="button" class="decision-cite-count is-interactive" data-open-sources-drawer="true">Inspect &#8595;</button>
+    </div>
+  `;
 
   const citeCountControlHtml = decisionEffectSourceIds.length
     ? `<button type="button" class="decision-cite-count is-interactive" data-open-sources-drawer="true" title="View verified sources">${decisionEffectSourceIds.length} cited &#8595;</button>`
@@ -4164,45 +4466,78 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
 
   if (state.decisionPanelExpanded) {
     const exec = summary.executive || {};
+    const activeMode = exec.analysisMode || getActiveAnalysisMode(state.bridgeMap);
     const overallStance = getOverallStance(summary, res);
     const icTakeaway = cleanText((claudeAnalyzed && res?.summary) || summary.investmentEffect);
     const expDrawers = state.decisionExpandedOpenDrawers || { icThesis: false, reasoning: false, sourcesList: false, hygiene: false };
     const ptsCount = reasoningList.length || Math.min(2, submittedRecords.length);
 
-    let displayRecords = submittedRecords;
-    if (factor.group === "caution" && submittedRecords.length > 1) {
-      const rivalryRecs = submittedRecords.filter((r) => /rivalry|competitive overlap/i.test(`${r.path} ${r.relation}`));
-      if (rivalryRecs.length >= 2) {
-        const hubs = [...new Set(rivalryRecs.map((r) => cleanText(r.canonicalFrom || r.path.split(/\s*→\s*/)[0])).filter(Boolean))];
-        const target = cleanText(rivalryRecs[0].canonicalTo || rivalryRecs[0].path.split(/\s*→\s*/)[1]);
-        const mergedRivalry = {
-          ...rivalryRecs[0],
-          path: `${hubs.join(" & ")} ↔ ${target}`
-        };
-        const nonRivalry = submittedRecords.filter((r) => !/rivalry|competitive overlap/i.test(`${r.path} ${r.relation}`));
-        displayRecords = [mergedRivalry, ...nonRivalry];
-      }
-    }
-
+    const displayRecords = mergeExpandedConnectionRecords(submittedRecords, factor.group, state.bridgeMap);
     const compactConnectionRowsHtml = displayRecords.length
-      ? `<div class="decision-ai-evidence-list is-compact-table">${displayRecords.slice(0, 5).map((rec) => {
+      ? `<div class="decision-ai-evidence-list is-compact-table">${displayRecords.slice(0, 6).map((rec) => {
           const canFocus = Boolean(rec.edgeId || rec.nodeId);
           const analystInsight = deriveConnectionAnalystInsight(rec, factor.group, findingsList);
+          const roleTag = getConnectionRoleTag(rec, state.bridgeMap);
           return `
             <article class="decision-ai-evidence-row is-insight-card">
               <div class="decision-insight-card-top">
                 <strong class="decision-compact-path">${escapeHtml(rec.path)}</strong>
-                <div class="decision-compact-row-actions">
-                  ${rec.isSharedBridge ? `<span class="decision-badge-shared">Shared</span>` : ""}
-                  <span class="source-tier" data-tier="${escapeHtml(rec.sourceRank || "AGGREGATOR")}">${escapeHtml(rec.sourceRank || "AGG")}</span>
-                  ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Focus map</button>` : ""}
-                </div>
+                ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Focus map</button>` : ""}
+              </div>
+              <div class="decision-insight-card-badges">
+                <span class="decision-role-tag ${escapeHtml(roleTag.cls)}">${escapeHtml(roleTag.label)}</span>
+                ${rec.isSharedBridge ? `<span class="decision-badge-shared">Shared</span>` : ""}
+                ${rec.date ? `<span class="decision-date-tag">${escapeHtml(rec.date)}</span>` : ""}
+                <span class="source-tier" data-tier="${escapeHtml(rec.sourceRank || "AGGREGATOR")}">${escapeHtml(rec.sourceRank || "AGG")}</span>
               </div>
               <p class="decision-connection-meaning">${escapeHtml(analystInsight)}</p>
             </article>
           `;
         }).join("")}</div>`
       : `<div class="decision-ai-no-chart">No mapped relationship records for this factor.</div>`;
+
+    const modeBadgeLabel = activeMode === "single_teardown"
+      ? "Single-Company Teardown"
+      : activeMode === "perspective_triage"
+        ? `Origination Triage · ${state.perspectiveEntity?.name || exec.perspectiveEntity?.name || "Firm"}`
+        : "Ecosystem Comparison";
+
+    let expandedModeControlsHtml = "";
+    if (activeMode === "ecosystem_compare") {
+      const focals = state.pinnedEntities.length ? state.pinnedEntities : asList(state.bridgeMap?.focalEntities);
+      const activePrimary = state.primaryTargetId || "";
+      expandedModeControlsHtml = `
+        <div class="decision-exec-mode-controls">
+          <span class="decision-focus-kicker">Evaluate Primary Target:</span>
+          <div class="decision-focus-pills" role="group" aria-label="Evaluate mapped entity as primary target">
+            <button type="button" class="decision-focus-chip ${!activePrimary ? "is-active" : ""}" data-primary-target-id="">All Peers</button>
+            ${focals.slice(0, 4).map((f) => `<button type="button" class="decision-focus-chip ${activePrimary === f.id ? "is-active" : ""}" data-primary-target-id="${escapeHtml(f.id)}">${escapeHtml(f.name)}</button>`).join("")}
+          </div>
+        </div>
+      `;
+    } else if (activeMode === "single_teardown") {
+      const gaps = asList(exec.missingDisclosures);
+      expandedModeControlsHtml = `
+        <div class="decision-exec-mode-controls">
+          <span class="decision-mode-note">${gaps.length ? `<strong>${gaps.length} Cala disclosure gap${gaps.length === 1 ? "" : "s"}</strong> surfaced below.` : "Neutral structural company teardown."}</span>
+          <div class="decision-cta-actions">
+            <button type="button" class="decision-cta-pill" data-cta-add-peer="true">+ Add Peer</button>
+            <button type="button" class="decision-cta-pill" data-cta-set-perspective="true">Set Perspective</button>
+          </div>
+        </div>
+      `;
+    } else {
+      const pName = state.perspectiveEntity?.name || exec.perspectiveEntity?.name || "My Firm";
+      expandedModeControlsHtml = `
+        <div class="decision-exec-mode-controls">
+          <span class="decision-mode-note"><strong>Perspective Seat:</strong> ${escapeHtml(pName)}</span>
+          <div class="decision-cta-actions">
+            <button type="button" class="decision-cta-pill" data-copy-triage-brief="true">Copy Brief</button>
+            <button type="button" class="decision-cta-pill" data-reset-perspective="true">Reset Neutral</button>
+          </div>
+        </div>
+      `;
+    }
 
     const expandedSourcesDrawerHtml = renderDecisionDrawer(
       "exp-sources",
@@ -4220,19 +4555,26 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
       Boolean(expDrawers.reasoning)
     );
 
+    const snapshotHtml = buildExpandedModeSnapshotHtml(summary, factor, activeMode);
+    const connCountMeta = displayRecords.length < factor.count
+      ? `${displayRecords.length} key links (${factor.count} paths)`
+      : `${displayRecords.length} verified link${displayRecords.length === 1 ? "" : "s"}`;
+
     outEl.innerHTML = `
       ${navHtml}
       <div class="decision-exec-banner is-streamlined">
         <div class="decision-exec-top">
+          <span class="decision-exec-mode-badge">${escapeHtml(modeBadgeLabel)}</span>
           <span class="decision-verdict-badge ${escapeHtml(overallStance.cls)}">${escapeHtml(overallStance.label)}</span>
           <div class="decision-exec-kpi-pills">
-            <span class="decision-exec-pill"><b>${escapeHtml(sourceQualityPhrase(exec.verifiedSharePct))}</b></span>
-            <span class="decision-exec-pill"><b>${factor.count}</b> ${escapeHtml(factor.label.toLowerCase())} paths</span>
-            <span class="decision-exec-pill"><b>${submittedSourceIds.length}</b> cited sources</span>
+            <span class="decision-cala-verified-badge"><span class="cala-trust-dot" aria-hidden="true"></span><b>Real Cala Data</b> · ${exec.verifiedSharePct ?? 0}% Filing/Primary</span>
+            <span class="decision-exec-pill"><b>${factor.count}</b> ${escapeHtml(factor.shortTabLabel || factor.label)} paths</span>
+            <span class="decision-exec-pill"><b>${submittedSourceIds.length}</b> cited Cala sources</span>
           </div>
           ${quarantinedCount > 0 ? `<span class="decision-exec-quarantine">${quarantinedCount} raw noise filtered</span>` : ""}
         </div>
         ${icTakeaway ? `<p class="decision-exec-ic">${escapeHtml(icTakeaway)}</p>` : ""}
+        ${expandedModeControlsHtml}
       </div>
       <div class="decision-workspace-grid">
         <div class="decision-col-primary">
@@ -4242,14 +4584,16 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
             ${expandedReasoningDrawerHtml}
             ${analysisMessage}
           </section>
+          ${snapshotHtml}
         </div>
         <div class="decision-col-evidence">
           <section class="decision-evidence-panel">
-            <div class="decision-panel-subhead"><strong>Key Connections &amp; What They Mean</strong><span>${submittedRecords.length} verified paths</span></div>
+            <div class="decision-panel-subhead"><strong>Key Connections &amp; What They Mean</strong><span>${escapeHtml(connCountMeta)}</span></div>
             ${compactConnectionRowsHtml}
           </section>
           <section class="decision-evidence-panel">
-            <div class="decision-panel-subhead"><strong>Evidence Provenance &amp; Sources</strong><span>${submittedSourceIds.length} sources</span></div>
+            <div class="decision-panel-subhead"><strong>Evidence Provenance &amp; Sources</strong><span>${submittedSourceIds.length} Cala sources · ${provMixForDisplay.verifiedSharePct ?? 0}% Filing/Primary</span></div>
+            <div class="decision-cala-assurance"><span class="cala-trust-dot" aria-hidden="true"></span><span>Contributed strictly by <strong>real, verified Cala Knowledge Graph records &amp; filings</strong> — zero synthetic estimates.</span></div>
             ${provBarHtml}
             ${expandedSourcesDrawerHtml}
           </section>
@@ -4268,6 +4612,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
       <section class="decision-ai-factor-panel" aria-label="${escapeHtml(factor.label)} analysis">
         ${factorHeadHtml}
         ${kpiStripHtml}
+        ${compactCalaStripHtml}
         ${takeawayBlockHtml}
         ${analysisMessage}
       </section>
@@ -5339,22 +5684,25 @@ async function runEntityMapAnalysis(entityRefs, options = {}) {
     state.entityProfiles = result.bridgeMap?.entityProfiles || {};
     state.bridgeMap = result.bridgeMap || null;
     state.analysis = result;
-    state.decisionSelectedFactor = "access";
+    state.decisionSelectedFactor = options.selectedFactor || "access";
     state.decisionAnalysisRequestId += 1;
-    state.decisionAnalysisStarted = false;
-    state.decisionDetailView = false;
-    setDecisionPanelExpanded(false);
+    const preserveExpanded = Boolean(options.preserveExpanded);
+    state.decisionAnalysisStarted = preserveExpanded;
+    state.decisionDetailView = preserveExpanded;
+    setDecisionPanelExpanded(preserveExpanded);
     state.decisionAnalysisStatus = "idle";
     state.decisionAnalysisResult = null;
     state.decisionAnalysisError = "";
     state.decisionAnalysisKey = null;
     state.decisionAnalysisPendingKey = null;
     const priorDecisionOutput = $("#decisionAiOutput");
-    if (priorDecisionOutput) {
+    if (priorDecisionOutput && !preserveExpanded) {
       priorDecisionOutput.hidden = true;
       priorDecisionOutput.innerHTML = "";
     }
-    $("#decisionSummaryPopover")?.classList.remove("has-ai-results");
+    if (!preserveExpanded) {
+      $("#decisionSummaryPopover")?.classList.remove("has-ai-results");
+    }
     state.expandedGroupKey = null;
     state.selectedNodeId = null;
     state.selectedEdgeId = null;
@@ -6793,6 +7141,12 @@ function bindFilterAndHudEvents() {
     const ribbon = $("#constellationFilterRibbon");
     if (ribbon) ribbon.hidden = !state.filtersPanelOpen;
     $("#toggleFiltersBtn")?.setAttribute("aria-expanded", String(state.filtersPanelOpen));
+    if (state.filtersPanelOpen && state.perspectivePopoverOpen) {
+      state.perspectivePopoverOpen = false;
+      const pPop = $("#perspectivePopover");
+      if (pPop) pPop.hidden = true;
+      $("#perspectivePickerBtn")?.setAttribute("aria-expanded", "false");
+    }
   };
 
   $("#toggleFiltersBtn")?.addEventListener("click", toggleFilters);
@@ -7125,6 +7479,12 @@ function bindFilterAndHudEvents() {
     if (pop) pop.hidden = !nextOpen;
     $("#perspectivePickerBtn")?.setAttribute("aria-expanded", String(nextOpen));
     if (nextOpen) {
+      if (state.filtersPanelOpen) {
+        state.filtersPanelOpen = false;
+        const ribbon = $("#constellationFilterRibbon");
+        if (ribbon) ribbon.hidden = true;
+        $("#toggleFiltersBtn")?.setAttribute("aria-expanded", "false");
+      }
       const inp = $("#perspectiveSearchInput");
       if (inp) {
         inp.value = "";
@@ -7211,8 +7571,12 @@ function bindFilterAndHudEvents() {
     }
   });
 
-  $("#decisionModeMetaBar")?.addEventListener("click", async (e) => {
+  $("#decisionSummaryPopover")?.addEventListener("click", async (e) => {
     if (e.target.closest("[data-cta-add-peer]")) {
+      if (state.decisionPanelExpanded) {
+        setDecisionPanelExpanded(false);
+        renderDecisionSummaryWidget();
+      }
       if (window.innerWidth <= 900) closeDecisionPopover();
       state.compareBoxOpen = true;
       renderExploredEntitiesBox();
@@ -7220,7 +7584,17 @@ function bindFilterAndHudEvents() {
       return;
     }
     if (e.target.closest("[data-cta-set-perspective]")) {
+      if (state.decisionPanelExpanded) {
+        setDecisionPanelExpanded(false);
+        renderDecisionSummaryWidget();
+      }
       if (window.innerWidth <= 900) closeDecisionPopover();
+      if (state.filtersPanelOpen) {
+        state.filtersPanelOpen = false;
+        const ribbon = $("#constellationFilterRibbon");
+        if (ribbon) ribbon.hidden = true;
+        $("#toggleFiltersBtn")?.setAttribute("aria-expanded", "false");
+      }
       state.perspectivePopoverOpen = true;
       const pop = $("#perspectivePopover");
       if (pop) pop.hidden = false;
@@ -7229,7 +7603,14 @@ function bindFilterAndHudEvents() {
       return;
     }
     if (e.target.closest("[data-reset-perspective]")) {
+      const wasExpanded = state.decisionPanelExpanded;
+      const prevGroup = state.decisionSelectedFactor;
       await setPerspectiveEntity(null);
+      if (wasExpanded && state.bridgeMap) {
+        state.decisionSelectedFactor = prevGroup;
+        setDecisionPanelExpanded(true);
+        await runFourFactorClaudeInsight(prevGroup);
+      }
       return;
     }
     if (e.target.closest("[data-copy-triage-brief]")) {
@@ -7257,9 +7638,19 @@ function bindFilterAndHudEvents() {
     const targetBtn = e.target.closest("[data-primary-target-id]");
     if (targetBtn) {
       const nextTarget = targetBtn.dataset.primaryTargetId || null;
+      const wasExpanded = state.decisionPanelExpanded;
+      const prevGroup = state.decisionSelectedFactor;
       state.primaryTargetId = state.primaryTargetId === nextTarget ? null : nextTarget;
       if (state.pinnedEntities.length) {
-        await runEntityMapAnalysis(state.pinnedEntities, { fit: false, discoverLive: false });
+        await runEntityMapAnalysis(state.pinnedEntities, {
+          fit: false,
+          discoverLive: false,
+          preserveExpanded: wasExpanded,
+          selectedFactor: prevGroup
+        });
+        if (wasExpanded && state.bridgeMap) {
+          await runFourFactorClaudeInsight(prevGroup);
+        }
       }
     }
   });

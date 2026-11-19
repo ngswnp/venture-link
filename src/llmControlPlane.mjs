@@ -863,7 +863,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
   const cache = options.cache || connectionInsightCache;
   const useDiskCache = !options.cache && !options.disableDiskCache;
   const diskCachePath = options.diskCachePath || DEFAULT_INSIGHT_DISK_CACHE;
-  const cacheKey = `v10:${groundedPacket.mode}:${groundedPacket.analysisMode || 'default'}:${JSON.stringify(groundedPacket)}`;
+  const cacheKey = `v11:${groundedPacket.mode}:${groundedPacket.analysisMode || 'default'}:${JSON.stringify(groundedPacket)}`;
   const diskHash = useDiskCache ? crypto.createHash('sha256').update(cacheKey).digest('hex') : null;
   if (cache.has(cacheKey)) {
     return { ...cache.get(cacheKey), fromCache: true };
@@ -908,18 +908,18 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
 
   const modeGuidance = groundedPacket.analysisMode === 'single_teardown'
     ? [
-        'Context mode: SINGLE-COMPANY TEARDOWN (neutral perspective; NO buyer or fund seat is selected).',
-        'Evaluate: (1) Capital backers vs. Commercial supply/partner value-chain ties (NEVER label a commercial supplier a warm-intro route), (2) Leadership/Control & M&A (ACQUIRED is corporate structure/capital allocation, NEVER call standard acquisitions a caution or risk unless paired with a dispute/rival), (3) Recent catalysts ("active_catalyst" <=18m) vs historical milestones ("historical_milestone" >18m), (4) Competitive threats & disclosure gaps.'
+        'Context mode: SINGLE-COMPANY TEARDOWN (neutral perspective; NO buyer or investor seat is selected).',
+        'Evaluate: (1) Backers vs. commercial supplier/partner ties (NEVER label a commercial supplier a warm-intro route), (2) Founders, leaders, & M&A (ACQUIRED is corporate structure, NEVER call standard acquisitions a caution or risk unless paired with a rival or dispute), (3) Recent catalysts ("active_catalyst" <=18m) vs historical milestones ("historical_milestone" >18m), (4) Competitive threats & disclosure gaps.'
       ]
     : groundedPacket.analysisMode === 'ecosystem_compare'
       ? [
           `Context mode: MULTI-ENTITY ECOSYSTEM & PEER COMPARISON${groundedPacket.primaryTargetName ? ` (Primary Target Focus: ${groundedPacket.primaryTargetName})` : ''}.`,
-          'Evaluate: shared commercial bottlenecks, dual-backed conflicts, asymmetric dependencies, talent/alumni crossover across mapped peers, direct rivalries, and comparative momentum (<=18m) vs gaps. Do NOT force single-firm VC warm-intro outreach framing.'
+          'Evaluate: shared supplier/partner bottlenecks, dual-backed conflicts, asymmetric dependencies, talent/leader crossover across mapped peers, direct rivalries, and comparative momentum (<=18m) vs gaps. Do NOT force single-firm warm-intro outreach framing.'
         ]
       : groundedPacket.analysisMode === 'perspective_triage'
         ? [
             `Context mode: ORIGINATION & DEAL TRIAGE from the perspective of "${groundedPacket.perspectiveEntityName || 'My Firm'}".`,
-            `Evaluate: concrete intro chains connecting ${groundedPacket.perspectiveEntityName || 'My Firm'} to the target(s) (or explicit cold outreach when none exist), team/spinout lineage, active <=18m catalysts, and competitive overlap with ${groundedPacket.perspectiveEntityName || 'My Firm'}'s holdings.`
+            `Evaluate: concrete intro chains connecting ${groundedPacket.perspectiveEntityName || 'My Firm'} to the target(s) (or explicit cold outreach when none exist), team/spinout lineage, active <=18m catalysts, and overlap with ${groundedPacket.perspectiveEntityName || 'My Firm'}'s backed holdings.`
           ]
         : [];
 
@@ -930,7 +930,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
       : 'Strict VC investment-diligence analyst grounded ONLY in input JSON. Analyze why the connection or entity graph matters for deal access, operator lineage, timing, or competitive caution.';
 
   const systemPrompt = decisionFactors.length ? [
-    'You are a senior institutional financial and venture analyst writing for a busy partner. Analyze ONLY the supplied Cala records and citations; never infer company quality from network position.',
+    'You are a senior financial and venture analyst writing for a busy partner. Analyze ONLY the supplied Cala records and citations; never infer company quality from network position.',
     ...modeGuidance,
     'Your job: turn each mapped group into a plain-English insight that says what the evidence lets an analyst KNOW or DO (e.g. "Amazon backs both OpenAI and Anthropic, so it can give a side-by-side reference on both teams").',
     'For EACH of the four factors emit:',
@@ -945,7 +945,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
     'NEVER invent numbers, dates, entities, conflicts, or evidence. Never write source IDs (like s1) inside prose; put them only in sourceIds arrays.',
     'For a factor with no records: verdict "No evidence", headline "No mapped evidence in Cala", findings [].',
     'Each citation must belong to the same factor and appear on a record or factor source in input JSON.',
-    'Use plain evidence nouns from the records (investors, backers, suppliers, partners, organizations, founders, roles, acquisitions, milestones, rivals, sector overlap). FORBIDDEN words unless verbatim in THAT factor: fund, portfolio, deal, stage, early, fundraising, raise, traction, validation, governance, information, window, cap, table, ownership, market, board rights, runway, burn, liquidity, performance, authority, primary, allocation, institutional, VC, IP, LP.',
+    'Use strictly gate-safe concrete evidence nouns from that factor (investors, backers, suppliers, partners, organizations, founders, leaders, roles, acquisitions, milestones, rivals, backed holdings, corporate structure). Strictly avoid speculative or restricted nouns unless verbatim in THAT factor (avoid: fund, portfolio, deal, stage, early, fundraising, raise, traction, validation, governance, information, window, cap, table, ownership, market, board rights, runway, burn, liquidity, performance, authority, primary, allocation, institutional, disputes, VC, IP, LP).',
     'At most 2 cross-factor insights; cite each with exact source IDs.',
     'Return compact JSON matching the schema, no markdown.'
   ].join('\n') : [
