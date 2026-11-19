@@ -30,3 +30,12 @@ Tested live on `OpenAI + Anthropic` (`POST /api/analyze` + `POST /api/connection
   - Added round-sequence and press-roundup anomaly detection on `timingEventsByEntity` (flagging out-of-sequence `Anthropic Series B` after `Series G` and `OpenAI Seed` after `Series B`) and fixed `OPERATES_IN_INDUSTRY` overlap extraction (`Software & Services Rivalry`).
 - **Checks Passed**: `node --test test/entity-map.test.mjs test/engine.test.mjs` (`34/34` pass); `npm test` (`63/63` pass).
 
+## Step 2: Backend Decision Engineering Engine (`src/decisionEngine.mjs`)
+- **Implemented**:
+  - Created `src/decisionEngine.mjs` exporting `buildDecisionIntelligence({ focalEntities, nodes, edges, timingEventsByEntity, sourcesById, anomalies })`.
+  - Computes per-factor `signalStrength` (0–100) weighted by provenance (`FILING=1.0`, `PRIMARY=0.82`, `PRESS=0.45`, `AGGREGATOR=0.35`), shared-bridge multiplier (`1.5x`), lead/executive boost (`1.25x`), and timing recency decay.
+  - Produces hub-balanced, distinct-actor-prioritized `rankedRecords` (top 8 per factor), `provenanceMix`, `coverage`, crisp `headline`, `investmentImpact`, and record-anchored `actionableCheck`.
+  - Synthesizes grounded Caution flags: industry overlap (`OPERATES_IN_INDUSTRY`), dual-sided institutional investor exposure (`DUAL_SIDED_INVESTOR_CONFLICT`), cross-hub executive overlap (`CROSS_HUB_TALENT_OVERLAP`), and round-sequence anomalies (`ROUND_SEQUENCE_ANOMALY`).
+  - Produces executive synthesis (`verdict`, `evidenceScore`, `reliabilityGrade`, `sharedBridgeHighlights`, `warmIntroRoutes`, `dataAnomalies`, `topDiligenceActions`) wired into `buildEntityBridgeMap` (`src/engine.mjs`).
+- **Checks Passed**: Added `test/decisionEngine.test.mjs` and wired into `package.json`; `npm test` passed (`65/65`). On `OpenAI + Anthropic`, `decisionIntelligence` yields `evidenceScore: 86` (`Grade A`, `72%` verified), `Verdict: Actionable · Verify Risks`, `Access` `98` (`13` shared paths), `Lineage` `98` (`5` cross-hub leaders), `Timing` `56`, `Caution` `87` (`6` grounded flags).
+

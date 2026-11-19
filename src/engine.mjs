@@ -5,6 +5,7 @@ import {
   REFERENCE_DATE,
   SOURCES
 } from './data.mjs';
+import { buildDecisionIntelligence } from './decisionEngine.mjs';
 
 const SECTOR_ADJACENCY = {
   'AI & ML': ['DeepTech', 'B2B SaaS'],
@@ -5393,6 +5394,16 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
     };
   });
 
+  const nodesList = [...nodeMap.values()];
+  const decisionIntelligence = buildDecisionIntelligence({
+    focalEntities,
+    nodes: nodesList,
+    edges: displayEdges,
+    timingEventsByEntity,
+    sourcesById: SOURCES,
+    anomalies: quarantinedAnomalies
+  });
+
   return {
     anchor,
     focalEntityIds,
@@ -5401,7 +5412,8 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
     contributionClusters,
     timingEventsByEntity,
     quarantinedAnomalies,
-    nodes: [...nodeMap.values()],
+    decisionIntelligence,
+    nodes: nodesList,
     edges: displayEdges,
     peerEdges: [],
     stats: {
