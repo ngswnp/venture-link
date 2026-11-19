@@ -1,0 +1,13 @@
+{
+  "name": "venture-link",
+  "version": "0.1.0",
+  "description": "VentureLink (Revealed Thesis): deal sourcing from what funds actually invest in, backed by sourced Cala knowledge graph data.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/engine.test.mjs test/api.test.mjs test/entity-map.test.mjs test/llmControlPlane.test.mjs test/calaClient.test.mjs test/registryClient.test.mjs test/mapPhysics.test.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
