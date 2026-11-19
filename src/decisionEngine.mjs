@@ -583,7 +583,7 @@ export function buildDecisionIntelligence({
   if (cautionCount > 0 && hasBeneficial) {
     verdict = hasDirectRisk && evidenceScore >= 60 ? 'Actionable · Verify Risks' : 'Mixed · Diligence Required';
     verdictClass = 'is-mixed';
-    investmentEffect = 'Strong access and lineage signals coexist with mapped overlap or conflict risks — clear caution checks before advancing.';
+    investmentEffect = 'Strong access and lineage signals coexist with mapped overlap or conflict risks: clear caution checks before advancing.';
   } else if (cautionCount > 0) {
     verdict = 'Caution · Verify Risks';
     verdictClass = 'is-caution';
@@ -598,30 +598,35 @@ export function buildDecisionIntelligence({
     investmentEffect = 'Verified Cala paths guide outreach and reference diligence; fundamentals remain unindexed.';
   }
 
-  // Top Shared Bridge Highlights
+  // Top Shared Bridge Highlights: diversify top access & lineage hubs before backfilling by weight
+  const byGroupSorted = ['access', 'lineage', 'caution'].map((group) =>
+    factors[group].rankedRecords
+      .filter((r) => r.isSharedBridge && r.nodeId && !r.nodeId.startsWith('caution:'))
+      .sort((a, b) => (b.signalWeight || 0) - (a.signalWeight || 0) || a.id.localeCompare(b.id))
+      .map((r) => ({ ...r, highlightGroup: group }))
+  );
   const sharedHighlightsMap = new Map();
-  for (const group of ['access', 'lineage', 'caution']) {
-    for (const r of factors[group].rankedRecords) {
-      if (!r.isSharedBridge || !r.nodeId || r.nodeId.startsWith('caution:')) continue;
-      if (!sharedHighlightsMap.has(r.nodeId)) {
-        const node = nodeById.get(r.nodeId);
-        sharedHighlightsMap.set(r.nodeId, {
-          nodeId: r.nodeId,
-          edgeId: r.edgeId,
-          name: node?.label || node?.name || r.canonicalFrom,
-          entityType: node?.entityType || 'Entity',
-          group,
-          sourceRank: r.sourceRank,
-          sharedHubs: r.sharedHubs,
-          signalWeight: r.signalWeight,
-          summary: `${r.relation}${r.sharedHubs.length ? ` across ${r.sharedHubs.join(' & ')}` : ''}`
-        });
-      }
+  const maxRows = Math.max(0, ...byGroupSorted.map((list) => list.length));
+  for (let i = 0; i < maxRows && sharedHighlightsMap.size < 4; i++) {
+    for (const list of byGroupSorted) {
+      const r = list[i];
+      if (!r || sharedHighlightsMap.has(r.nodeId)) continue;
+      const node = nodeById.get(r.nodeId);
+      sharedHighlightsMap.set(r.nodeId, {
+        nodeId: r.nodeId,
+        edgeId: r.edgeId,
+        name: node?.label || node?.name || r.canonicalFrom,
+        entityType: node?.entityType || 'Entity',
+        group: r.highlightGroup,
+        sourceRank: r.sourceRank,
+        sharedHubs: r.sharedHubs,
+        signalWeight: r.signalWeight,
+        summary: `${r.relation}${r.sharedHubs.length ? ` across ${r.sharedHubs.join(' & ')}` : ''}`
+      });
+      if (sharedHighlightsMap.size >= 4) break;
     }
   }
-  const sharedBridgeHighlights = [...sharedHighlightsMap.values()]
-    .sort((a, b) => (b.signalWeight || 0) - (a.signalWeight || 0))
-    .slice(0, 4);
+  const sharedBridgeHighlights = [...sharedHighlightsMap.values()];
 
   // Top Warm Intro Routes
   const warmIntroRoutes = factors.access.rankedRecords

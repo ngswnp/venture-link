@@ -2828,7 +2828,7 @@ function renderDecisionSummaryWidget() {
     const items = highlights.length
       ? highlights.map((h) => ({
           label: h.name,
-          sub: `${asList(h.sharedHubs).length || 2} hubs · ${h.sourceRank || "PRIMARY"}`,
+          sub: `${h.group === "access" ? "Access" : h.group === "lineage" ? "Lineage" : "Risk"} · ${asList(h.sharedHubs).length || 2} hubs · ${h.sourceRank || "PRIMARY"}`,
           edgeId: h.edgeId || "",
           nodeId: h.nodeId || "",
           group: h.group || "access"
@@ -3115,7 +3115,18 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
   const evidenceData = getDecisionFactorEvidence(state.bridgeMap, factor);
   const sourceById = collectDecisionSourceMap(state.bridgeMap, [...evidenceData.sources, ...asList(res?.analysisInput?.sources)]);
   const submittedRecords = evidenceData.records.slice(0, 8);
-  const submittedSourceIds = [...new Set([...factor.sourceIds, ...submittedRecords.flatMap((r) => r.sourceIds)])];
+  const rankOrder = { FILING: 0, PRIMARY: 1, PRESS: 2, AGGREGATOR: 3 };
+  const submittedSourceIds = [...new Set([...factor.sourceIds, ...submittedRecords.flatMap((r) => r.sourceIds)])]
+    .sort((a, b) => {
+      const sa = sourceById.get(String(a)) || {};
+      const sb = sourceById.get(String(b)) || {};
+      const ra = rankOrder[String(sa.sourceRank || sa.source_rank || "AGGREGATOR").toUpperCase()] ?? 4;
+      const rb = rankOrder[String(sb.sourceRank || sb.source_rank || "AGGREGATOR").toUpperCase()] ?? 4;
+      if (ra !== rb) return ra - rb;
+      const ua = /^https?:\/\//i.test(sa.url || sa.document || "") ? 0 : 1;
+      const ub = /^https?:\/\//i.test(sb.url || sb.document || "") ? 0 : 1;
+      return ua - ub;
+    });
   const decisionEffectSourceIds = asList(factorAnalysis?.decisionEffect?.sourceIds);
 
   const renderCitations = (sourceIds) => asList(sourceIds)
@@ -3310,6 +3321,8 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
   }
 
   const drawers = state.decisionOpenDrawers || { reasoning: false, connections: false, sources: false };
+  const ptsCount = reasoningList.length || Math.min(2, submittedRecords.length);
+  const pathCount = submittedRecords.length;
   outEl.innerHTML = `
     ${navHtml}
     <div class="decision-ai-card">
@@ -3320,9 +3333,9 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
         ${analysisMessage}
       </section>
       <div class="decision-drawers-stack">
-        ${renderDrawer("reasoning", "Reasoning & Scope", `${reasoningList.length || Math.min(2, submittedRecords.length)} points`, reasoningDrawerBody, drawers.reasoning)}
-        ${renderDrawer("connections", "Supporting Connections", `${submittedRecords.length} paths`, connectionRowsHtml, drawers.connections)}
-        ${renderDrawer("sources", "Verified Sources & Quality", `${factor.provenanceMix?.verifiedSharePct ?? 0}% · ${submittedSourceIds.length}`, sourcesDrawerBody, drawers.sources)}
+        ${renderDecisionDrawer("reasoning", "Reasoning & Scope", `${ptsCount} ${ptsCount === 1 ? "point" : "points"}`, reasoningDrawerBody, drawers.reasoning)}
+        ${renderDecisionDrawer("connections", "Supporting Connections", `${pathCount} ${pathCount === 1 ? "path" : "paths"}`, connectionRowsHtml, drawers.connections)}
+        ${renderDecisionDrawer("sources", "Verified Sources & Quality", `${factor.provenanceMix?.verifiedSharePct ?? 0}% · ${submittedSourceIds.length}`, sourcesDrawerBody, drawers.sources)}
       </div>
     </div>
   `;
@@ -5882,6 +5895,8 @@ function bindFilterAndHudEvents() {
     if (switchBtn) {
       const grp = switchBtn.dataset.switchFactor;
       if (grp && grp !== state.decisionSelectedFactor) {
+        const pop = $("#decisionSummaryPopover");
+        if (pop) pop.scrollTop = 0;
         runFourFactorClaudeInsight(grp);
       }
       return;
@@ -5904,6 +5919,8 @@ function bindFilterAndHudEvents() {
       state.decisionDetailView = false;
       state.decisionAnalysisStarted = false;
       state.decisionOpenDrawers = { reasoning: false, connections: false, sources: false };
+      const pop = $("#decisionSummaryPopover");
+      if (pop) pop.scrollTop = 0;
       setDecisionPanelExpanded(false);
       renderDecisionSummaryWidget();
       $("#decisionFactorTab-" + CSS.escape(state.decisionSelectedFactor))?.focus();
@@ -5911,6 +5928,8 @@ function bindFilterAndHudEvents() {
     }
     if (e.target.closest("[data-decision-expand]")) {
       setDecisionPanelExpanded(!state.decisionPanelExpanded);
+      const pop = $("#decisionSummaryPopover");
+      if (pop) pop.scrollTop = 0;
       renderDecisionSummaryWidget();
       $("[data-decision-expand]")?.focus();
     }
@@ -5946,6 +5965,8 @@ function bindFilterAndHudEvents() {
   decisionFactorList?.addEventListener("click", (e) => {
     const row = e.target.closest("[data-factor-group]");
     if (!row) return;
+    const pop = $("#decisionSummaryPopover");
+    if (pop) pop.scrollTop = 0;
     const grp = row.dataset.factorGroup;
     runFourFactorClaudeInsight(grp);
   });
