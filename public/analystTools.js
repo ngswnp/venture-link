@@ -549,6 +549,389 @@ export function buildIcDiligenceMemoMarkdown({
 }
 
 /**
+ * Normalizes embedded multi-word ALL-CAPS SEC/13F entity names inside prose
+ * (e.g. "CISCO SYSTEMS, INC.", "BAILLIE GIFFORD & CO") while leaving short acronyms
+ * ("SEC", "13F", "FILING", "M&A") intact.
+ */
+export function cleanInstitutionalProseNames(text = "") {
+  const raw = String(text || "");
+  if (!raw) return "";
+  return raw.replace(
+    /\b[A-Z][A-Z0-9.'’/-]*(?:,\s*|\s+&\s+|\s+)[A-Z0-9.'’/&,-]+(?:\s+[A-Z0-9.'’/&,-]+){0,6}/g,
+    (match) => {
+      if (/[a-z]/.test(match)) return match;
+      const lettersOnly = match.replace(/[^A-Z]/g, "");
+      if (lettersOnly.length < 8) return match;
+      return formatInstitutionalEntityName(match);
+    }
+  );
+}
+
+const LEDGER_TIER_RANK = { FILING: 4, PRIMARY: 3, PRESS: 2, AGGREGATOR: 1 };
+
+function normalizeIsoDateForSort(dateStr = "") {
+  const s = String(dateStr || "").trim();
+  if (!s) return "";
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  if (/^\d{4}-\d{2}/.test(s)) return `${s.slice(0, 7)}-15`;
+  if (/^\d{4}$/.test(s)) return `${s}-06-15`;
+  return "";
+}
+
+/**
+ * Filters and sorts verified connection ledger records deterministically without mutating input.
+ */
+export function filterAndSortLedgerRecords(
+  records = [],
+  { query = "", filter = "all", sort = "signal", starredKeys = new Set() } = {}
+) {
+  const list = Array.isArray(records) ? records : [];
+  const q = String(query || "").trim().toLowerCase();
+  const f = String(filter || "all").toLowerCase();
+  const s = String(sort || "signal").toLowerCase();
+  const stars = starredKeys instanceof Set ? starredKeys : new Set();
+
+  const filtered = list.filter((rec) => {
+    if (!rec) return false;
+    const rank = String(rec.sourceRank || "AGGREGATOR").toUpperCase();
+    const isStarred = stars.has(connectionStarKey(rec));
+    const isShared = Boolean(rec.isSharedBridge || (Array.isArray(rec.sharedHubs) && rec.sharedHubs.length >= 2));
+    const isRecent = Boolean(rec.isRecentCatalyst || rec.timingRecency === "active_catalyst");
+
+    if (f === "shared" && !isShared) return false;
+    if (f === "filing" && !rank.includes("FILING")) return false;
+    if (f === "primary" && !rank.includes("FILING") && !rank.includes("PRIMARY")) return false;
+    if (f === "recent" && !isRecent) return false;
+    if (f === "starred" && !isStarred) return false;
+
+    if (q) {
+      const hay = [
+        formatInstitutionalPath(rec.path || ""),
+        rec.path,
+        formatInstitutionalEntityName(rec.canonicalFrom || ""),
+        rec.canonicalFrom,
+        formatInstitutionalEntityName(rec.canonicalTo || ""),
+        rec.canonicalTo,
+        rec.relation,
+        rec.detail,
+        rec.date,
+        rank,
+        ...(Array.isArray(rec.sharedHubs) ? rec.sharedHubs : [])
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const tierScore = (rec) => LEDGER_TIER_RANK[String(rec?.sourceRank || "").toUpperCase()] || 0;
+  const hubCount = (rec) => (Array.isArray(rec?.sharedHubs) && rec.sharedHubs.length ? rec.sharedHubs.length : rec?.isSharedBridge ? 2 : 1);
+
+  return [...filtered].sort((a, b) => {
+    if (s === "tier") {
+      const td = tierScore(b) - tierScore(a);
+      if (td !== 0) return td;
+      const hd = hubCount(b) - hubCount(a);
+      if (hd !== 0) return hd;
+      return normalizeIsoDateForSort(b.date).localeCompare(normalizeIsoDateForSort(a.date));
+    }
+    if (s === "date") {
+      const dd = normalizeIsoDateForSort(b.date).localeCompare(normalizeIsoDateForSort(a.date));
+      if (dd !== 0) return dd;
+      return tierScore(b) - tierScore(a);
+    }
+    if (s === "hubs") {
+      const hd = hubCount(b) - hubCount(a);
+      if (hd !== 0) return hd;
+      const td = tierScore(b) - tierScore(a);
+      if (td !== 0) return td;
+      return (Number(b.signalWeight) || 0) - (Number(a.signalWeight) || 0);
+    }
+    if (s === "name") {
+      const na = formatInstitutionalEntityName(a.canonicalFrom || a.path || "");
+      const nb = formatInstitutionalEntityName(b.canonicalFrom || b.path || "");
+      return na.localeCompare(nb);
+    }
+    // Default "signal": starred first, shared first, signalWeight DESC, tier DESC
+    const sa = stars.has(connectionStarKey(a)) ? 1 : 0;
+    const sb = stars.has(connectionStarKey(b)) ? 1 : 0;
+    if (sb !== sa) return sb - sa;
+    const sha = a.isSharedBridge ? 1 : 0;
+    const shb = b.isSharedBridge ? 1 : 0;
+    if (shb !== sha) return shb - sha;
+    const wd = (Number(b.signalWeight) || 0) - (Number(a.signalWeight) || 0);
+    if (Math.abs(wd) > 0.001) return wd;
+    return tierScore(b) - tierScore(a);
+  });
+}
+
+function deriveMatrixRole(edge = {}) {
+  const sr = String(edge.structuralRole || "").toLowerCase();
+  if (["capital", "commercial", "governance", "strategic_event"].includes(sr)) return sr;
+  const rel = String(edge.relation || edge.relationType || "").toUpperCase();
+  if (["INVESTED_IN", "CO_INVESTED_WITH", "PARTICIPATES_IN_FUNDING_ROUND", "HAS_FUNDING_ROUND"].includes(rel)) return "capital";
+  if (["PARTNERED_WITH", "SUPPLIES", "SUPPLIED_BY", "ADVISED"].includes(rel)) return "commercial";
+  if (rel === "ACQUIRED" || rel.startsWith("IS_") || rel.includes("FOUNDED") || rel === "WORKS_AT" || rel === "SPUN_OUT_OF") return "governance";
+  return "strategic_event";
+}
+
+/**
+ * Aggregates every verified counterparty across 2+ focal entities into a Cross-Entity
+ * Overlap Matrix so analysts can pinpoint dual-backed investors, bottlenecks, and shared leaders.
+ */
+export function buildCrossEntityOverlapMatrix(bridgeMap) {
+  if (!bridgeMap) {
+    return { focals: [], rows: [], sharedRowCount: 0, totalRowCount: 0 };
+  }
+  const nodeById = new Map((Array.isArray(bridgeMap.nodes) ? bridgeMap.nodes : []).map((n) => [String(n.id), n]));
+  const rawFocals = Array.isArray(bridgeMap.focalEntities) && bridgeMap.focalEntities.length
+    ? bridgeMap.focalEntities
+    : (Array.isArray(bridgeMap.focalEntityIds) ? bridgeMap.focalEntityIds : []).map((id) => nodeById.get(String(id)) || { id, name: String(id) });
+
+  const focals = rawFocals
+    .filter((f) => f && f.id)
+    .map((f) => ({
+      id: String(f.id),
+      name: formatInstitutionalEntityName(f.label || f.name || f.id)
+    }));
+  const focalSet = new Set(focals.map((f) => f.id));
+  if (focals.length < 2) {
+    return { focals, rows: [], sharedRowCount: 0, totalRowCount: 0 };
+  }
+
+  const rowsMap = new Map();
+  for (const edge of Array.isArray(bridgeMap.edges) ? bridgeMap.edges : []) {
+    if (!edge || String(edge.id || "").startsWith("tree-spoke-")) continue;
+    const fromId = String(edge.from || "");
+    const toId = String(edge.to || "");
+    let focalId = "";
+    let cpId = "";
+    if (focalSet.has(fromId) && !focalSet.has(toId)) {
+      focalId = fromId;
+      cpId = toId;
+    } else if (focalSet.has(toId) && !focalSet.has(fromId)) {
+      focalId = toId;
+      cpId = fromId;
+    } else {
+      continue;
+    }
+    const cpNode = nodeById.get(cpId);
+    const cpName = formatInstitutionalEntityName(cpNode?.label || cpNode?.name || cpId);
+    const cpKey = cpId || cpName.toLowerCase();
+    const role = deriveMatrixRole(edge);
+    const rank = String(edge.topSourceRank || "AGGREGATOR").toUpperCase();
+    const rankScore = LEDGER_TIER_RANK[rank] || 1;
+    const isRisk = edge.contributionGroup === "caution" || /COMPET|RIVAL/i.test(String(edge.relation || ""));
+
+    if (!rowsMap.has(cpKey)) {
+      rowsMap.set(cpKey, {
+        nodeId: cpId,
+        name: cpName,
+        entityType: cpNode?.entityType || "Organization",
+        primaryRole: role,
+        roles: new Set([role]),
+        isRisk,
+        strongestTier: rank,
+        strongestRankScore: rankScore,
+        cells: {}
+      });
+    }
+    const row = rowsMap.get(cpKey);
+    row.roles.add(role);
+    if (isRisk) row.isRisk = true;
+    if (rankScore > row.strongestRankScore) {
+      row.strongestRankScore = rankScore;
+      row.strongestTier = rank;
+    }
+
+    const existing = row.cells[focalId];
+    const nextCell = {
+      edgeId: String(edge.id || ""),
+      focalId,
+      label: String(edge.label || edge.relation || "Verified link").trim(),
+      role,
+      date: edge.date ? String(edge.date).slice(0, 10) : "",
+      sourceRank: rank,
+      rankScore,
+      sourceIds: Array.isArray(edge.sourceIds) ? edge.sourceIds : []
+    };
+    if (!existing || nextCell.rankScore > existing.rankScore || (!existing.date && nextCell.date)) {
+      row.cells[focalId] = nextCell;
+    }
+  }
+
+  const rows = [...rowsMap.values()]
+    .map((r) => ({
+      nodeId: r.nodeId,
+      name: r.name,
+      entityType: r.entityType,
+      primaryRole: r.primaryRole,
+      roles: [...r.roles],
+      isRisk: r.isRisk,
+      strongestTier: r.strongestTier,
+      strongestRankScore: r.strongestRankScore,
+      sharedCount: Object.keys(r.cells).length,
+      cells: r.cells
+    }))
+    .sort((a, b) => {
+      if (b.sharedCount !== a.sharedCount) return b.sharedCount - a.sharedCount;
+      if (b.strongestRankScore !== a.strongestRankScore) return b.strongestRankScore - a.strongestRankScore;
+      return a.name.localeCompare(b.name);
+    });
+
+  return {
+    focals,
+    rows,
+    sharedRowCount: rows.filter((r) => r.sharedCount >= 2).length,
+    totalRowCount: rows.length
+  };
+}
+
+/**
+ * Serializes a Cross-Entity Overlap Matrix into an RFC-4180 UTF-8 BOM CSV for Excel/IC decks.
+ */
+export function buildOverlapMatrixCsv(matrix) {
+  const focals = Array.isArray(matrix?.focals) ? matrix.focals : [];
+  const rows = Array.isArray(matrix?.rows) ? matrix.rows : [];
+  const headers = [
+    "Counterparty",
+    "Entity Type",
+    "Primary Role",
+    "Overlap Count",
+    "Strongest Tier",
+    ...focals.map((f) => f.name)
+  ];
+  const lines = [headers.map(escapeCsvCell).join(",")];
+  for (const row of rows) {
+    const focalCells = focals.map((f) => {
+      const c = row.cells?.[f.id];
+      if (!c) return "—";
+      const meta = [c.date, c.sourceRank].filter(Boolean).join(" · ");
+      return meta ? `${c.label} (${meta})` : c.label;
+    });
+    lines.push(
+      [
+        row.name,
+        row.entityType,
+        row.primaryRole,
+        `${row.sharedCount}/${focals.length}`,
+        row.strongestTier,
+        ...focalCells
+      ]
+        .map(escapeCsvCell)
+        .join(",")
+    );
+  }
+  return `\uFEFF${lines.join("\n")}`;
+}
+
+function extractStrictCalaAmount(text = "") {
+  const m = String(text || "").match(/((?:\$|€|USD\s*|EUR\s*)\d+(?:\.\d+)?\s?(?:[BMK]|billion|million|bn|m)\b)/i);
+  return m ? m[1].replace(/\s+/g, " ").trim() : "";
+}
+
+/**
+ * Builds a verified, strictly Cala-backed Chronological Financing & Catalyst Timeline
+ * split cleanly into Active Window (<=18 months) vs. Historical Track Record (>18 months).
+ */
+export function buildChronologicalCatalystTimeline(bridgeMap, referenceDate = null) {
+  const refStr = normalizeIsoDateForSort(referenceDate || bridgeMap?.referenceDate) || new Date().toISOString().slice(0, 10);
+  const refMs = Date.parse(refStr) || Date.now();
+  if (!bridgeMap) {
+    return { active: [], historical: [], totalDated: 0, referenceDate: refStr };
+  }
+
+  const nodeById = new Map((Array.isArray(bridgeMap.nodes) ? bridgeMap.nodes : []).map((n) => [String(n.id), n]));
+  const focalById = new Map((Array.isArray(bridgeMap.focalEntities) ? bridgeMap.focalEntities : []).map((f) => [String(f.id), f]));
+  const items = [];
+  const seenKeys = new Set();
+
+  const pushItem = ({ focalName, title, detail, date, sourceRank, sourceIds, edgeId, nodeId, amount }) => {
+    const rawDate = String(date || "").trim();
+    const normDate = normalizeIsoDateForSort(rawDate);
+    if (!normDate) return;
+    const evtMs = Date.parse(normDate);
+    if (!Number.isFinite(evtMs)) return;
+    const monthsAgo = (refMs - evtMs) / (1000 * 60 * 60 * 24 * 30.4375);
+    const isActive = monthsAgo <= 18 && monthsAgo >= -12;
+    const cleanEntity = formatInstitutionalEntityName(focalName || "Entity");
+    const cleanTitle = cleanInstitutionalProseNames(String(title || "Verified Milestone").trim());
+    const cleanDetail = cleanInstitutionalProseNames(String(detail || "").trim());
+    const dedupeKey = `${cleanEntity.toLowerCase()}::${rawDate.slice(0, 10)}::${cleanTitle.toLowerCase().slice(0, 48)}`;
+    if (seenKeys.has(dedupeKey)) return;
+    seenKeys.add(dedupeKey);
+
+    items.push({
+      focalName: cleanEntity,
+      title: cleanTitle,
+      detail: cleanDetail,
+      date: rawDate.slice(0, 10),
+      sortDate: normDate,
+      isActive,
+      amount: amount || extractStrictCalaAmount(`${cleanTitle} ${cleanDetail}`),
+      sourceRank: String(sourceRank || "PRIMARY").toUpperCase(),
+      sourceIds: Array.isArray(sourceIds) ? sourceIds.map(String).filter(Boolean) : [],
+      edgeId: edgeId ? String(edgeId) : "",
+      nodeId: nodeId ? String(nodeId) : ""
+    });
+  };
+
+  for (const [entityId, events] of Object.entries(bridgeMap.timingEventsByEntity || {})) {
+    const entityObj = focalById.get(String(entityId)) || nodeById.get(String(entityId));
+    const focalName = entityObj?.name || entityObj?.label || "";
+    for (const ev of Array.isArray(events) ? events : []) {
+      if (!ev) continue;
+      pushItem({
+        focalName: ev.entityName || focalName,
+        title: ev.title || ev.label || ev.relation || "Milestone",
+        detail: ev.detail || ev.summary || "",
+        date: ev.date || ev.roundDate,
+        sourceRank: ev.topSourceRank || ev.sourceRank || "PRIMARY",
+        sourceIds: ev.sourceIds || (ev.sourceId ? [ev.sourceId] : []),
+        edgeId: ev.edgeId || "",
+        nodeId: entityId,
+        amount: ev.roundAmount || ev.amount || ""
+      });
+    }
+  }
+
+  for (const edge of Array.isArray(bridgeMap.edges) ? bridgeMap.edges : []) {
+    if (!edge || String(edge.id || "").startsWith("tree-spoke-") || !(edge.date || edge.roundDate)) continue;
+    const fromNode = nodeById.get(String(edge.from || ""));
+    const toNode = nodeById.get(String(edge.to || ""));
+    const focal = (fromNode?.isFocalEntity && fromNode) || (toNode?.isFocalEntity && toNode) || focalById.get(String(edge.focalEntityId || "")) || fromNode || toNode;
+    const other = fromNode?.id === focal?.id ? toNode : fromNode;
+    const focalName = focal?.label || focal?.name || "";
+    const otherName = other?.label || other?.name || "";
+    const labelStr = edge.roundLabel || edge.label || edge.relation || "Corporate event";
+    const title = otherName && otherName !== focalName && !/Active Catalyst|Historical/i.test(otherName)
+      ? `${labelStr}: ${formatInstitutionalEntityName(otherName)}`
+      : labelStr;
+    pushItem({
+      focalName,
+      title,
+      detail: edge.detail || "",
+      date: edge.roundDate || edge.date,
+      sourceRank: edge.topSourceRank || "PRIMARY",
+      sourceIds: edge.sourceIds || (edge.sourceId ? [edge.sourceId] : []),
+      edgeId: edge.id,
+      nodeId: other?.id || focal?.id || "",
+      amount: edge.roundAmount || ""
+    });
+  }
+
+  items.sort((a, b) => b.sortDate.localeCompare(a.sortDate) || (LEDGER_TIER_RANK[b.sourceRank] || 0) - (LEDGER_TIER_RANK[a.sourceRank] || 0));
+  return {
+    active: items.filter((i) => i.isActive),
+    historical: items.filter((i) => !i.isActive),
+    totalDated: items.length,
+    referenceDate: refStr
+  };
+}
+
+/**
  * Encodes current pinned entities and optional perspective firm into a shareable `?map=...` URL.
  */
 export function buildShareableWorkspaceUrl(origin = "", pathname = "/", pinnedEntities = [], perspectiveEntity = null) {

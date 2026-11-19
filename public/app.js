@@ -16,11 +16,16 @@ import {
   stepMapPhysics
 } from "./mapPhysics.js";
 import {
+  buildChronologicalCatalystTimeline,
+  buildCrossEntityOverlapMatrix,
   buildIcDiligenceMemoMarkdown,
+  buildOverlapMatrixCsv,
   buildShareableWorkspaceUrl,
   buildVerifiedConnectionsCsv,
+  cleanInstitutionalProseNames,
   computeMapUniqueProvenance,
   connectionStarKey,
+  filterAndSortLedgerRecords,
   formatInstitutionalEntityName,
   formatInstitutionalPath,
   matchClaudeFindingToRecord,
@@ -184,6 +189,14 @@ const state = {
   decisionAnalysisRequestId: 0,
   decisionOpenDrawers: { reasoning: false, connections: false, sources: false },
   decisionExpandedOpenDrawers: { icThesis: false, reasoning: false, sourcesList: false, hygiene: false },
+  decisionExpandedView: "factors", // "factors" | "matrix"
+  decisionLedgerQuery: "",
+  decisionLedgerFilter: "all",
+  decisionLedgerSort: "signal",
+  decisionLedgerMode: "cards", // "cards" | "table"
+  decisionLedgerShowAll: false,
+  matrixRoleFilter: "all",
+  matrixQuery: "",
   filtersPanelOpen: false,
   suggestItems: [],
   suggestTimer: null,
@@ -743,6 +756,55 @@ function strongestTier(records = []) {
   if (list.includes("PRESS")) return "PRESS";
   if (list.includes("AGGREGATOR")) return "AGGREGATOR";
   return MISSING;
+}
+
+function connectionTierBadge(record = {}) {
+  const tier = tierOf(record);
+  return tier !== MISSING ? tier : "CALA GRAPH";
+}
+
+function formatDossierRelationLabel(rawRel = "", direction = "") {
+  const clean = cleanText(rawRel);
+  if (!clean) return "Verified Cala link";
+  const upper = clean.toUpperCase().replace(/\s+/g, " ").trim();
+  const dir = String(direction || "").toLowerCase();
+  if (upper === "INVESTED_IN / INVESTED_IN") return "Shared investment link";
+  if (upper === "WORKED_AT / WORKED_AT" || upper === "WORKS_AT / WORKS_AT") {
+    return "Leadership / alumni link";
+  }
+  if (upper === "INVESTED_IN") return dir === "incoming" ? "Backed by" : "Invested in";
+  if (upper === "WORKED_AT" || upper === "WORKS_AT") return "Leadership / alumni link";
+  if (upper === "FOUNDED") return dir === "incoming" ? "Founded by" : "Founded";
+  if (upper === "ACQUIRED") return dir === "incoming" ? "Acquired by" : "Acquired";
+  if (upper === "PARTNERED_WITH") return "Partnered with";
+  const humanizePart = (part) => {
+    const words = String(part || "")
+      .replace(/[_-]+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    return words
+      .map((w) => {
+        const up = w.toUpperCase();
+        if (["AI", "CEO", "CTO", "CFO", "COO", "VP", "IP", "LP", "GP", "VC"].includes(up)) return up;
+        return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+      })
+      .join(" ");
+  };
+  const parts = clean
+    .split("/")
+    .map(humanizePart)
+    .filter(Boolean);
+  return parts.join(" · ") || clean;
+}
+
+function formatOperationalStatus(value = "") {
+  const clean = cleanText(value);
+  if (!clean) return "";
+  if (/^[A-Z]{3,}$/.test(clean)) {
+    return clean.charAt(0) + clean.slice(1).toLowerCase();
+  }
+  return clean;
 }
 
 function deriveContributionGroupFrontend(item) {
@@ -3628,6 +3690,62 @@ function getDecisionFactorEvidence(bridgeMap, factor) {
   let records = [];
 
   const nodeMapForType = new Map(asList(bridgeMap?.nodes).map((n) => [String(n.id), n]));
+  const mapNodesById = new Map(asList(bridgeMap?.nodes).map((n) => [String(n.id), n]));
+  const focalIdSet = new Set(asList(bridgeMap?.focalEntities).map((f) => String(f.id)));
+  const sourceIdOf = (source) => source?.id || source?.sourceId || source?.source_id || null;
+  const readSourceIds = (item) => [...new Set([
+    ...asList(item?.sourceIds),
+    item?.sourceId,
+    ...asList(item?.evidenceSources).map(sourceIdOf)
+  ].filter(Boolean).map(String))];
+
+  const edgeToRecord = (edge) => {
+    const fromNode = mapNodesById.get(String(edge.from || ""));
+    const toNode = mapNodesById.get(String(edge.to || ""));
+    const fromName = cleanText(fromNode?.label || fromNode?.name || edge.from);
+    const toName = cleanText(toNode?.label || toNode?.name || edge.to);
+    const pathNames = `${fromName} → ${toName}`;
+    const relation = cleanText(edge.label || edge.relation || edge.relationType || edge.bridgeFamily || "Verified Cala path");
+    const sIds = readSourceIds(edge);
+    for (const source of asList(edge.evidenceSources)) {
+      const id = sourceIdOf(source);
+      if (id && !sourceById.has(String(id))) sourceById.set(String(id), { ...source, id: String(id) });
+    }
+    const recency = classifyTimingRecencyFrontend(edge);
+    const nonFocalNode = (!fromNode?.isFocalEntity && !focalIdSet.has(String(edge.from)) && fromNode)
+      || (!toNode?.isFocalEntity && !focalIdSet.has(String(edge.to)) && toNode)
+      || toNode
+      || fromNode;
+    return {
+      id: edge.id || "",
+      edgeId: edge.id || "",
+      nodeId: nonFocalNode?.id || edge.to || edge.from || "",
+      nodeEntityType: cleanText(nonFocalNode?.entityType || "Organization"),
+      focalEntityId: String(edge.focalEntityId || ""),
+      canonicalFrom: fromName,
+      canonicalTo: toName,
+      type: cleanText(edge.relationType || edge.relation || edge.bridgeFamily || relation),
+      path: pathNames,
+      relation,
+      detail: cleanText(edge.detail || edge.whyMatters || edge.description),
+      date: cleanText(edge.date || edge.roundDate || edge.asOfDate),
+      sourceRank: cleanText(edge.topSourceRank || "AGGREGATOR"),
+      structuralRole: edge.structuralRole || deriveStructuralRoleFrontend(edge),
+      isAcquisition: Boolean(edge.isAcquisition || String(edge.relation || "").toUpperCase() === "ACQUIRED"),
+      timingRecency: recency.timingRecency,
+      isRecentCatalyst: recency.isRecentCatalyst,
+      isHistoricalMilestone: recency.isHistoricalMilestone,
+      touchesPerspective: Boolean(edge.touchesPerspective || edge.isPerspectiveBridge),
+      perspectiveChain: asList(edge.perspectiveChain).filter(Boolean),
+      isSharedBridge: Boolean(edge.isSharedBridge),
+      isLead: Boolean(edge.isLead),
+      isAnomaly: Boolean(edge.isAnomaly),
+      sharedHubs: asList(edge.sharedByFocalEntityIds).map((hid) => cleanText(mapNodesById.get(String(hid))?.label || mapNodesById.get(String(hid))?.name)).filter(Boolean),
+      signalWeight: Number(edge.signalWeight || 0.5),
+      sourceIds: sIds
+    };
+  };
+
   if (ranked.length > 0) {
     records = ranked.map((r) => ({
       id: r.id || "",
@@ -3657,56 +3775,20 @@ function getDecisionFactorEvidence(bridgeMap, factor) {
       signalWeight: Number(r.signalWeight || 0),
       sourceIds: [...new Set(asList(r.sourceIds).filter(Boolean).map(String))]
     }));
+    // Append remaining matching non-spoke edges so the Evidence Ledger surfaces all 30-50+ verified Cala paths
+    const includedEdgeIds = new Set(records.map((r) => String(r.edgeId || "")).filter(Boolean));
+    for (const edge of asList(bridgeMap?.edges)) {
+      if (!edge || edge.id?.startsWith("tree-spoke-")) continue;
+      if (includedEdgeIds.has(String(edge.id || ""))) continue;
+      const g = deriveContributionGroupFrontend(edge);
+      const effectiveGroup = (Boolean(edge.isAcquisition || String(edge.relation || "").toUpperCase() === "ACQUIRED") && g === "caution") ? "lineage" : g;
+      if (effectiveGroup !== factor.group) continue;
+      records.push(edgeToRecord(edge));
+    }
   } else {
-    const nodes = new Map(asList(bridgeMap?.nodes).map((node) => [node.id, node]));
-    const sourceIdOf = (source) => source?.id || source?.sourceId || source?.source_id || null;
-    const readSourceIds = (item) => [...new Set([
-      ...asList(item?.sourceIds),
-      item?.sourceId,
-      ...asList(item?.evidenceSources).map(sourceIdOf)
-    ].filter(Boolean).map(String))];
     const edges = asList(bridgeMap?.edges)
       .filter((edge) => !edge.id?.startsWith("tree-spoke-") && deriveContributionGroupFrontend(edge) === factor.group);
-    records = edges.map((edge) => {
-      const fromNode = nodes.get(edge.from);
-      const toNode = nodes.get(edge.to);
-      const fromName = cleanText(fromNode?.label || fromNode?.name || edge.from);
-      const toName = cleanText(toNode?.label || toNode?.name || edge.to);
-      const pathNames = `${fromName} → ${toName}`;
-      const relation = cleanText(edge.label || edge.relation || edge.relationType || edge.bridgeFamily || "Verified Cala path");
-      const sIds = readSourceIds(edge);
-      for (const source of asList(edge.evidenceSources)) {
-        const id = sourceIdOf(source);
-        if (id && !sourceById.has(String(id))) sourceById.set(String(id), { ...source, id: String(id) });
-      }
-      const recency = classifyTimingRecencyFrontend(edge);
-      const nonFocalNode = (!fromNode?.isFocalEntity && fromNode) || (!toNode?.isFocalEntity && toNode) || toNode || fromNode;
-      return {
-        id: edge.id || "",
-        edgeId: edge.id || "",
-        nodeId: nonFocalNode?.id || edge.to || edge.from || "",
-        nodeEntityType: cleanText(nonFocalNode?.entityType || "Organization"),
-        canonicalFrom: fromName,
-        canonicalTo: toName,
-        type: cleanText(edge.relationType || edge.relation || edge.bridgeFamily || relation),
-        path: pathNames,
-        relation,
-        detail: cleanText(edge.detail || edge.whyMatters || edge.description),
-        date: cleanText(edge.date || edge.asOfDate),
-        sourceRank: cleanText(edge.topSourceRank || "AGGREGATOR"),
-        structuralRole: deriveStructuralRoleFrontend(edge),
-        isAcquisition: Boolean(edge.isAcquisition || String(edge.relation || "").toUpperCase() === "ACQUIRED"),
-        timingRecency: recency.timingRecency,
-        isRecentCatalyst: recency.isRecentCatalyst,
-        isHistoricalMilestone: recency.isHistoricalMilestone,
-        touchesPerspective: Boolean(edge.touchesPerspective || edge.isPerspectiveBridge),
-        perspectiveChain: asList(edge.perspectiveChain).filter(Boolean),
-        isSharedBridge: Boolean(edge.isSharedBridge),
-        isLead: Boolean(edge.isLead),
-        isAnomaly: Boolean(edge.isAnomaly),
-        sourceIds: sIds
-      };
-    });
+    records = edges.map(edgeToRecord);
   }
 
   const sourceIds = [...new Set([
@@ -4300,6 +4382,14 @@ async function runAnalystExportAction(action) {
     return;
   }
 
+  if (action === "download-matrix-csv") {
+    const matrix = buildCrossEntityOverlapMatrix(state.bridgeMap);
+    const csv = buildOverlapMatrixCsv(matrix);
+    downloadTextFile(`VentureLink-Overlap-Matrix-${slug}-${today}.csv`, csv, "text/csv;charset=utf-8");
+    showToast(`Exported Cross-Entity Overlap Matrix CSV (${matrix.rows.length} rows).`);
+    return;
+  }
+
   if (action === "print-brief") {
     const sheet = $("#icPrintSheet");
     if (sheet) {
@@ -4424,6 +4514,331 @@ function buildExpandedModeSnapshotHtml(summary, factor, activeMode) {
   `;
 }
 
+function buildDecisionSourceRenderFn(sourceById) {
+  return (sourceIds, max = 3) => asList(sourceIds)
+    .slice(0, max)
+    .map((id) => {
+      const source = sourceById.get(String(id));
+      const label = cleanText(source?.publisher || source?.title || `Cala source ${id}`);
+      const fullTitle = cleanText(source?.title || label);
+      const url = cleanText(source?.url || source?.document || "");
+      const safeUrl = /^https?:\/\//i.test(url) ? url : "";
+      return safeUrl
+        ? `<a class="ai-cite-pill is-link" href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(fullTitle)}">${escapeHtml(label)} &#8599;</a>`
+        : `<span class="ai-cite-pill" title="${escapeHtml(fullTitle)}">${escapeHtml(label)}</span>`;
+    })
+    .join("");
+}
+
+function getDecisionLedgerContext(factorGroup = state.decisionSelectedFactor) {
+  if (!state.bridgeMap) return null;
+  const summary = buildFourFactorDecisionSummary(state.bridgeMap);
+  const factor = summary.factors.find((f) => f.group === factorGroup) || summary.factors[0];
+  if (!factor) return null;
+  const res = currentDecisionAnalysisResult();
+  const factorAnalyses = new Map(asList(res?.factorAnalyses).map((item) => [item.group, item]));
+  const factorAnalysis = factorAnalyses.get(factor.group);
+  const evidenceData = getDecisionFactorEvidence(state.bridgeMap, factor);
+  const sourceById = collectDecisionSourceMap(state.bridgeMap, [...evidenceData.sources, ...asList(res?.analysisInput?.sources)]);
+  const allMerged = mergeExpandedConnectionRecords(evidenceData.records, factor.group, state.bridgeMap);
+  const filtered = filterAndSortLedgerRecords(allMerged, {
+    query: state.decisionLedgerQuery,
+    filter: state.decisionLedgerFilter,
+    sort: state.decisionLedgerSort,
+    starredKeys: state.starredConnectionKeys
+  });
+  return {
+    summary,
+    factor,
+    findingsList: asList(factorAnalysis?.findings),
+    sourceById,
+    renderCitations: buildDecisionSourceRenderFn(sourceById),
+    allMerged,
+    filtered
+  };
+}
+
+function renderDecisionLedgerBodyHtml(ctx) {
+  if (!ctx) return "";
+  const { filtered, allMerged, factor, findingsList, renderCitations } = ctx;
+  if (!filtered.length) {
+    return allMerged.length
+      ? `<div class="decision-ai-no-chart">No verified connections match "${escapeHtml(state.decisionLedgerQuery || state.decisionLedgerFilter)}". <button type="button" class="decision-ledger-reset-btn" data-ledger-reset="true">Clear filter</button></div>`
+      : `<div class="decision-ai-no-chart">No mapped relationship records for this factor.</div>`;
+  }
+
+  const limit = state.decisionLedgerShowAll ? filtered.length : (state.decisionLedgerMode === "table" ? 15 : 8);
+  const visible = filtered.slice(0, limit);
+  const remainingCount = Math.max(0, filtered.length - visible.length);
+
+  let innerHtml = "";
+  if (state.decisionLedgerMode === "table") {
+    innerHtml = `
+      <div class="decision-ledger-table-wrap">
+        <table class="decision-ledger-table">
+          <thead>
+            <tr>
+              <th>Connection</th>
+              <th>Date</th>
+              <th>Provenance</th>
+              <th style="text-align:right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${visible.map((rec) => {
+              const canFocus = Boolean(rec.edgeId || rec.nodeId);
+              const inspectableNodeId = rec.nodeId && !String(rec.nodeId).startsWith("caution:") ? rec.nodeId : "";
+              const starKey = connectionStarKey(rec);
+              const isStarred = state.starredConnectionKeys.has(starKey);
+              const displayPath = formatInstitutionalPath(rec.path);
+              const roleTag = getConnectionRoleTag(rec, state.bridgeMap);
+              const citesHtml = renderCitations(rec.sourceIds, 1);
+              return `
+                <tr class="${isStarred ? "is-starred-ic" : ""}">
+                  <td>
+                    <div class="ledger-table-path" title="${escapeHtml(rec.path)}">${escapeHtml(displayPath)}</div>
+                    <div class="ledger-table-sub">
+                      ${rec.isSharedBridge ? `<span class="decision-badge-shared">Shared</span>` : ""}
+                      <span class="decision-role-tag ${escapeHtml(roleTag.cls)}">${escapeHtml(roleTag.label)}</span>
+                    </div>
+                  </td>
+                  <td class="num-tabular ledger-table-date">${escapeHtml(rec.date || "—")}</td>
+                  <td>
+                    <div class="ledger-table-prov">
+                      <span class="source-tier" data-tier="${escapeHtml(rec.sourceRank || "AGGREGATOR")}">${escapeHtml(rec.sourceRank || "AGG")}</span>
+                      <div class="decision-card-cites">${citesHtml}</div>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="decision-card-actions ledger-table-actions">
+                      <button type="button" class="decision-star-btn ${isStarred ? "is-starred" : ""}" data-star-connection-key="${escapeHtml(starKey)}" aria-pressed="${isStarred}" title="${isStarred ? "Remove IC flag" : "Flag for IC"}">${isStarred ? "&#9733;" : "&#9734;"}</button>
+                      ${inspectableNodeId ? `<button type="button" class="decision-focus-btn" data-inspect-node-id="${escapeHtml(inspectableNodeId)}">Dossier</button>` : ""}
+                      ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Map</button>` : ""}
+                    </div>
+                  </td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } else {
+    innerHtml = `<div class="decision-ai-evidence-list is-compact-table">${visible.map((rec) => {
+      const canFocus = Boolean(rec.edgeId || rec.nodeId);
+      const inspectableNodeId = rec.nodeId && !String(rec.nodeId).startsWith("caution:") ? rec.nodeId : "";
+      const starKey = connectionStarKey(rec);
+      const isStarred = state.starredConnectionKeys.has(starKey);
+      const displayPath = formatInstitutionalPath(rec.path);
+      const analystInsight = cleanInstitutionalProseNames(deriveConnectionAnalystInsight(rec, factor.group, findingsList));
+      const roleTag = getConnectionRoleTag(rec, state.bridgeMap);
+      const cardCitesHtml = renderCitations(rec.sourceIds, 2);
+      return `
+        <article class="decision-ai-evidence-row is-insight-card ${isStarred ? "is-starred-ic" : ""}">
+          <div class="decision-insight-card-top">
+            <strong class="decision-compact-path" title="${escapeHtml(rec.path)}">${escapeHtml(displayPath)}</strong>
+            <div class="decision-card-actions">
+              <button type="button" class="decision-star-btn ${isStarred ? "is-starred" : ""}" data-star-connection-key="${escapeHtml(starKey)}" aria-pressed="${isStarred}" title="${isStarred ? "Remove IC flag" : "Flag connection for IC memo"}">${isStarred ? "&#9733; Flagged" : "&#9734; Flag"}</button>
+              ${inspectableNodeId ? `<button type="button" class="decision-focus-btn" data-inspect-node-id="${escapeHtml(inspectableNodeId)}">Inspect</button>` : ""}
+              ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Focus map</button>` : ""}
+            </div>
+          </div>
+          <div class="decision-insight-card-badges">
+            <span class="decision-role-tag ${escapeHtml(roleTag.cls)}">${escapeHtml(roleTag.label)}</span>
+            ${rec.isSharedBridge ? `<span class="decision-badge-shared">Shared</span>` : ""}
+            ${rec.date ? `<span class="decision-date-tag">${escapeHtml(rec.date)}</span>` : ""}
+            <span class="source-tier" data-tier="${escapeHtml(rec.sourceRank || "AGGREGATOR")}">${escapeHtml(rec.sourceRank || "AGG")}</span>
+          </div>
+          <p class="decision-connection-meaning">${escapeHtml(analystInsight)}</p>
+          ${cardCitesHtml ? `<div class="decision-card-cites">${cardCitesHtml}</div>` : ""}
+        </article>
+      `;
+    }).join("")}</div>`;
+  }
+
+  const toggleAllBtn = filtered.length > (state.decisionLedgerMode === "table" ? 15 : 8)
+    ? `<button type="button" class="decision-ledger-more-btn" data-ledger-show-all="true">${state.decisionLedgerShowAll ? `Show fewer` : `Show all ${filtered.length} verified links (+${remainingCount})`}</button>`
+    : "";
+
+  return `${innerHtml}${toggleAllBtn}`;
+}
+
+function updateDecisionLedgerInPlace() {
+  const ctx = getDecisionLedgerContext();
+  const bodyEl = $("#decisionLedgerBody");
+  const metaEl = $("#decisionLedgerMeta");
+  if (!ctx || !bodyEl) return;
+  bodyEl.innerHTML = renderDecisionLedgerBodyHtml(ctx);
+  if (metaEl) {
+    metaEl.textContent = ctx.filtered.length === ctx.allMerged.length
+      ? `${ctx.allMerged.length} verified links`
+      : `${ctx.filtered.length} of ${ctx.allMerged.length} shown`;
+  }
+  document.querySelectorAll("[data-ledger-filter]").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.ledgerFilter === state.decisionLedgerFilter);
+  });
+  document.querySelectorAll("[data-ledger-mode]").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.ledgerMode === state.decisionLedgerMode);
+  });
+}
+
+function buildCatalystTimelineHtml(bridgeMap, sourceById) {
+  const tl = buildChronologicalCatalystTimeline(bridgeMap);
+  const renderCitations = buildDecisionSourceRenderFn(sourceById);
+  const renderBucket = (title, windowBadge, items, isActiveBucket) => `
+    <div class="catalyst-bucket">
+      <div class="catalyst-window-head">
+        <strong>${escapeHtml(title)}</strong>
+        <span class="catalyst-window-badge ${isActiveBucket ? "is-active" : ""}">${escapeHtml(windowBadge)}</span>
+      </div>
+      ${items.length
+        ? `<div class="catalyst-timeline-list">${items.slice(0, 8).map((ev) => {
+            const citesHtml = renderCitations(ev.sourceIds, 1);
+            return `
+              <div class="catalyst-timeline-row ${isActiveBucket ? "is-active-catalyst" : ""}">
+                <time class="catalyst-date num-tabular">${escapeHtml(ev.date)}</time>
+                <div class="catalyst-main">
+                  <div class="catalyst-top-line">
+                    <span class="catalyst-entity-chip">${escapeHtml(ev.focalName)}</span>
+                    ${ev.amount ? `<span class="catalyst-amount-pill num-tabular">${escapeHtml(ev.amount)}</span>` : ""}
+                    <span class="source-tier" data-tier="${escapeHtml(ev.sourceRank)}">${escapeHtml(ev.sourceRank)}</span>
+                  </div>
+                  <div class="catalyst-title">${escapeHtml(ev.title)}</div>
+                  ${citesHtml ? `<div class="decision-card-cites">${citesHtml}</div>` : ""}
+                </div>
+                ${(ev.edgeId || ev.nodeId) ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(ev.edgeId)}" data-focus-node-id="${escapeHtml(ev.nodeId)}" data-focus-group="timing">Map</button>` : ""}
+              </div>
+            `;
+          }).join("")}</div>`
+        : `<p class="decision-snapshot-empty">No dated events in this window indexed in Cala.</p>`}
+    </div>
+  `;
+
+  return `
+    <section class="decision-snapshot-panel catalyst-timeline-panel" aria-label="Chronological financing and catalyst timeline">
+      <div class="decision-panel-subhead">
+        <strong>Chronological Financing &amp; Catalyst Timeline</strong>
+        <span>${tl.totalDated} dated Cala event${tl.totalDated === 1 ? "" : "s"}</span>
+      </div>
+      ${renderBucket("Active Window (<=18m)", `${tl.active.length} recent`, tl.active, true)}
+      ${renderBucket("Historical Track Record (>18m)", `${tl.historical.length} historical`, tl.historical, false)}
+    </section>
+  `;
+}
+
+function filterOverlapMatrixRows(matrix) {
+  const q = String(state.matrixQuery || "").trim().toLowerCase();
+  const rf = String(state.matrixRoleFilter || "all").toLowerCase();
+  return (matrix?.rows || []).filter((r) => {
+    if (rf === "shared" && r.sharedCount < 2) return false;
+    if (rf === "capital" && !r.roles.includes("capital")) return false;
+    if (rf === "commercial" && !r.roles.includes("commercial")) return false;
+    if (rf === "governance" && !r.roles.includes("governance")) return false;
+    if (rf === "risk" && !r.isRisk) return false;
+    if (q) {
+      const cellText = Object.values(r.cells || {}).map((c) => c.label).join(" ");
+      const hay = `${r.name} ${r.entityType} ${r.primaryRole} ${cellText}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function buildOverlapMatrixTableHtml(matrix) {
+  const focals = matrix?.focals || [];
+  const rows = filterOverlapMatrixRows(matrix);
+  if (!rows.length) {
+    return `<div class="decision-ai-no-chart">No counterparties match the active matrix filters.</div>`;
+  }
+  const maxShow = 60;
+  const visibleRows = rows.slice(0, maxShow);
+  return `
+    <div class="overlap-matrix-scroll">
+      <table class="overlap-matrix-table">
+        <thead>
+          <tr>
+            <th>Counterparty</th>
+            <th>Role</th>
+            <th>Overlap</th>
+            ${focals.map((f) => `<th>${escapeHtml(f.name)}</th>`).join("")}
+          </tr>
+        </thead>
+        <tbody>
+          ${visibleRows.map((row) => `
+            <tr class="${row.sharedCount >= 2 ? "is-shared-row" : ""}">
+              <td class="overlap-cp-cell">
+                <button type="button" class="overlap-cp-btn" data-inspect-node-id="${escapeHtml(row.nodeId)}" title="Open dossier for ${escapeHtml(row.name)}">
+                  <strong>${escapeHtml(row.name)}</strong>
+                  <span>${escapeHtml(row.entityType)}</span>
+                </button>
+              </td>
+              <td><span class="decision-role-tag ${row.isRisk ? "is-tag-coral" : "is-tag-cream"}">${escapeHtml(row.primaryRole === "strategic_event" ? "Event / Risk" : row.primaryRole)}</span></td>
+              <td class="num-tabular"><span class="overlap-count-pill ${row.sharedCount >= 2 ? "is-multi" : ""}">${row.sharedCount}/${focals.length}</span></td>
+              ${focals.map((f) => {
+                const cell = row.cells?.[f.id];
+                if (!cell) return `<td><span class="overlap-empty-dash">—</span></td>`;
+                return `
+                  <td>
+                    <button type="button" class="overlap-matrix-cell-btn" data-focus-edge-id="${escapeHtml(cell.edgeId)}" data-focus-node-id="${escapeHtml(row.nodeId)}" title="Focus ${escapeHtml(row.name)} → ${escapeHtml(f.name)} on map">
+                      <span class="overlap-cell-rel">${escapeHtml(cell.label)}</span>
+                      <span class="overlap-cell-meta"><span class="source-tier" data-tier="${escapeHtml(cell.sourceRank)}">${escapeHtml(cell.sourceRank)}</span>${cell.date ? ` · ${escapeHtml(cell.date)}` : ""}</span>
+                    </button>
+                  </td>
+                `;
+              }).join("")}
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function updateOverlapMatrixInPlace() {
+  if (!state.bridgeMap) return;
+  const matrix = buildCrossEntityOverlapMatrix(state.bridgeMap);
+  const wrap = $("#overlapMatrixTableWrap");
+  const meta = $("#overlapMatrixMeta");
+  if (wrap) wrap.innerHTML = buildOverlapMatrixTableHtml(matrix);
+  if (meta) {
+    const shown = filterOverlapMatrixRows(matrix).length;
+    meta.textContent = `${shown} of ${matrix.totalRowCount} counterparties · ${matrix.sharedRowCount} shared`;
+  }
+  document.querySelectorAll("[data-matrix-filter]").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.matrixFilter === state.matrixRoleFilter);
+  });
+}
+
+function buildOverlapMatrixPanelHtml(matrix) {
+  const shown = filterOverlapMatrixRows(matrix).length;
+  const roleChips = [
+    ["all", "All"],
+    ["shared", `Shared Only (${matrix.sharedRowCount})`],
+    ["capital", "Capital"],
+    ["commercial", "Commercial"],
+    ["governance", "Leadership"],
+    ["risk", "Risks"]
+  ];
+  return `
+    <section class="overlap-matrix-panel" id="overlapMatrixPanel" aria-label="Cross-Entity Overlap Matrix">
+      <div class="overlap-matrix-head">
+        <div>
+          <h3>Cross-Entity Overlap Matrix</h3>
+          <span class="decision-hero-submeta" id="overlapMatrixMeta">${shown} of ${matrix.totalRowCount} counterparties · ${matrix.sharedRowCount} shared across targets</span>
+        </div>
+        <div class="overlap-matrix-controls">
+          <input type="search" id="matrixSearchInput" class="decision-ledger-search" value="${escapeHtml(state.matrixQuery)}" placeholder="Search investor, supplier, person..." aria-label="Filter overlap matrix" />
+          <button type="button" class="decision-export-btn" data-export-action="download-matrix-csv">Export Matrix CSV</button>
+        </div>
+      </div>
+      <div class="decision-ledger-chips" role="group" aria-label="Filter overlap matrix by role">
+        ${roleChips.map(([k, lbl]) => `<button type="button" class="decision-ledger-chip ${state.matrixRoleFilter === k ? "is-active" : ""}" data-matrix-filter="${k}">${escapeHtml(lbl)}</button>`).join("")}
+      </div>
+      <div id="overlapMatrixTableWrap">${buildOverlapMatrixTableHtml(matrix)}</div>
+    </section>
+  `;
+}
+
 function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(state.bridgeMap)) {
   const outEl = $("#decisionAiOutput");
   const promptEl = $("#decisionAiPrompt");
@@ -4468,10 +4883,26 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
     </div>
   `;
 
+  const matrixCandidate = state.decisionPanelExpanded ? buildCrossEntityOverlapMatrix(state.bridgeMap) : null;
+  const overlapMatrix = matrixCandidate && matrixCandidate.focals.length >= 2 ? matrixCandidate : null;
+  if (!overlapMatrix && state.decisionExpandedView === "matrix") {
+    state.decisionExpandedView = "factors";
+  }
+
+  const viewModeSwitcherHtml = overlapMatrix
+    ? `
+      <div class="decision-view-switcher" role="group" aria-label="Workspace view">
+        <button type="button" class="decision-view-tab ${state.decisionExpandedView !== "matrix" ? "is-active" : ""}" data-expanded-view="factors">4-Factor Analysis</button>
+        <button type="button" class="decision-view-tab ${state.decisionExpandedView === "matrix" ? "is-active" : ""}" data-expanded-view="matrix">Overlap Matrix (${overlapMatrix.sharedRowCount} shared)</button>
+      </div>
+    `
+    : "";
+
   const navHtml = `
     <div class="decision-ai-navigation">
       <button type="button" class="decision-ai-back" data-decision-back="true">&larr; Factors</button>
       ${switcherHtml}
+      ${viewModeSwitcherHtml}
       <button type="button" class="decision-ai-expand" data-decision-expand="true" aria-pressed="${state.decisionPanelExpanded}">${state.decisionPanelExpanded ? "Return to map" : "Expand"}</button>
     </div>
   `;
@@ -4508,7 +4939,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
   const heuristicClaudeEffect = Boolean(candidateEffect && candidateEffect !== mapEffect && candidateEffect !== cleanText(factor.investmentImpact));
   const hasClaudeFactorEffect = claudeAnalyzed && effectSource !== "map-fallback" && effectSource !== "fallback" &&
     (effectSource === "anthropic" || (!effectSource && heuristicClaudeEffect));
-  const decisionImpact = hasClaudeFactorEffect ? candidateEffect : (mapEffect || "No verified signal mapped in this factor.");
+  const decisionImpact = cleanInstitutionalProseNames(hasClaudeFactorEffect ? candidateEffect : (mapEffect || "No verified signal mapped in this factor."));
 
   const evidenceData = getDecisionFactorEvidence(state.bridgeMap, factor);
   const sourceById = collectDecisionSourceMap(state.bridgeMap, [...evidenceData.sources, ...asList(res?.analysisInput?.sources)]);
@@ -4528,26 +4959,14 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
   const mapProvMix = computeMapUniqueProvenance(state.bridgeMap, sourceById);
   const decisionEffectSourceIds = asList(factorAnalysis?.decisionEffect?.sourceIds);
 
-  const renderCitations = (sourceIds, max = 3) => asList(sourceIds)
-    .slice(0, max)
-    .map((id) => {
-      const source = sourceById.get(String(id));
-      const label = cleanText(source?.publisher || source?.title || `Cala source ${id}`);
-      const fullTitle = cleanText(source?.title || label);
-      const url = cleanText(source?.url || source?.document || "");
-      const safeUrl = /^https?:\/\//i.test(url) ? url : "";
-      return safeUrl
-        ? `<a class="ai-cite-pill is-link" href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(fullTitle)}">${escapeHtml(label)} &#8599;</a>`
-        : `<span class="ai-cite-pill" title="${escapeHtml(fullTitle)}">${escapeHtml(label)}</span>`;
-    })
-    .join("");
+  const renderCitations = buildDecisionSourceRenderFn(sourceById);
 
   const reasoningList = claudeAnalyzed ? asList(factorAnalysis?.reasoning).slice(0, 3) : [];
   const sourceIdsForFactor = new Set(submittedSourceIds);
   const factorInsights = asList(res?.insights).filter((item) =>
     asList(item.sourceIds).some((id) => sourceIdsForFactor.has(String(id)))
   );
-  const factorNextCheck = cleanText(factorAnalysis?.nextCheck || factor.actionableCheck || GROUP_DECISION_QUESTIONS[factor.group]);
+  const factorNextCheck = cleanInstitutionalProseNames(cleanText(factorAnalysis?.nextCheck || factor.actionableCheck || GROUP_DECISION_QUESTIONS[factor.group]));
   const fallbackLimitation = submittedRecords.length
     ? "Mapped relationships confirm network existence only; they do not establish product quality, revenue traction, or commercial terms."
     : "No mapped Cala records were returned for this factor; verify outside Cala before deciding.";
@@ -4644,7 +5063,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
 
   const roleSubtitle = factor.displayLabel || FACTOR_ROLE_SUBTITLES[factor.group] || `${factor.label} Signal Profile`;
   const factorQuestion = factor.sectionQuestion || FACTOR_QUESTION_LABELS[factor.group] || roleSubtitle;
-  const factorHeadline = cleanText(factorAnalysis?.headline) || roleSubtitle;
+  const factorHeadline = cleanInstitutionalProseNames(cleanText(factorAnalysis?.headline) || roleSubtitle);
   const factorColor = getContributionColorHex(factor.group);
   const findingsList = asList(factorAnalysis?.findings);
 
@@ -4735,49 +5154,56 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
     const exec = summary.executive || {};
     const activeMode = exec.analysisMode || getActiveAnalysisMode(state.bridgeMap);
     const overallStance = getOverallStance(summary, res);
-    const icTakeaway = cleanText((claudeAnalyzed && res?.summary) || summary.investmentEffect);
+    const icTakeaway = cleanInstitutionalProseNames(cleanText((claudeAnalyzed && res?.summary) || summary.investmentEffect));
     const expDrawers = state.decisionExpandedOpenDrawers || { icThesis: false, reasoning: false, sourcesList: false, hygiene: false };
     const ptsCount = reasoningList.length || Math.min(2, submittedRecords.length);
 
-    const rawMergedRecords = mergeExpandedConnectionRecords(submittedRecords, factor.group, state.bridgeMap);
-    const displayRecords = [...rawMergedRecords].sort((a, b) => {
-      const sa = state.starredConnectionKeys.has(connectionStarKey(a)) ? 1 : 0;
-      const sb = state.starredConnectionKeys.has(connectionStarKey(b)) ? 1 : 0;
-      return sb - sa;
-    });
-    const starredInViewCount = displayRecords.filter((rec) => state.starredConnectionKeys.has(connectionStarKey(rec))).length;
-    const compactConnectionRowsHtml = displayRecords.length
-      ? `<div class="decision-ai-evidence-list is-compact-table">${displayRecords.slice(0, 6).map((rec) => {
-          const canFocus = Boolean(rec.edgeId || rec.nodeId);
-          const inspectableNodeId = rec.nodeId && !String(rec.nodeId).startsWith("caution:") ? rec.nodeId : "";
-          const starKey = connectionStarKey(rec);
-          const isStarred = state.starredConnectionKeys.has(starKey);
-          const displayPath = formatInstitutionalPath(rec.path);
-          const analystInsight = deriveConnectionAnalystInsight(rec, factor.group, findingsList);
-          const roleTag = getConnectionRoleTag(rec, state.bridgeMap);
-          const cardCitesHtml = renderCitations(rec.sourceIds, 2);
-          return `
-            <article class="decision-ai-evidence-row is-insight-card ${isStarred ? "is-starred-ic" : ""}">
-              <div class="decision-insight-card-top">
-                <strong class="decision-compact-path" title="${escapeHtml(rec.path)}">${escapeHtml(displayPath)}</strong>
-                <div class="decision-card-actions">
-                  <button type="button" class="decision-star-btn ${isStarred ? "is-starred" : ""}" data-star-connection-key="${escapeHtml(starKey)}" aria-pressed="${isStarred}" title="${isStarred ? "Remove IC flag" : "Flag connection for IC memo"}">${isStarred ? "&#9733; Flagged" : "&#9734; Flag"}</button>
-                  ${inspectableNodeId ? `<button type="button" class="decision-focus-btn" data-inspect-node-id="${escapeHtml(inspectableNodeId)}">Inspect</button>` : ""}
-                  ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Focus map</button>` : ""}
-                </div>
-              </div>
-              <div class="decision-insight-card-badges">
-                <span class="decision-role-tag ${escapeHtml(roleTag.cls)}">${escapeHtml(roleTag.label)}</span>
-                ${rec.isSharedBridge ? `<span class="decision-badge-shared">Shared</span>` : ""}
-                ${rec.date ? `<span class="decision-date-tag">${escapeHtml(rec.date)}</span>` : ""}
-                <span class="source-tier" data-tier="${escapeHtml(rec.sourceRank || "AGGREGATOR")}">${escapeHtml(rec.sourceRank || "AGG")}</span>
-              </div>
-              <p class="decision-connection-meaning">${escapeHtml(analystInsight)}</p>
-              ${cardCitesHtml ? `<div class="decision-card-cites">${cardCitesHtml}</div>` : ""}
-            </article>
-          `;
-        }).join("")}</div>`
-      : `<div class="decision-ai-no-chart">No mapped relationship records for this factor.</div>`;
+    // Full deduplicated ledger across all verified edges matching this factor
+    const allMergedRecords = mergeExpandedConnectionRecords(evidenceData.records, factor.group, state.bridgeMap);
+    const ledgerCtx = {
+      summary,
+      factor,
+      findingsList,
+      sourceById,
+      renderCitations,
+      allMerged: allMergedRecords,
+      filtered: filterAndSortLedgerRecords(allMergedRecords, {
+        query: state.decisionLedgerQuery,
+        filter: state.decisionLedgerFilter,
+        sort: state.decisionLedgerSort,
+        starredKeys: state.starredConnectionKeys
+      })
+    };
+    const starredInViewCount = allMergedRecords.filter((rec) => state.starredConnectionKeys.has(connectionStarKey(rec))).length;
+    const ledgerBodyHtml = renderDecisionLedgerBodyHtml(ledgerCtx);
+    const filterChipCfg = [
+      ["all", "All"],
+      ["shared", "Shared"],
+      ["filing", "FILING"],
+      ["recent", "<=18m"],
+      ["starred", "Flagged"]
+    ];
+    const ledgerToolbarHtml = `
+      <div class="decision-ledger-toolbar" id="decisionLedgerToolbar">
+        <div class="decision-ledger-top-inputs">
+          <input type="search" id="decisionLedgerSearch" class="decision-ledger-search" value="${escapeHtml(state.decisionLedgerQuery)}" placeholder="Search link, investor, person, date..." aria-label="Search verified connections" />
+          <select id="decisionLedgerSort" class="decision-ledger-sort" aria-label="Sort connections">
+            <option value="signal" ${state.decisionLedgerSort === "signal" ? "selected" : ""}>Sort: Signal</option>
+            <option value="tier" ${state.decisionLedgerSort === "tier" ? "selected" : ""}>Sort: Source Tier</option>
+            <option value="date" ${state.decisionLedgerSort === "date" ? "selected" : ""}>Sort: Date</option>
+            <option value="hubs" ${state.decisionLedgerSort === "hubs" ? "selected" : ""}>Sort: Shared Hubs</option>
+            <option value="name" ${state.decisionLedgerSort === "name" ? "selected" : ""}>Sort: Name A-Z</option>
+          </select>
+          <div class="decision-ledger-mode-btns" role="group" aria-label="Connections layout">
+            <button type="button" class="decision-ledger-chip ${state.decisionLedgerMode !== "table" ? "is-active" : ""}" data-ledger-mode="cards">Cards</button>
+            <button type="button" class="decision-ledger-chip ${state.decisionLedgerMode === "table" ? "is-active" : ""}" data-ledger-mode="table">Table</button>
+          </div>
+        </div>
+        <div class="decision-ledger-chips" role="group" aria-label="Filter verified connections">
+          ${filterChipCfg.map(([k, lbl]) => `<button type="button" class="decision-ledger-chip ${state.decisionLedgerFilter === k ? "is-active" : ""}" data-ledger-filter="${k}">${escapeHtml(lbl)}</button>`).join("")}
+        </div>
+      </div>
+    `;
 
     const modeBadgeLabel = activeMode === "single_teardown"
       ? "Single-Company Teardown"
@@ -4838,12 +5264,43 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
     );
 
     const snapshotHtml = buildExpandedModeSnapshotHtml(summary, factor, activeMode);
-    const connCountMeta = displayRecords.length < factor.count
-      ? `${displayRecords.length} key links (${factor.count} paths)`
-      : `${displayRecords.length} verified link${displayRecords.length === 1 ? "" : "s"}`;
+    const catalystTimelineHtml = factor.group === "timing" ? buildCatalystTimelineHtml(state.bridgeMap, sourceById) : "";
+    const connCountMeta = ledgerCtx.filtered.length === allMergedRecords.length
+      ? `${allMergedRecords.length} verified link${allMergedRecords.length === 1 ? "" : "s"}`
+      : `${ledgerCtx.filtered.length} of ${allMergedRecords.length} shown`;
 
     const mapVerifiedPctDisplay = mapProvMix.total > 0 ? mapProvMix.verifiedSharePct : Number(exec.verifiedSharePct || 0);
     const mapSourceCountDisplay = mapProvMix.total > 0 ? `${mapProvMix.total} sources` : `${submittedSourceIds.length} cited`;
+
+    const workspaceContentHtml = (overlapMatrix && state.decisionExpandedView === "matrix")
+      ? buildOverlapMatrixPanelHtml(overlapMatrix)
+      : `
+        <div class="decision-workspace-grid">
+          <div class="decision-col-primary">
+            <section class="decision-ai-factor-panel is-hero-panel" aria-label="${escapeHtml(factor.label)} analysis">
+              ${factorHeadHtml}
+              ${takeawayBlockHtml}
+              ${expandedReasoningDrawerHtml}
+              ${analysisMessage}
+            </section>
+            ${catalystTimelineHtml}
+            ${snapshotHtml}
+          </div>
+          <div class="decision-col-evidence">
+            <section class="decision-evidence-panel">
+              <div class="decision-panel-subhead"><strong>Key Connections &amp; What They Mean</strong><span id="decisionLedgerMeta">${escapeHtml(connCountMeta)}</span></div>
+              ${ledgerToolbarHtml}
+              <div id="decisionLedgerBody">${ledgerBodyHtml}</div>
+            </section>
+            <section class="decision-evidence-panel">
+              <div class="decision-panel-subhead"><strong>Evidence Provenance &amp; Sources</strong><span>Lens: ${submittedSourceIds.length} Cala sources · ${provMixForDisplay.verifiedSharePct ?? 0}% Filing/Primary</span></div>
+              <div class="decision-cala-assurance"><span class="cala-trust-dot" aria-hidden="true"></span><span>Contributed strictly by <strong>real, verified Cala Knowledge Graph records &amp; filings</strong> — zero synthetic estimates.</span></div>
+              ${provBarHtml}
+              ${expandedSourcesDrawerHtml}
+            </section>
+          </div>
+        </div>
+      `;
 
     outEl.innerHTML = `
       ${navHtml}
@@ -4862,29 +5319,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
         ${expandedModeControlsHtml}
         ${buildAnalystExportToolbarHtml(starredInViewCount || state.starredConnectionKeys.size)}
       </div>
-      <div class="decision-workspace-grid">
-        <div class="decision-col-primary">
-          <section class="decision-ai-factor-panel is-hero-panel" aria-label="${escapeHtml(factor.label)} analysis">
-            ${factorHeadHtml}
-            ${takeawayBlockHtml}
-            ${expandedReasoningDrawerHtml}
-            ${analysisMessage}
-          </section>
-          ${snapshotHtml}
-        </div>
-        <div class="decision-col-evidence">
-          <section class="decision-evidence-panel">
-            <div class="decision-panel-subhead"><strong>Key Connections &amp; What They Mean</strong><span>${escapeHtml(connCountMeta)}</span></div>
-            ${compactConnectionRowsHtml}
-          </section>
-          <section class="decision-evidence-panel">
-            <div class="decision-panel-subhead"><strong>Evidence Provenance &amp; Sources</strong><span>Lens: ${submittedSourceIds.length} Cala sources · ${provMixForDisplay.verifiedSharePct ?? 0}% Filing/Primary</span></div>
-            <div class="decision-cala-assurance"><span class="cala-trust-dot" aria-hidden="true"></span><span>Contributed strictly by <strong>real, verified Cala Knowledge Graph records &amp; filings</strong> — zero synthetic estimates.</span></div>
-            ${provBarHtml}
-            ${expandedSourcesDrawerHtml}
-          </section>
-        </div>
-      </div>
+      ${workspaceContentHtml}
     `;
     return;
   }
@@ -5970,9 +6405,13 @@ async function runEntityMapAnalysis(entityRefs, options = {}) {
     state.entityProfiles = result.bridgeMap?.entityProfiles || {};
     state.bridgeMap = result.bridgeMap || null;
     state.analysis = result;
-    state.decisionSelectedFactor = options.selectedFactor || "access";
-    state.decisionAnalysisRequestId += 1;
     const preserveExpanded = Boolean(options.preserveExpanded);
+    state.decisionSelectedFactor = options.selectedFactor || "access";
+    if (!preserveExpanded) {
+      state.decisionExpandedView = "factors";
+    }
+    state.decisionLedgerShowAll = false;
+    state.decisionAnalysisRequestId += 1;
     state.decisionAnalysisStarted = preserveExpanded;
     state.decisionDetailView = preserveExpanded;
     setDecisionPanelExpanded(preserveExpanded);
@@ -6739,7 +7178,7 @@ function renderConnectionInspectorBody(dossier) {
           (row) => `
           <div class="timeline-item">
             ${row.date ? `<time>${escapeHtml(row.date)}</time>` : ""}
-            <div style="flex:1 1 200px; min-width:0;">
+            <div style="flex:1 1 140px; min-width:0;">
               ${row.label ? `<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:2px;">${escapeHtml(row.label)}</div>` : ""}
               <strong>${escapeHtml(row.fact)}</strong>
             </div>
@@ -6817,8 +7256,22 @@ function renderConnectionInspectorBody(dossier) {
           .join("")}</ul>`
       : `<p class="dossier-empty">Verified in Cala Knowledge Graph at entity relationship level${edge.date ? ` (${escapeHtml(edge.date)})` : ""}; no external article URL is attached in Cala.</p>`;
 
+  const connSummaryText = cleanText(ctx.whyMatters || edge.detail);
+  const connSummaryHtml = connSummaryText
+    ? `
+      <section class="dossier-section dossier-about-card">
+        <div class="dossier-section-head-row">
+          <h3>Summary</h3>
+          <span class="source-tier" data-tier="${escapeHtml(connectionTierBadge(edge))}">${escapeHtml(connectionTierBadge(edge))}</span>
+        </div>
+        <p class="dossier-about-text">${escapeHtml(connSummaryText)}</p>
+      </section>
+    `
+    : "";
+
   return `
     ${pivotActionsHtml}
+    ${connSummaryHtml}
     ${renderAiInsightSection(dossier)}
     <section class="dossier-section">
       <h3>Verified Cala Roles &amp; Facts (${siblings.length})</h3>
@@ -6900,7 +7353,7 @@ function renderDossierTabContent(dossier) {
           { label: "Headquarters", value: populatedValue(data.headquarters || data.hq || data.hqCity || data.address) },
           { label: "Country", value: populatedValue(data.country) },
           { label: "Founded", value: populatedValue(data.founded || data.foundingDate) },
-          { label: "Status", value: populatedValue(data.operationalStatus || data.status || data.ownershipStatus) },
+          { label: "Status", value: formatOperationalStatus(populatedValue(data.operationalStatus || data.status || data.ownershipStatus)) },
           { label: "Website", value: populatedValue(data.website || data.domain || data.url) },
           { label: "Listing or Parent", value: populatedValue(data.listing || data.parentCompany || data.parent || data.acquiredBy) }
         ];
@@ -6932,6 +7385,21 @@ function renderDossierTabContent(dossier) {
       </div>
     `;
 
+    const aboutText = cleanText(data.description || data.summary);
+    const overviewTier = dossierTier(data);
+    const aboutTier = overviewTier !== MISSING ? overviewTier : "CALA GRAPH";
+    const aboutHtml = aboutText
+      ? `
+      <section class="dossier-section dossier-about-card">
+        <div class="dossier-section-head-row">
+          <h3>About</h3>
+          <span class="source-tier" data-tier="${escapeHtml(aboutTier)}">${escapeHtml(aboutTier)}</span>
+        </div>
+        <p class="dossier-about-text">${escapeHtml(aboutText)}</p>
+      </section>
+    `
+      : "";
+
     const topConnPreview = (remoteConns.length ? remoteConns : mapEdges).slice(0, state.dossierExpanded ? 3 : 4);
     const previewHtml = topConnPreview.length
       ? `
@@ -6947,8 +7415,9 @@ function renderDossierTabContent(dossier) {
               if (isRemote) {
                 const pathSteps = asList(item.path).map((s) => formatReadableEntityLabel(nameOf(s))).filter(Boolean);
                 const title = pathSteps.length ? pathSteps.join(" \u2192 ") : cleanText(item.entityName || item.name) || MISSING;
-                const rel = cleanText(item.relation || item.relationship || item.connectionType);
-                const tier = tierOf(item);
+                const rawRel = cleanText(item.relation || item.relationship || item.connectionType);
+                const rel = formatDossierRelationLabel(rawRel, item.direction);
+                const tier = connectionTierBadge(item);
                 return `
                   <button type="button" class="group-entry" data-focus-connection="${idx}">
                     <div class="group-entry-top">
@@ -6962,14 +7431,14 @@ function renderDossierTabContent(dossier) {
               const otherId = item.from === node.id ? item.to : item.from;
               const other = (state.bridgeMap?.nodes || []).find((n) => n.id === otherId);
               const title = `${formatReadableEntityLabel(nameOf(node))} \u2192 ${formatReadableEntityLabel(nameOf(other || { id: otherId }))}`;
-              const tier = tierOf(item);
+              const tier = connectionTierBadge(item);
               return `
                 <button type="button" class="group-entry" data-focus-edge="${escapeHtml(item.id)}" data-focus-node="${escapeHtml(otherId)}">
                   <div class="group-entry-top">
                     <strong>${escapeHtml(title)}</strong>
                     <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
                   </div>
-                  <span>${escapeHtml(cleanText(item.detail || item.label || ""))}</span>
+                  <span>${escapeHtml(cleanText(item.detail || formatDossierRelationLabel(item.label || "")))}</span>
                 </button>
               `;
             })
@@ -6986,10 +7455,11 @@ function renderDossierTabContent(dossier) {
       ${loading}
       ${kpiHtml}
       ${state.dossierExpanded ? renderAiInsightSection(dossier) : ""}
+      ${aboutHtml}
       <section class="dossier-section">
         <div class="dossier-section-head-row">
           <h3>Identity</h3>
-          <span class="source-tier" data-tier="${escapeHtml(dossierTier(data))}">${escapeHtml(dossierTier(data))}</span>
+          <span class="source-tier" data-tier="${escapeHtml(aboutTier)}">${escapeHtml(aboutTier)}</span>
         </div>
         <div class="fact-grid">
           ${displayCards.map((f) => factCardHtml(f.label, f.value, data)).join("")}
@@ -6997,12 +7467,6 @@ function renderDossierTabContent(dossier) {
         ${aliasHtml}
         ${missing.length ? `<p class="dossier-missing-line"><span>Not indexed in Cala yet:</span> ${escapeHtml(missing.map((f) => f.label).join(" · "))}</p>` : ""}
       </section>
-      ${state.dossierExpanded ? `
-        <section class="dossier-section">
-          <h3>Cala Summary</h3>
-          <p class="dossier-empty">${escapeHtml(cleanText(data.description || data.summary) || MISSING)}</p>
-        </section>
-      ` : ""}
       ${previewHtml}
       ${!state.dossierExpanded ? renderAiInsightSection(dossier) : ""}
     `;
@@ -7106,7 +7570,7 @@ function renderDossierTabContent(dossier) {
         ${investors.length
           ? `<ul class="data-list">${investors
               .map((inv) => {
-                const tier = tierOf(inv);
+                const tier = connectionTierBadge(inv);
                 const roleMeta = [cleanText(inv.role), cleanText(inv.eventDate || inv.date)].filter(Boolean).join(" · ");
                 return `<li><div>${clickableChipHtml(nameOf(inv), inv, "data-open-investor")}${roleMeta ? ` <span class="cell-muted" style="font-size:12px;margin-left:6px;">${escapeHtml(roleMeta)}</span>` : ""}</div><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></li>`;
               })
@@ -7116,7 +7580,7 @@ function renderDossierTabContent(dossier) {
       <section class="dossier-section">
         <h3>Portfolio &amp; Corporate Holdings (${portfolio.length + fallback.length})</h3>
         ${portfolio.length || fallback.length
-          ? `<ul class="data-list">${portfolio.map((item) => `<li>${clickableChipHtml(nameOf(item), item, "data-open-investor")}<span class="source-tier" data-tier="${escapeHtml(tierOf(item))}">${escapeHtml(tierOf(item))}</span></li>`).join("")}${fallback.map((item) => `<li><span>${escapeHtml(recordText(item))}</span></li>`).join("")}</ul>`
+          ? `<ul class="data-list">${portfolio.map((item) => `<li>${clickableChipHtml(nameOf(item), item, "data-open-investor")}<span class="source-tier" data-tier="${escapeHtml(connectionTierBadge(item))}">${escapeHtml(connectionTierBadge(item))}</span></li>`).join("")}${fallback.map((item) => `<li><span>${escapeHtml(recordText(item))}</span></li>`).join("")}</ul>`
           : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`}
       </section>
     `;
@@ -7127,10 +7591,11 @@ function renderDossierTabContent(dossier) {
       const edgesInGrp = mapEdges.filter((e) => getNodeContributionGroup(e) === q.group);
       const remoteInGrp = remoteConns.filter((c) => deriveContributionGroupFrontend(c) === q.group);
       const items = [
-        ...edgesInGrp.map((e) => cleanText(e.detail || e.label || "")),
+        ...edgesInGrp.map((e) => cleanText(e.detail || formatDossierRelationLabel(e.label || ""))),
         ...remoteInGrp.map((c) => {
           const steps = asList(c.path).map((s) => formatReadableEntityLabel(nameOf(s))).filter(Boolean);
-          return steps.length ? `${steps.join(" \u2192 ")} (${cleanText(c.relation || c.connectionType)})` : cleanText(c.relation || c.relationship);
+          const niceRel = formatDossierRelationLabel(c.relation || c.connectionType, c.direction);
+          return steps.length ? `${steps.join(" \u2192 ")} (${niceRel})` : niceRel;
         })
       ].filter(Boolean);
       const uniqueItems = [...new Set(items)];
@@ -7143,7 +7608,7 @@ function renderDossierTabContent(dossier) {
         <div class="dossier-group-card">
           <div class="dossier-group-head">
             <span class="tip-lens-badge" data-group="${escapeHtml(q.group)}">${escapeHtml(q.label)}</span>
-            ${uniqueItems.length ? `<span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>` : ""}
+            ${uniqueItems.length ? `<span class="source-tier" data-tier="${escapeHtml(tier !== MISSING ? tier : "CALA GRAPH")}">${escapeHtml(tier !== MISSING ? tier : "CALA GRAPH")}</span>` : ""}
           </div>
           ${listHtml}
         </div>
@@ -7155,8 +7620,8 @@ function renderDossierTabContent(dossier) {
           .map((c, idx) => {
             const pathSteps = asList(c.path).map((step) => formatReadableEntityLabel(nameOf(step))).filter(Boolean);
             const title = pathSteps.length ? pathSteps.join(" \u2192 ") : cleanText(c.entityName || c.name || c.label) || MISSING;
-            const rel = cleanText(c.relation || c.relationship || c.connectionType) || MISSING;
-            const tier = tierOf(c);
+            const rel = formatDossierRelationLabel(c.relation || c.relationship || c.connectionType, c.direction);
+            const tier = connectionTierBadge(c);
             const badge = c.connectionType === "shared_bridge" ? "2-hop Shared Bridge" : "Direct 1-hop";
             return `
               <button type="button" class="group-entry" data-focus-connection="${idx}">
@@ -7175,14 +7640,14 @@ function renderDossierTabContent(dossier) {
               const otherId = e.from === node.id ? e.to : e.from;
               const other = (state.bridgeMap?.nodes || []).find((n) => n.id === otherId);
               const title = `${formatReadableEntityLabel(nameOf(node))} \u2192 ${formatReadableEntityLabel(nameOf(other || { id: otherId }))}`;
-              const tier = tierOf(e);
+              const tier = connectionTierBadge(e);
               return `
                 <button type="button" class="group-entry" data-focus-edge="${escapeHtml(e.id)}" data-focus-node="${escapeHtml(otherId)}">
                   <div class="group-entry-top">
                     <strong>${escapeHtml(title)}</strong>
                     <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
                   </div>
-                  <span>${escapeHtml(cleanText(e.detail || MISSING))}</span>
+                  <span>${escapeHtml(cleanText(e.detail || formatDossierRelationLabel(e.label || "")))}</span>
                 </button>
               `;
             })
@@ -7291,10 +7756,10 @@ function mapEdgesForNode(node) {
 const DOSSIER_TAB_LABELS = {
   overview: "Overview",
   people: "People",
-  funding: "Funding & Investors",
+  funding: "Funding",
   connections: "Connections",
   timeline: "Timeline",
-  sources: "Sources & Gaps"
+  sources: "Sources"
 };
 
 function renderDossier(options = {}) {
@@ -7302,6 +7767,7 @@ function renderDossier(options = {}) {
   if (!d) return;
 
   const tabsEl = $(".dossier-tabs");
+  const actionsRow = $("#dossierActionsRow");
   const showMapBtn = $("#dossierShowMapBtn");
   const centerBtn = $("#dossierCenterBtn");
   const addBtn = $("#dossierAddBtn");
@@ -7311,14 +7777,15 @@ function renderDossier(options = {}) {
 
   if (d.mode === "connection") {
     const { edge, ctx } = d;
-    const { cgMeta, group, fromName, toName, fromType, toType, siblings, rank, arrowSymbol, whyMatters } = ctx;
+    const { cgMeta, group, fromName, toName, fromType, toType, siblings, rank, arrowSymbol } = ctx;
+    const badgeTier = rank && rank !== MISSING ? rank : "CALA GRAPH";
     $("#dossierInitials").textContent = cgMeta.headerLabel.slice(0, 2);
     $("#dossierTitle").textContent = `${fromName} ${arrowSymbol} ${toName}`;
     $("#dossierTypeBadge").textContent = `${cgMeta.headerLabel} Connection`;
     $("#dossierTypeBadge").dataset.group = group;
     if (tierEl) {
-      tierEl.textContent = rank;
-      tierEl.dataset.tier = rank;
+      tierEl.textContent = badgeTier;
+      tierEl.dataset.tier = badgeTier;
     }
     const metaParts = [
       fromType && toType ? `${fromType} ${arrowSymbol} ${toType}` : "",
@@ -7326,9 +7793,9 @@ function renderDossier(options = {}) {
       cleanText(edge.date || edge.roundDate)
     ].filter(Boolean);
     $("#dossierMeta").textContent = metaParts.join(" · ") || "Verified Cala Connection";
-    $("#dossierDescription").textContent = whyMatters || cleanText(edge.detail) || MISSING;
 
     if (tabsEl) tabsEl.hidden = true;
+    if (actionsRow) actionsRow.hidden = true;
     if (backBtn) backBtn.hidden = !d.history.length;
     if (showMapBtn) showMapBtn.hidden = true;
     if (centerBtn) centerBtn.hidden = true;
@@ -7342,7 +7809,8 @@ function renderDossier(options = {}) {
 
   const { data, node } = d;
   const displayName = formatReadableEntityLabel(nameOf(data), data.date);
-  const tier = dossierTier(data);
+  const rawTier = dossierTier(data);
+  const tier = rawTier !== MISSING ? rawTier : "CALA GRAPH";
 
   $("#dossierInitials").textContent = initialsOf(displayName);
   $("#dossierTitle").textContent = displayName;
@@ -7355,12 +7823,12 @@ function renderDossier(options = {}) {
   const metaParts = [
     populatedValue(data.headquarters || data.hq || data.hqCity || data.address || data.country),
     populatedValue(data.founded || data.foundingDate),
-    populatedValue(data.operationalStatus || data.status || data.role || data.title)
+    formatOperationalStatus(populatedValue(data.operationalStatus || data.status || data.role || data.title))
   ].filter(Boolean);
   $("#dossierMeta").textContent = metaParts.join(" · ") || typeBadge(data);
-  $("#dossierDescription").textContent = cleanText(data.description || data.summary) || MISSING;
 
   if (tabsEl) tabsEl.hidden = false;
+  if (actionsRow) actionsRow.hidden = false;
   if (showMapBtn) showMapBtn.hidden = false;
   if (centerBtn) centerBtn.hidden = false;
   if (backBtn) backBtn.hidden = !d.history.length;
@@ -7699,6 +8167,49 @@ function bindFilterAndHudEvents() {
   });
   $("#decisionSummaryCloseBtn")?.addEventListener("click", closeDecisionPopover);
   $("#decisionAiOutput")?.addEventListener("click", (e) => {
+    const viewBtn = e.target.closest("[data-expanded-view]");
+    if (viewBtn) {
+      const nextView = viewBtn.dataset.expandedView === "matrix" ? "matrix" : "factors";
+      if (state.decisionExpandedView !== nextView) {
+        state.decisionExpandedView = nextView;
+        renderDecisionFactorAnalysis();
+      }
+      return;
+    }
+    const ledgerFilterBtn = e.target.closest("[data-ledger-filter]");
+    if (ledgerFilterBtn) {
+      state.decisionLedgerFilter = ledgerFilterBtn.dataset.ledgerFilter || "all";
+      state.decisionLedgerShowAll = false;
+      updateDecisionLedgerInPlace();
+      return;
+    }
+    const ledgerModeBtn = e.target.closest("[data-ledger-mode]");
+    if (ledgerModeBtn) {
+      state.decisionLedgerMode = ledgerModeBtn.dataset.ledgerMode === "table" ? "table" : "cards";
+      state.decisionLedgerShowAll = false;
+      updateDecisionLedgerInPlace();
+      return;
+    }
+    if (e.target.closest("[data-ledger-show-all]")) {
+      state.decisionLedgerShowAll = !state.decisionLedgerShowAll;
+      updateDecisionLedgerInPlace();
+      return;
+    }
+    if (e.target.closest("[data-ledger-reset]")) {
+      state.decisionLedgerQuery = "";
+      state.decisionLedgerFilter = "all";
+      state.decisionLedgerShowAll = false;
+      const inp = $("#decisionLedgerSearch");
+      if (inp) inp.value = "";
+      updateDecisionLedgerInPlace();
+      return;
+    }
+    const matrixFilterBtn = e.target.closest("[data-matrix-filter]");
+    if (matrixFilterBtn) {
+      state.matrixRoleFilter = matrixFilterBtn.dataset.matrixFilter || "all";
+      updateOverlapMatrixInPlace();
+      return;
+    }
     const starBtn = e.target.closest("[data-star-connection-key]");
     if (starBtn) {
       const listEl = $("#decisionAiOutput .decision-ai-evidence-list");
@@ -7754,9 +8265,13 @@ function bindFilterAndHudEvents() {
     const switchBtn = e.target.closest("[data-switch-factor]");
     if (switchBtn) {
       const grp = switchBtn.dataset.switchFactor;
+      state.decisionExpandedView = "factors";
+      state.decisionLedgerShowAll = false;
       if (grp && grp !== state.decisionSelectedFactor) {
         resetDecisionPopoverScroll();
         runFourFactorClaudeInsight(grp);
+      } else {
+        renderDecisionFactorAnalysis();
       }
       return;
     }
@@ -7801,6 +8316,24 @@ function bindFilterAndHudEvents() {
       resetDecisionPopoverScroll();
       renderDecisionSummaryWidget();
       $("[data-decision-expand]")?.focus();
+    }
+  });
+  $("#decisionAiOutput")?.addEventListener("input", (e) => {
+    if (e.target.id === "decisionLedgerSearch") {
+      state.decisionLedgerQuery = e.target.value || "";
+      state.decisionLedgerShowAll = false;
+      updateDecisionLedgerInPlace();
+      return;
+    }
+    if (e.target.id === "matrixSearchInput") {
+      state.matrixQuery = e.target.value || "";
+      updateOverlapMatrixInPlace();
+    }
+  });
+  $("#decisionAiOutput")?.addEventListener("change", (e) => {
+    if (e.target.id === "decisionLedgerSort") {
+      state.decisionLedgerSort = e.target.value || "signal";
+      updateDecisionLedgerInPlace();
     }
   });
   $("#decisionBridgeStrip")?.addEventListener("click", (e) => {

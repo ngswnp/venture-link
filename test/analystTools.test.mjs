@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import {
   formatInstitutionalEntityName,
   formatInstitutionalPath,
+  cleanInstitutionalProseNames,
+  filterAndSortLedgerRecords,
+  buildCrossEntityOverlapMatrix,
+  buildOverlapMatrixCsv,
+  buildChronologicalCatalystTimeline,
   matchClaudeFindingToRecord,
   computeMapUniqueProvenance,
   connectionStarKey,
@@ -203,4 +208,102 @@ test('buildShareableWorkspaceUrl & parseShareableWorkspaceParams round-trip clea
     mapTerms: [],
     perspectiveTerm: null
   });
+});
+
+test('cleanInstitutionalProseNames normalizes multi-word ALL-CAPS entities without touching short acronyms', () => {
+  const input = 'Shared backers (BAILLIE GIFFORD & CO, CISCO SYSTEMS, INC.) filed SEC 13F forms with M&A disclosures.';
+  const cleaned = cleanInstitutionalProseNames(input);
+  assert.equal(
+    cleaned,
+    'Shared backers (Baillie Gifford & Co, Cisco Systems, Inc.) filed SEC 13F forms with M&A disclosures.'
+  );
+});
+
+test('filterAndSortLedgerRecords supports keyword search, tier/shared/recent/starred filters, and sorts', () => {
+  const recA = {
+    path: 'Sequoia Capital → OpenAI & Anthropic',
+    canonicalFrom: 'Sequoia Capital',
+    canonicalTo: 'OpenAI & Anthropic',
+    relation: 'INVESTED_IN',
+    date: '2026-07-03',
+    sourceRank: 'PRIMARY',
+    isSharedBridge: true,
+    isRecentCatalyst: true,
+    sharedHubs: ['OpenAI', 'Anthropic'],
+    signalWeight: 1.4
+  };
+  const recB = {
+    path: 'BAILLIE GIFFORD & CO → Nvidia',
+    canonicalFrom: 'BAILLIE GIFFORD & CO',
+    canonicalTo: 'Nvidia',
+    relation: '13F Holding',
+    date: '2024-04-15',
+    sourceRank: 'FILING',
+    isSharedBridge: false,
+    isHistoricalMilestone: true,
+    sharedHubs: ['Nvidia'],
+    signalWeight: 1.0
+  };
+  const starred = new Set([connectionStarKey(recB)]);
+
+  assert.equal(filterAndSortLedgerRecords([recA, recB], { query: 'baillie' }).length, 1);
+  assert.equal(filterAndSortLedgerRecords([recA, recB], { filter: 'shared' }).length, 1);
+  assert.equal(filterAndSortLedgerRecords([recA, recB], { filter: 'filing' })[0].canonicalFrom, 'BAILLIE GIFFORD & CO');
+  assert.equal(filterAndSortLedgerRecords([recA, recB], { filter: 'starred', starredKeys: starred }).length, 1);
+  assert.equal(filterAndSortLedgerRecords([recA, recB], { sort: 'date' })[0].date, '2026-07-03');
+  assert.equal(filterAndSortLedgerRecords([recA, recB], { sort: 'signal', starredKeys: starred })[0].canonicalFrom, 'BAILLIE GIFFORD & CO');
+});
+
+test('buildCrossEntityOverlapMatrix & buildOverlapMatrixCsv compute intersection counts and clean CSV', () => {
+  const bridgeMap = {
+    focalEntities: [
+      { id: 'f1', name: 'OpenAI' },
+      { id: 'f2', name: 'Nvidia' },
+      { id: 'f3', name: 'Anthropic' }
+    ],
+    nodes: [
+      { id: 'f1', label: 'OpenAI', isFocalEntity: true },
+      { id: 'f2', label: 'Nvidia', isFocalEntity: true },
+      { id: 'f3', label: 'Anthropic', isFocalEntity: true },
+      { id: 'inv1', label: 'Sequoia Capital', entityType: 'Organization' },
+      { id: 'inv2', label: 'BAILLIE GIFFORD & CO', entityType: 'Organization' }
+    ],
+    edges: [
+      { id: 'e1', from: 'inv1', to: 'f1', label: 'Invested', structuralRole: 'capital', topSourceRank: 'PRIMARY', date: '2026-07-03' },
+      { id: 'e2', from: 'inv1', to: 'f2', label: 'Invested', structuralRole: 'capital', topSourceRank: 'PRIMARY' },
+      { id: 'e3', from: 'inv1', to: 'f3', label: 'Invested', structuralRole: 'capital', topSourceRank: 'FILING' },
+      { id: 'e4', from: 'inv2', to: 'f2', label: '13F Holder', structuralRole: 'capital', topSourceRank: 'FILING', date: '2026-03-31' }
+    ]
+  };
+  const matrix = buildCrossEntityOverlapMatrix(bridgeMap);
+  assert.equal(matrix.sharedRowCount, 1);
+  assert.equal(matrix.totalRowCount, 2);
+  assert.equal(matrix.rows[0].name, 'Sequoia Capital');
+  assert.equal(matrix.rows[0].sharedCount, 3);
+  assert.equal(matrix.rows[1].name, 'Baillie Gifford & Co');
+  assert.equal(matrix.rows[1].sharedCount, 1);
+
+  const csv = buildOverlapMatrixCsv(matrix);
+  assert.ok(csv.includes('Sequoia Capital,Organization,capital,3/3,FILING'));
+  assert.ok(csv.includes('Baillie Gifford & Co,Organization,capital,1/3,FILING,—,'));
+});
+
+test('buildChronologicalCatalystTimeline splits <=18m active vs >18m historical and extracts strict Cala amounts', () => {
+  const bridgeMap = {
+    referenceDate: '2026-11-20',
+    focalEntities: [{ id: 'f1', name: 'Anthropic' }],
+    nodes: [{ id: 'f1', label: 'Anthropic', isFocalEntity: true }],
+    timingEventsByEntity: {
+      f1: [
+        { title: 'Series G $30B Financing', date: '2026-02-12', topSourceRank: 'PRIMARY', sourceIds: ['s1'] },
+        { title: 'Seed Round Financing', date: '2021-05-01', topSourceRank: 'PRESS', sourceIds: ['s2'] }
+      ]
+    },
+    edges: []
+  };
+  const tl = buildChronologicalCatalystTimeline(bridgeMap, '2026-11-20');
+  assert.equal(tl.active.length, 1);
+  assert.equal(tl.active[0].amount, '$30B');
+  assert.equal(tl.historical.length, 1);
+  assert.equal(tl.historical[0].amount, '');
 });

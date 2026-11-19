@@ -743,26 +743,27 @@
             </div>
           </div>
 
-          <div class="drawer-header-right dossier-actions">
-            <button id="dossierShowMapBtn" type="button" class="btn sm">Locate on map</button>
-            <button id="dossierCenterBtn" type="button" class="btn sm">Focus only this</button>
-            <button id="dossierAddBtn" type="button" class="btn sm primary" hidden>+ Expand on map</button>
+          <div class="dossier-top-controls">
             <button id="dossierExpandBtn" type="button" class="btn sm" title="Expand to full dossier view" aria-pressed="false">Full</button>
             <button id="dossierCloseBtn" type="button" class="drawer-close-btn" aria-label="Close entity dossier">
               <span aria-hidden="true">&times;</span>
             </button>
           </div>
         </div>
-        <p class="dossier-description" id="dossierDescription">Not found in Cala</p>
+        <div class="drawer-header-right dossier-actions" id="dossierActionsRow">
+          <button id="dossierShowMapBtn" type="button" class="btn sm">Locate on map</button>
+          <button id="dossierCenterBtn" type="button" class="btn sm">Focus only this</button>
+          <button id="dossierAddBtn" type="button" class="btn sm primary" hidden>+ Expand on map</button>
+        </div>
       </header>
 
       <nav class="dossier-tabs" role="tablist" aria-label="Entity dossier sections">
         <button id="dossierTabOverview" type="button" class="dossier-tab is-active" role="tab" aria-selected="true" aria-controls="dossierBody" tabindex="0" data-dossier-tab="overview">Overview</button>
         <button id="dossierTabPeople" type="button" class="dossier-tab" role="tab" aria-selected="false" aria-controls="dossierBody" tabindex="-1" data-dossier-tab="people">People</button>
-        <button id="dossierTabFunding" type="button" class="dossier-tab" role="tab" aria-selected="false" aria-controls="dossierBody" tabindex="-1" data-dossier-tab="funding">Funding &amp; Investors</button>
+        <button id="dossierTabFunding" type="button" class="dossier-tab" role="tab" aria-selected="false" aria-controls="dossierBody" tabindex="-1" data-dossier-tab="funding">Funding</button>
         <button id="dossierTabConnections" type="button" class="dossier-tab" role="tab" aria-selected="false" aria-controls="dossierBody" tabindex="-1" data-dossier-tab="connections">Connections</button>
         <button id="dossierTabTimeline" type="button" class="dossier-tab" role="tab" aria-selected="false" aria-controls="dossierBody" tabindex="-1" data-dossier-tab="timeline">Timeline</button>
-        <button id="dossierTabSources" type="button" class="dossier-tab" role="tab" aria-selected="false" aria-controls="dossierBody" tabindex="-1" data-dossier-tab="sources">Sources &amp; Gaps</button>
+        <button id="dossierTabSources" type="button" class="dossier-tab" role="tab" aria-selected="false" aria-controls="dossierBody" tabindex="-1" data-dossier-tab="sources">Sources</button>
       </nav>
 
       <div id="dossierBody" class="dossier-body" role="tabpanel" aria-labelledby="dossierTabOverview" tabindex="0" aria-live="polite"></div>
