@@ -388,9 +388,9 @@ test('analyzeConnectionWithCitationGate returns detailed, record-grounded factor
 
   const result = await analyzeConnectionWithCitationGate(packet, { apiKey: 'test-key', cache: new Map(), fetchFn });
   assert.equal(requestedBody.model, 'claude-haiku-4-5-20251001');
-  assert.equal(requestedBody.max_tokens, 1800);
+  assert.equal(requestedBody.max_tokens, 2600);
   assert.equal(requestedBody.output_config.format.type, 'json_schema');
-  assert.deepEqual(requestedBody.output_config.format.schema.required, ['factorAnalyses', 'insights']);
+  assert.deepEqual(requestedBody.output_config.format.schema.required, ['overallStance', 'executiveTakeaway', 'factorAnalyses', 'insights']);
   assert.equal(result.controlPlaneMode, 'anthropic-connection-analyst');
   assert.equal(result.factorSummaries.length, 4);
   assert.equal(result.factorAnalyses.length, 4);
@@ -466,7 +466,7 @@ test('four-factor analysis retries truncated structured output and falls back af
   const result = await analyzeConnectionWithCitationGate(packet, { apiKey: 'test-key', cache: new Map(), fetchFn: retryingFetch });
   assert.equal(result.controlPlaneMode, 'anthropic-connection-analyst');
   assert.equal(calls, 2);
-  assert.equal(secondTokenLimit, 3600);
+  assert.equal(secondTokenLimit, 4200);
   assert.equal(result.factorAnalyses[0].reasoning.length, 1);
 
   calls = 0;

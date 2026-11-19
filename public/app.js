@@ -2791,22 +2791,26 @@ function renderDecisionSummaryWidget() {
   syncDecisionOverlayBodyClasses();
   const summary = buildFourFactorDecisionSummary(bridgeMap);
 
+  const res = currentDecisionAnalysisResult();
+  const stance = getOverallStance(summary, res);
+  const factorAnalysisMap = new Map(asList(res?.factorAnalyses).map((a) => [a.group, a]));
+
   if (pillDot) {
-    pillDot.className = `decision-pill-dot ${summary.overall.cls}`;
+    pillDot.className = `decision-pill-dot ${stance.cls}`;
   }
   if (pillLabel) {
-    const scoreTag = summary.executive?.evidenceScore ? ` · ${summary.executive.evidenceScore}/100` : "";
-    pillLabel.textContent = `Decision · ${summary.overall.label}${scoreTag}`;
+    pillLabel.textContent = `Decision · ${stance.label}`;
   }
   if (overallBadge) {
-    overallBadge.className = `decision-verdict-badge ${summary.overall.cls}`;
-    overallBadge.textContent = summary.overall.label;
+    overallBadge.className = `decision-verdict-badge ${stance.cls}`;
+    overallBadge.textContent = stance.label;
   }
   if (gradeBadge) {
     const hasExec = Boolean(summary.executive && summary.executive.provenanceMix?.total > 0);
     gradeBadge.hidden = !hasExec;
     if (hasExec) {
-      gradeBadge.textContent = `Score ${summary.executive.evidenceScore}/100 · Grade ${summary.executive.reliabilityGrade} · ${summary.executive.verifiedSharePct}% Verified`;
+      const totalPaths = summary.factors.reduce((sum, f) => sum + Number(f.count || 0), 0);
+      gradeBadge.textContent = `${sourceQualityPhrase(summary.executive.verifiedSharePct)} · ${totalPaths} verified paths`;
     }
   }
   if (!summary.factors.some((factor) => factor.group === state.decisionSelectedFactor)) {
@@ -2820,8 +2824,11 @@ function renderDecisionSummaryWidget() {
   pop?.classList.toggle("is-expanded", state.decisionPanelExpanded);
 
   factorList.innerHTML = summary.factors
-    .map(
-      (f) => `
+    .map((f) => {
+      const fa = factorAnalysisMap.get(f.group);
+      const verdict = getFactorVerdict(f, fa);
+      const headline = cleanText(fa?.headline) || f.line;
+      return `
       <button
         type="button"
         class="decision-factor-row ${state.decisionSelectedFactor === f.group ? "is-selected" : ""}"
@@ -2840,17 +2847,13 @@ function renderDecisionSummaryWidget() {
             ${f.sharedCount > 0 ? `<span class="decision-shared-micro">${f.sharedCount} shared</span>` : ""}
           </span>
           <span class="decision-factor-score-wrap">
-            <span class="decision-score-val">${f.signalStrength}</span>
-            <span class="decision-effect-pill ${escapeHtml(f.effectClass)}">${escapeHtml(f.effect)}</span>
+            <span class="decision-effect-pill ${escapeHtml(verdict.cls)}">${escapeHtml(verdict.label)}</span>
           </span>
         </div>
-        <div class="decision-score-track" aria-hidden="true">
-          <i style="width:${f.signalStrength > 0 ? Math.max(6, f.signalStrength) : 0}%;background:${getContributionColorHex(f.group)}"></i>
-        </div>
-        <div class="decision-factor-line">${escapeHtml(f.line)}</div>
+        <div class="decision-factor-line">${escapeHtml(headline)}</div>
       </button>
-    `
-    )
+    `;
+    })
     .join("");
 
   if (bridgeStrip) {
@@ -3064,6 +3067,150 @@ const FACTOR_ROLE_SUBTITLES = {
   caution: "Competitive Overlap & Governance Watch"
 };
 
+const FACTOR_QUESTION_LABELS = {
+  access: "Can we get a warm intro?",
+  lineage: "Who is behind it?",
+  timing: "Is now the moment?",
+  caution: "What could go wrong?"
+};
+
+const VERDICT_TONE = {
+  "Strong signal": "is-beneficial",
+  "Positive signal": "is-beneficial",
+  "Mixed signal": "is-mixed",
+  "Weak signal": "is-neutral",
+  "No evidence": "is-neutral",
+  "Red flag": "is-caution",
+  "Watch item": "is-mixed",
+  "No flags found": "is-beneficial"
+};
+
+const VERDICT_SHORT_BADGE = {
+  "Strong signal": "Strong",
+  "Positive signal": "Positive",
+  "Mixed signal": "Mixed",
+  "Weak signal": "Weak",
+  "No evidence": "None",
+  "Red flag": "Red flag",
+  "Watch item": "Watch",
+  "No flags found": "Clear"
+};
+
+const STANCE_TONE = {
+  "Pursue": "is-beneficial",
+  "Pursue with caution": "is-mixed",
+  "Monitor": "is-neutral",
+  "Insufficient evidence": "is-neutral"
+};
+
+function currentDecisionAnalysisResult() {
+  return state.decisionAnalysisStatus === "ready" && state.decisionAnalysisResult?.controlPlaneMode === "anthropic-connection-analyst"
+    ? state.decisionAnalysisResult
+    : null;
+}
+
+function getFactorVerdict(factor, analysis = null) {
+  const claudeVerdict = cleanText(analysis?.verdict);
+  if (claudeVerdict && VERDICT_TONE[claudeVerdict]) {
+    return { label: claudeVerdict, cls: VERDICT_TONE[claudeVerdict], fromClaude: true };
+  }
+  const count = Number(factor?.count || 0);
+  const shared = Number(factor?.sharedCount || 0);
+  let label;
+  if (factor?.group === "caution") {
+    label = count === 0 ? "No flags found" : shared > 0 || count >= 3 ? "Red flag" : "Watch item";
+  } else if (count === 0) {
+    label = "No evidence";
+  } else if (shared > 0 || count >= 4) {
+    label = "Strong signal";
+  } else if (count >= 2) {
+    label = "Positive signal";
+  } else {
+    label = "Weak signal";
+  }
+  return { label, cls: VERDICT_TONE[label] || "is-neutral", fromClaude: false };
+}
+
+function getOverallStance(summary, res = currentDecisionAnalysisResult()) {
+  const claudeStance = cleanText(res?.overallStance);
+  if (claudeStance && STANCE_TONE[claudeStance]) {
+    return { label: claudeStance, cls: STANCE_TONE[claudeStance] };
+  }
+  const cls = summary?.overall?.cls || "is-neutral";
+  const label = cls === "is-mixed"
+    ? "Pursue with caution"
+    : cls === "is-beneficial"
+    ? "Pursue"
+    : cls === "is-caution"
+    ? "Monitor"
+    : "Insufficient evidence";
+  return { label, cls: STANCE_TONE[label] };
+}
+
+function sourceQualityPhrase(pct) {
+  const p = Number(pct || 0);
+  if (p >= 60) return "Mostly primary sources";
+  if (p >= 30) return "Mixed source quality";
+  return "Mostly secondary sources";
+}
+
+function deriveConnectionAnalystInsight(rec, factorGroup, findings = []) {
+  const recPath = cleanText(rec?.path);
+  const recFrom = cleanText(rec?.canonicalFrom || recPath.split(/\s*(?:→|↔)\s*/)[0]);
+  const recTo = cleanText(rec?.canonicalTo || recPath.split(/\s*(?:→|↔)\s*/)[1]);
+  const firstFromEntity = cleanText(recFrom.split(",")[0]);
+  for (const f of asList(findings)) {
+    const conn = cleanText(f?.connection);
+    const meaning = cleanText(f?.meaning);
+    if (!conn || !meaning) continue;
+    const connLower = conn.toLowerCase();
+    const connLeft = cleanText(conn.split(/\s*(?:→|↔)\s*/)[0]).toLowerCase();
+    if (
+      connLower === recPath.toLowerCase() ||
+      (firstFromEntity && firstFromEntity.length > 2 && connLeft.includes(firstFromEntity.toLowerCase()) && !/openai|anthropic/i.test(firstFromEntity))
+    ) {
+      return meaning;
+    }
+  }
+  const detail = cleanText(rec?.detail);
+  const rel = cleanText(rec?.relation || rec?.type);
+  const sharedHubs = asList(rec?.sharedHubs).filter(Boolean);
+  if (factorGroup === "access") {
+    if (rec?.isSharedBridge && sharedHubs.length >= 2) {
+      return `Backs both ${sharedHubs.join(" & ")} — warm intro route and side-by-side co-investor reference.`;
+    }
+    if (/lead/i.test(`${rel} ${detail}`)) {
+      return `Lead investor in ${recTo || "this hub"} — primary syndicate contact for deal terms & conviction.`;
+    }
+    if (/invest|back|round/i.test(`${rel} ${detail}`)) {
+      return `Verified backer of ${recTo || "this hub"} — direct syndicate reference call & warm intro path.`;
+    }
+    return detail || `Commercial or partner bridge to ${recTo || "this hub"} for customer diligence.`;
+  }
+  if (factorGroup === "lineage") {
+    if (rec?.isSharedBridge && sharedHubs.length >= 2) {
+      return `Held leadership/founder roles across ${sharedHubs.join(" & ")} — high-signal operator backchannel.`;
+    }
+    return detail || `Verified operator or founder link (${rel}) for executive track-record reference checks.`;
+  }
+  if (factorGroup === "timing") {
+    if (rec?.isAnomaly) {
+      return detail || `Round sequence or timing discrepancy requiring cap-table verification.`;
+    }
+    return detail || `Dated financing milestone (${rec?.date || "verified"}) anchoring capital velocity and runway.`;
+  }
+  if (rec?.type === "DUAL_SIDED_INVESTOR_CONFLICT" || /shared cap-table/i.test(rel)) {
+    return `Holds stakes in both ${recTo || "competitors"} — verify Chinese walls and information-rights boundaries.`;
+  }
+  if (rec?.type === "CROSS_HUB_TALENT_OVERLAP" || /founder overlap|executive/i.test(rel)) {
+    return `Shared founder/exec lineage across ${recTo || "rivals"} — verify IP assignment and non-compete terms.`;
+  }
+  if (/rivalry|overlap|compet/i.test(`${recPath} ${rel} ${detail}`)) {
+    return `Direct product & customer rivalry — check win-rates, moat differentiation, and conflict exposure.`;
+  }
+  return detail || `${rel} — verify governance and downside exposure before advancing.`;
+}
+
 function computeSourceProvenanceMix(sourceIds = [], sourceById = new Map()) {
   const counts = { filing: 0, primary: 0, press: 0, aggregator: 0, total: 0, verifiedSharePct: 0 };
   for (const id of asList(sourceIds)) {
@@ -3122,9 +3269,15 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
   if (promptEl) promptEl.hidden = true;
   pop?.classList.add("has-ai-results");
 
+  const res = state.decisionAnalysisResult;
+  const factorAnalyses = new Map(asList(res?.factorAnalyses).map((item) => [item.group, item]));
+  const currentVerdict = getFactorVerdict(factor, factorAnalyses.get(factor.group));
+
   const switcherHtml = `
     <div class="decision-factor-switcher" role="tablist" aria-label="Switch factor">
-      ${summary.factors.map((f) => `
+      ${summary.factors.map((f) => {
+        const fv = getFactorVerdict(f, factorAnalyses.get(f.group));
+        return `
         <button
           type="button"
           class="decision-mini-pill ${f.group === factor.group ? "is-active" : ""}"
@@ -3134,9 +3287,10 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
         >
           <span class="fam-dot" style="background:${getContributionColorHex(f.group)}"></span>
           <span>${escapeHtml(f.label)}</span>
-          <b>${f.signalStrength}</b>
+          <b class="decision-mini-verdict ${escapeHtml(fv.cls)}">${escapeHtml(VERDICT_SHORT_BADGE[fv.label] || fv.label)}</b>
         </button>
-      `).join("")}
+      `;
+      }).join("")}
     </div>
   `;
 
@@ -3156,7 +3310,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
       <div class="decision-ai-card decision-ai-loading-card">
         <div class="decision-ai-head">
           <span>CLAUDE AI · ANALYZING ALL 4 FACTORS</span>
-          <span class="decision-ai-step">${factor.signalStrength}/100</span>
+          <span class="decision-ai-step">${escapeHtml(currentVerdict.label)}</span>
         </div>
         <div class="decision-ai-loading-state" role="status" aria-live="polite">
           <span class="decision-ai-loading-indicator" aria-hidden="true"></span>
@@ -3170,9 +3324,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
 
   outEl.removeAttribute("aria-label");
   outEl.setAttribute("aria-labelledby", "decisionAiSelectedHeading");
-  const res = state.decisionAnalysisResult;
   const factorSummaries = new Map(asList(res?.factorSummaries).map((item) => [item.group, item]));
-  const factorAnalyses = new Map(asList(res?.factorAnalyses).map((item) => [item.group, item]));
   const factorInsight = factorSummaries.get(factor.group);
   const factorAnalysis = factorAnalyses.get(factor.group);
   const claudeAnalyzed = state.decisionAnalysisStatus === "ready" && res?.controlPlaneMode === "anthropic-connection-analyst";
@@ -3243,28 +3395,6 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
       <div class="decision-ai-limitation"><strong>Scope & Limitation</strong><p>${escapeHtml(factorLimitation)}</p></div>
     </div>
   `;
-
-  const connectionRowsHtml = submittedRecords.length
-    ? `<div class="decision-ai-evidence-list">${submittedRecords.map((rec) => {
-        const canFocus = Boolean(rec.edgeId || rec.nodeId);
-        return `
-          <article class="decision-ai-evidence-row">
-            <div class="decision-ai-record-head">
-              <strong>${escapeHtml(rec.path)}</strong>
-              <span class="decision-row-badges">
-                ${rec.isSharedBridge ? `<span class="decision-badge-shared">Shared</span>` : ""}
-                <span class="source-tier" data-tier="${escapeHtml(rec.sourceRank || "AGGREGATOR")}">${escapeHtml(rec.sourceRank || "AGG")}</span>
-              </span>
-            </div>
-            <p>${escapeHtml(rec.detail || rec.relation)}</p>
-            <div class="decision-ai-record-meta">
-              <span>${rec.date ? escapeHtml(rec.date) : "Undated"} · ${escapeHtml(rec.relation)}</span>
-              ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Focus map</button>` : ""}
-            </div>
-          </article>
-        `;
-      }).join("")}</div>`
-    : `<div class="decision-ai-no-chart">No mapped relationship records for this factor.</div>`;
 
   const sourceCardsHtml = submittedSourceIds.slice(0, 10).map((id) => sourceById.get(String(id)) || { id, title: `Cala record ${id}` }).map((source) => {
     const title = cleanText(source.title || source.publisher || source.id);
@@ -3338,25 +3468,48 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
   `;
 
   const roleSubtitle = FACTOR_ROLE_SUBTITLES[factor.group] || `${factor.label} Signal Profile`;
+  const factorQuestion = FACTOR_QUESTION_LABELS[factor.group] || roleSubtitle;
+  const factorHeadline = cleanText(factorAnalysis?.headline) || roleSubtitle;
   const factorColor = getContributionColorHex(factor.group);
+  const findingsList = asList(factorAnalysis?.findings);
+
+  const connectionRowsHtml = submittedRecords.length
+    ? `<div class="decision-ai-evidence-list">${submittedRecords.map((rec) => {
+        const canFocus = Boolean(rec.edgeId || rec.nodeId);
+        const analystInsight = deriveConnectionAnalystInsight(rec, factor.group, findingsList);
+        return `
+          <article class="decision-ai-evidence-row">
+            <div class="decision-ai-record-head">
+              <strong>${escapeHtml(rec.path)}</strong>
+              <span class="decision-row-badges">
+                ${rec.isSharedBridge ? `<span class="decision-badge-shared">Shared</span>` : ""}
+                <span class="source-tier" data-tier="${escapeHtml(rec.sourceRank || "AGGREGATOR")}">${escapeHtml(rec.sourceRank || "AGG")}</span>
+              </span>
+            </div>
+            <p class="decision-connection-insight"><span class="decision-insight-prefix">Insight:</span> ${escapeHtml(analystInsight)}</p>
+            <div class="decision-ai-record-meta">
+              <span>${rec.date ? escapeHtml(rec.date) : "Verified in Cala"} · ${escapeHtml(rec.relation)}</span>
+              ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Focus map</button>` : ""}
+            </div>
+          </article>
+        `;
+      }).join("")}</div>`
+    : `<div class="decision-ai-no-chart">No mapped relationship records for this factor.</div>`;
+
   const factorHeadHtml = state.decisionPanelExpanded
     ? `
       <div class="decision-ai-factor-head is-expanded-hero">
-        <div class="decision-hero-score-badge" style="--factor-accent:${factorColor}">
-          <strong>${factor.signalStrength}</strong>
-          <small>/100</small>
-        </div>
         <div class="decision-head-titles">
-          <div class="decision-hero-title-row">
-            <strong id="decisionAiSelectedHeading">${escapeHtml(roleSubtitle)}</strong>
-            <span class="decision-effect-pill ${escapeHtml(factor.effectClass)}">${escapeHtml(factor.effect)}</span>
+          <div class="decision-factor-top-meta">
+            <span class="decision-factor-question-kicker">${escapeHtml(factorQuestion)}</span>
+            <span class="decision-verdict-hero-pill ${escapeHtml(currentVerdict.cls)}">${escapeHtml(currentVerdict.label)}</span>
             <span class="decision-mode-tag ${hasClaudeFactorEffect ? "is-claude" : ""}">${statusLabel}</span>
           </div>
+          <div class="decision-hero-title-row">
+            <strong id="decisionAiSelectedHeading">${escapeHtml(factorHeadline)}</strong>
+          </div>
           <div class="decision-head-meter is-wide">
-            <span class="decision-score-track is-inline" aria-hidden="true">
-              <i style="width:${factor.signalStrength > 0 ? Math.max(6, factor.signalStrength) : 0}%;background:${factorColor}"></i>
-            </span>
-            <span class="decision-hero-submeta">${factor.count} verified paths · ${factor.sharedCount ? `${factor.sharedCount} cross-hub shared` : "direct"} · ${factor.provenanceMix?.verifiedSharePct ?? 0}% FILING/PRIMARY</span>
+            <span class="decision-hero-submeta">${factor.count} verified paths · ${factor.sharedCount ? `${factor.sharedCount} cross-hub shared` : "direct links"} · ${sourceQualityPhrase(factor.provenanceMix?.verifiedSharePct)}</span>
           </div>
         </div>
       </div>
@@ -3366,17 +3519,12 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
         <div class="decision-head-left">
           <span class="fam-dot" style="background:${factorColor}"></span>
           <div class="decision-head-titles">
+            <span class="decision-factor-question-kicker">${escapeHtml(factorQuestion)}</span>
             <strong id="decisionAiSelectedHeading">${escapeHtml(roleSubtitle)}</strong>
-            <div class="decision-head-meter">
-              <span class="decision-score-track is-inline" aria-hidden="true">
-                <i style="width:${factor.signalStrength > 0 ? Math.max(6, factor.signalStrength) : 0}%;background:${factorColor}"></i>
-              </span>
-              <span class="decision-score-chip">${factor.signalStrength}/100</span>
-            </div>
           </div>
         </div>
         <div class="decision-head-right">
-          <span class="decision-effect-pill ${escapeHtml(factor.effectClass)}">${escapeHtml(factor.effect)}</span>
+          <span class="decision-effect-pill ${escapeHtml(currentVerdict.cls)}">${escapeHtml(currentVerdict.label)}</span>
           <span class="decision-mode-tag ${hasClaudeFactorEffect ? "is-claude" : ""}">${statusLabel}</span>
         </div>
       </div>
@@ -3389,38 +3537,55 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
   const takeawayBlockHtml = `
     <div class="decision-ai-impact-block ${hasClaudeFactorEffect ? "" : "is-fallback"}">
       <div class="decision-takeaway-top">
-        <span class="decision-ai-section-label">${hasClaudeFactorEffect ? "Claude Takeaway" : "Map Takeaway"}</span>
+        <span class="decision-ai-section-label">${hasClaudeFactorEffect ? "Why This Matters To Your Decision" : "Map Takeaway"}</span>
         ${citeCountControlHtml}
       </div>
       <p>${highlightSignalPhrases(decisionImpact)}</p>
       ${decisionEffectSourceIds.length ? `<div class="decision-ai-citations">${renderCitations(decisionEffectSourceIds, state.decisionPanelExpanded ? 3 : 2)}</div>` : ""}
     </div>
     <div class="decision-ai-next-check">
-      <span class="decision-ai-section-label">Next Diligence Check</span>
+      <span class="decision-ai-section-label">Action / Diligence Question</span>
       <p>${escapeHtml(factorNextCheck)}</p>
     </div>
   `;
 
   if (state.decisionPanelExpanded) {
     const exec = summary.executive || {};
+    const overallStance = getOverallStance(summary, res);
     const icTakeaway = cleanText((claudeAnalyzed && res?.summary) || summary.investmentEffect);
     const expDrawers = state.decisionExpandedOpenDrawers || { icThesis: false, reasoning: false, sourcesList: false, hygiene: false };
     const ptsCount = reasoningList.length || Math.min(2, submittedRecords.length);
 
-    const compactConnectionRowsHtml = submittedRecords.length
-      ? `<div class="decision-ai-evidence-list is-compact-table">${submittedRecords.slice(0, 6).map((rec) => {
+    let displayRecords = submittedRecords;
+    if (factor.group === "caution" && submittedRecords.length > 1) {
+      const rivalryRecs = submittedRecords.filter((r) => /rivalry|competitive overlap/i.test(`${r.path} ${r.relation}`));
+      if (rivalryRecs.length >= 2) {
+        const hubs = [...new Set(rivalryRecs.map((r) => cleanText(r.canonicalFrom || r.path.split(/\s*→\s*/)[0])).filter(Boolean))];
+        const target = cleanText(rivalryRecs[0].canonicalTo || rivalryRecs[0].path.split(/\s*→\s*/)[1]);
+        const mergedRivalry = {
+          ...rivalryRecs[0],
+          path: `${hubs.join(" & ")} ↔ ${target}`
+        };
+        const nonRivalry = submittedRecords.filter((r) => !/rivalry|competitive overlap/i.test(`${r.path} ${r.relation}`));
+        displayRecords = [mergedRivalry, ...nonRivalry];
+      }
+    }
+
+    const compactConnectionRowsHtml = displayRecords.length
+      ? `<div class="decision-ai-evidence-list is-compact-table">${displayRecords.slice(0, 5).map((rec) => {
           const canFocus = Boolean(rec.edgeId || rec.nodeId);
+          const analystInsight = deriveConnectionAnalystInsight(rec, factor.group, findingsList);
           return `
-            <article class="decision-ai-evidence-row is-compact-row" title="${escapeHtml(rec.detail || rec.relation)}">
-              <div class="decision-compact-row-main">
+            <article class="decision-ai-evidence-row is-insight-card">
+              <div class="decision-insight-card-top">
                 <strong class="decision-compact-path">${escapeHtml(rec.path)}</strong>
-                <span class="decision-compact-rel">${escapeHtml(rec.relation)}${rec.date ? ` · ${escapeHtml(rec.date)}` : ""}</span>
+                <div class="decision-compact-row-actions">
+                  ${rec.isSharedBridge ? `<span class="decision-badge-shared">Shared</span>` : ""}
+                  <span class="source-tier" data-tier="${escapeHtml(rec.sourceRank || "AGGREGATOR")}">${escapeHtml(rec.sourceRank || "AGG")}</span>
+                  ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Focus map</button>` : ""}
+                </div>
               </div>
-              <div class="decision-compact-row-actions">
-                ${rec.isSharedBridge ? `<span class="decision-badge-shared">Shared</span>` : ""}
-                <span class="source-tier" data-tier="${escapeHtml(rec.sourceRank || "AGGREGATOR")}">${escapeHtml(rec.sourceRank || "AGG")}</span>
-                ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Focus map</button>` : ""}
-              </div>
+              <p class="decision-connection-meaning">${escapeHtml(analystInsight)}</p>
             </article>
           `;
         }).join("")}</div>`
@@ -3436,7 +3601,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
 
     const expandedReasoningDrawerHtml = renderDecisionDrawer(
       "exp-reasoning",
-      "Reasoning & Scope Limitation",
+      "Additional Reasoning & Scope Limitation",
       `${ptsCount} ${ptsCount === 1 ? "point" : "points"}`,
       reasoningDrawerBody,
       Boolean(expDrawers.reasoning)
@@ -3446,16 +3611,15 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
       ${navHtml}
       <div class="decision-exec-banner is-streamlined">
         <div class="decision-exec-top">
-          <span class="decision-verdict-badge ${escapeHtml(summary.overall.cls)}">${escapeHtml(summary.overall.label)}</span>
+          <span class="decision-verdict-badge ${escapeHtml(overallStance.cls)}">${escapeHtml(overallStance.label)}</span>
           <div class="decision-exec-kpi-pills">
-            <span class="decision-exec-score">Score <b>${exec.evidenceScore ?? factor.signalStrength}/100</b></span>
-            <span class="decision-exec-pill">Grade <b>${escapeHtml(exec.reliabilityGrade || "B")}</b></span>
-            <span class="decision-exec-pill"><b>${exec.verifiedSharePct ?? 0}%</b> Verified</span>
+            <span class="decision-exec-pill"><b>${escapeHtml(sourceQualityPhrase(exec.verifiedSharePct))}</b></span>
+            <span class="decision-exec-pill"><b>${factor.count}</b> ${escapeHtml(factor.label.toLowerCase())} paths</span>
+            <span class="decision-exec-pill"><b>${submittedSourceIds.length}</b> cited sources</span>
           </div>
           ${quarantinedCount > 0 ? `<span class="decision-exec-quarantine">${quarantinedCount} raw noise filtered</span>` : ""}
-          ${icTakeaway ? `<button type="button" class="decision-ic-toggle" data-decision-drawer="exp-ic" aria-expanded="${Boolean(expDrawers.icThesis)}">${expDrawers.icThesis ? "Hide IC Thesis −" : "Overall IC Thesis +"}</button>` : ""}
         </div>
-        ${icTakeaway ? `<p class="decision-exec-ic" ${expDrawers.icThesis ? "" : "hidden"}>${escapeHtml(icTakeaway)}</p>` : ""}
+        ${icTakeaway ? `<p class="decision-exec-ic">${escapeHtml(icTakeaway)}</p>` : ""}
       </div>
       <div class="decision-workspace-grid">
         <div class="decision-col-primary">
@@ -3467,13 +3631,12 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
           </section>
         </div>
         <div class="decision-col-evidence">
-          ${kpiStripHtml}
           <section class="decision-evidence-panel">
-            <div class="decision-panel-subhead"><strong>Top Supporting Connections</strong><span>${submittedRecords.length} ranked paths</span></div>
+            <div class="decision-panel-subhead"><strong>Key Connections &amp; What They Mean</strong><span>${submittedRecords.length} verified paths</span></div>
             ${compactConnectionRowsHtml}
           </section>
           <section class="decision-evidence-panel">
-            <div class="decision-panel-subhead"><strong>Verified Provenance Mix</strong><span>${submittedSourceIds.length} sources</span></div>
+            <div class="decision-panel-subhead"><strong>Evidence Provenance &amp; Sources</strong><span>${submittedSourceIds.length} sources</span></div>
             ${provBarHtml}
             ${expandedSourcesDrawerHtml}
           </section>

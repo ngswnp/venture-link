@@ -81,66 +81,56 @@ function stripJsonCodeFences(rawText) {
   return objMatch ? objMatch[0] : s;
 }
 
+const FACTOR_VERDICTS = ['Strong signal', 'Positive signal', 'Mixed signal', 'Weak signal', 'No evidence', 'Red flag', 'Watch item', 'No flags found'];
+const OVERALL_STANCES = ['Pursue', 'Pursue with caution', 'Monitor', 'Insufficient evidence'];
+
+const citedTextSchema = {
+  type: 'object',
+  properties: {
+    text: { type: 'string' },
+    sourceIds: { type: 'array', items: { type: 'string' } }
+  },
+  required: ['text', 'sourceIds'],
+  additionalProperties: false
+};
+
 const factorAnalysisOutputSchema = {
   type: 'object',
   properties: {
+    overallStance: { type: 'string', enum: OVERALL_STANCES },
+    executiveTakeaway: citedTextSchema,
     factorAnalyses: {
       type: 'array',
       items: {
         type: 'object',
         properties: {
           group: { type: 'string', enum: ['access', 'lineage', 'timing', 'caution'] },
-          decisionEffect: {
-            type: 'object',
-            properties: {
-              text: { type: 'string' },
-              sourceIds: { type: 'array', items: { type: 'string' } }
-            },
-            required: ['text', 'sourceIds'],
-            additionalProperties: false
-          },
-          reasoning: {
+          verdict: { type: 'string', enum: FACTOR_VERDICTS },
+          headline: { type: 'string' },
+          decisionEffect: citedTextSchema,
+          findings: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
-                text: { type: 'string' },
+                connection: { type: 'string' },
+                meaning: { type: 'string' },
                 sourceIds: { type: 'array', items: { type: 'string' } }
               },
-              required: ['text', 'sourceIds'],
+              required: ['connection', 'meaning', 'sourceIds'],
               additionalProperties: false
             }
           },
           limitation: { type: 'string' },
           nextCheck: { type: 'string' }
         },
-        required: ['group', 'decisionEffect', 'reasoning', 'limitation', 'nextCheck'],
+        required: ['group', 'verdict', 'headline', 'decisionEffect', 'findings', 'limitation', 'nextCheck'],
         additionalProperties: false
       }
     },
-    executiveTakeaway: {
-      type: 'object',
-      properties: {
-        text: { type: 'string' },
-        sourceIds: { type: 'array', items: { type: 'string' } }
-      },
-      required: ['text', 'sourceIds'],
-      additionalProperties: false
-    },
-    insights: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          text: { type: 'string' },
-          sourceIds: { type: 'array', items: { type: 'string' } }
-        },
-        required: ['text', 'sourceIds'],
-        additionalProperties: false
-      }
-    }
+    insights: { type: 'array', items: citedTextSchema }
   },
-  required: ['factorAnalyses', 'insights'],
+  required: ['overallStance', 'executiveTakeaway', 'factorAnalyses', 'insights'],
   additionalProperties: false
 };
 
@@ -856,7 +846,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
   const cache = options.cache || connectionInsightCache;
   const useDiskCache = !options.cache && !options.disableDiskCache;
   const diskCachePath = options.diskCachePath || DEFAULT_INSIGHT_DISK_CACHE;
-  const cacheKey = `v8:${groundedPacket.mode}:${JSON.stringify(groundedPacket)}`;
+  const cacheKey = `v9:${groundedPacket.mode}:${JSON.stringify(groundedPacket)}`;
   const diskHash = useDiskCache ? crypto.createHash('sha256').update(cacheKey).digest('hex') : null;
   if (cache.has(cacheKey)) {
     return { ...cache.get(cacheKey), fromCache: true };
@@ -900,19 +890,23 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
   };
 
   const systemPrompt = decisionFactors.length ? [
-    'You are a concise, skeptical venture investment analyst. Analyze only the supplied Cala records and citations; do not infer company quality from network position.',
-    'For EACH populated factor, emit a concrete decisionEffect, 1-2 crisp reasoning bullets naming specific paths/dates/amounts, one limitation, and one specific nextCheck.',
-    'Also emit executiveTakeaway: one crisp 16-24 word IC synthesis balancing upside (access/lineage/timing) and caution, citing exact sourceIds.',
-    'Keep decisionEffect to 22-38 words, each reasoning bullet to 12-22 words, limitation to 10-18 words, and nextCheck to 10-20 words.',
-    'NEVER invent numbers, dates, entities, conflicts, or evidence. Every factual executiveTakeaway, decisionEffect, or reasoning bullet MUST cite exact short sourceIds from input.',
-    'Never write wire source IDs (like s1, s10) inside prose text; put source IDs only in sourceIds arrays.',
-    'Output ONE compact single-line JSON only (no markdown fences):',
-    '{"executiveTakeaway":{"text":"16-24 words balancing signal and risk","sourceIds":["s1","s2"]},"factorAnalyses":[{"group":"access|lineage|timing|caution","decisionEffect":{"text":"22-38 words","sourceIds":["s1"]},"reasoning":[{"text":"12-22 words on a supplied record","sourceIds":["s1"]}],"limitation":"what these records do not establish","nextCheck":"Verify whether ..."}],"insights":[{"text":"cross-record insight","sourceIds":["s1"]}]}.',
-    'Include all four factors, including factors with no evidence. For an empty factor, state no mapped evidence was supplied and do not create an effect.',
-    'Each citation must belong to the same factor and appear on a record or factor source in input JSON. Keep observed records separate from investment implications.',
-    'ALWAYS emit a non-empty nextCheck starting with “Verify whether”, “Confirm whether”, or “Ask whether” naming ONLY entities, roles, or event labels verbatim in that factor.',
+    'You are a senior venture investment analyst writing for a busy partner. Analyze ONLY the supplied Cala records and citations; never infer company quality from network position.',
+    'Your job: turn each mapped connection into a plain-English insight that says what the connection lets an investor KNOW or DO (e.g. "Amazon backs both OpenAI and Anthropic, so it can give a side-by-side reference on both teams").',
+    'For EACH of the four factors emit:',
+    '- verdict: one label. access/lineage/timing use Strong signal | Positive signal | Mixed signal | Weak signal | No evidence. caution uses Red flag | Watch item | No flags found | No evidence.',
+    '- headline: 6-14 words, the single so-what for an investor, naming the key entity. No jargon, no numbers unless verbatim.',
+    '- decisionEffect: 14-26 words explaining how this changes the investment decision, citing sourceIds.',
+    '- findings: up to 3, ranked by decision value. connection = the entity path verbatim from records (e.g. "Amazon → OpenAI & Anthropic"). meaning = 8-18 words on why an investor cares about THAT connection. Cite its record sourceIds.',
+    '- limitation: 8-16 words on what these records do not prove.',
+    '- nextCheck: 8-18 words starting with "Verify whether", "Confirm whether" or "Ask whether", naming only entities verbatim in that factor.',
+    'Also emit overallStance (Pursue | Pursue with caution | Monitor | Insufficient evidence) and executiveTakeaway: 14-24 words, the bottom line a partner reads first, balancing upside and caution, with sourceIds.',
+    'Write short, concrete sentences. Lead with the entity name. Prefer verbs like "backs", "founded", "led", "links", "overlaps". Avoid filler such as "establishes", "leverage", "signals that", "ecosystem".',
+    'NEVER invent numbers, dates, entities, conflicts, or evidence. Never write source IDs (like s1) inside prose; put them only in sourceIds arrays.',
+    'For a factor with no records: verdict "No evidence", headline "No mapped evidence in Cala", findings [].',
+    'Each citation must belong to the same factor and appear on a record or factor source in input JSON.',
     'Use plain evidence nouns from the records (investors, backers, organizations, founders, roles, milestones, sector overlap). FORBIDDEN words unless verbatim in THAT factor: fund, portfolio, deal, stage, early, fundraising, raise, traction, validation, governance, information, window, cap, table, ownership, market, board rights, runway, burn, liquidity, performance, authority, primary, allocation, institutional, VC, IP, LP.',
-    'At most 2 cross-record insights; cite each with exact source IDs.'
+    'At most 2 cross-factor insights; cite each with exact source IDs.',
+    'Return compact JSON matching the schema, no markdown.'
   ].join('\n') : [
     'Strict VC investment-diligence analyst grounded ONLY in input JSON.',
     'Analyze why the connection or entity graph matters for deal access, operator lineage, timing, or competitive caution.',
@@ -923,7 +917,10 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
   ].join('\n');
 
   try {
-    const model = options.model || process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL;
+    const model = options.model
+      || (decisionFactors.length ? process.env.ANTHROPIC_ANALYSIS_MODEL : '')
+      || process.env.ANTHROPIC_MODEL
+      || DEFAULT_ANTHROPIC_MODEL;
     const fetchFn = options.fetchFn || globalThis.fetch;
     let parsed;
     if (decisionFactors.length) {
@@ -936,7 +933,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
             ? systemPrompt
             : `${systemPrompt}\nReturn the complete required JSON object for every requested factor. Keep the wording concise so it fits the output limit.`,
           userContent: wireJsonStr,
-          maxTokens: attempt === 0 ? 1800 : 3600,
+          maxTokens: attempt === 0 ? 2600 : 4200,
           timeoutMs: options.timeoutMs ?? 30000,
           fetchFn,
           outputConfig: { format: { type: 'json_schema', schema: factorAnalysisOutputSchema } },
@@ -967,6 +964,9 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
         if (fa?.decisionEffect?.sourceIds) fa.decisionEffect.sourceIds = fromWireIds(fa.decisionEffect.sourceIds);
         for (const r of fa?.reasoning || []) {
           if (r?.sourceIds) r.sourceIds = fromWireIds(r.sourceIds);
+        }
+        for (const f of fa?.findings || []) {
+          if (f?.sourceIds) f.sourceIds = fromWireIds(f.sourceIds);
         }
       }
       if (parsed?.executiveTakeaway?.sourceIds) {
@@ -1027,11 +1027,38 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
         sourceIds: groundedEffectText ? modelEffect.sourceIds : (fallbackEffect?.sourceIds || [])
       };
       const groupSourceIdList = [...groupIds];
+      const rawFindings = (Array.isArray(rawFactor?.findings) ? rawFactor.findings : []).slice(0, 3);
+      const groundedFindings = rawFindings.map((item) => {
+        const connection = sanitizeShortText(item?.connection || '', 110);
+        const meaning = typeof item?.meaning === 'string' ? item.meaning.trim().slice(0, 220) : '';
+        const ids = (Array.isArray(item?.sourceIds) ? item.sourceIds : []).filter((id) => groupIds.has(id));
+        const gatedFinding = filterVerifiedBullets([{ text: `${connection}. ${meaning}`, sourceIds: ids }], {
+          ...groundings, allowedSourceIds: groupIds, useRegistryCheck: false
+        }).bullets[0];
+        if (!gatedFinding || !connection || !meaning) return null;
+        const safeMeaning = filterUnsupportedFactorClaims(meaning, factor, gatedFinding.sourceIds, 220);
+        return safeMeaning ? { connection, meaning: safeMeaning, sourceIds: gatedFinding.sourceIds } : null;
+      }).filter(Boolean);
+      const reasoningOut = groundedReasoning.length
+        ? groundedReasoning
+        : groundedFindings.map((f) => ({ text: `${f.connection}: ${f.meaning}`, sourceIds: f.sourceIds }));
+      const rawHeadline = typeof rawFactor?.headline === 'string' ? rawFactor.headline.trim().slice(0, 140) : '';
+      const headlineGate = rawHeadline
+        ? filterVerifiedBullets([{ text: rawHeadline, sourceIds: groupSourceIdList }], { ...groundings, allowedSourceIds: groupIds, useRegistryCheck: false }).bullets[0]
+        : null;
+      const isEmptyHeadline = /^no mapped evidence/i.test(rawHeadline);
+      const headline = isEmptyHeadline
+        ? rawHeadline
+        : headlineGate ? filterUnsupportedFactorClaims(rawHeadline, factor, groupSourceIdList, 140) : '';
+      const verdict = FACTOR_VERDICTS.includes(rawFactor?.verdict) ? rawFactor.verdict : '';
       return {
         group: factor.group,
+        verdict,
+        headline,
         decisionEffect,
         decisionEffectSource: groundedEffectText ? 'anthropic' : 'map-fallback',
-        reasoning: groundedReasoning,
+        findings: groundedFindings,
+        reasoning: reasoningOut,
         limitation: filterUnsupportedFactorClaims(rawFactor?.limitation || '', factor, groupSourceIdList, 220, { isLimitation: true }) || fallbackFactorAnalyses.find((item) => item.group === factor.group)?.limitation || '',
         nextCheck: /^(verify|confirm|ask|check) whether\b/i.test(rawFactor?.nextCheck || '')
           ? filterUnsupportedFactorClaims(rawFactor.nextCheck, factor, groupSourceIdList, 220)
@@ -1089,6 +1116,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
     const result = {
       controlPlaneMode: 'anthropic-connection-analyst',
       summary: safeSummary,
+      overallStance: OVERALL_STANCES.includes(parsed?.overallStance) ? parsed.overallStance : '',
       factorSummaries,
       factorAnalyses,
       insights: gated.bullets.slice(0, 3),
