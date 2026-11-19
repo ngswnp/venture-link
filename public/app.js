@@ -135,6 +135,7 @@ const state = {
   decisionAnalysisKey: null,
   decisionAnalysisPendingKey: null,
   decisionAnalysisRequestId: 0,
+  decisionOpenDrawers: { reasoning: false, connections: false, sources: false },
   filtersPanelOpen: false,
   suggestItems: [],
   suggestTimer: null,
@@ -2488,16 +2489,50 @@ function deriveEdgeVerdict(edge, targetNode = null) {
 }
 
 function buildFourFactorDecisionSummary(bridgeMap) {
+  const di = bridgeMap?.decisionIntelligence;
+  const quarantinedCount = asList(bridgeMap?.quarantinedAnomalies).length;
+  if (di?.factors && di?.executive) {
+    const factors = ["access", "lineage", "timing", "caution"].map((group) => {
+      const f = di.factors[group] || {};
+      return {
+        group,
+        label: f.label || group,
+        count: Number(f.count || 0),
+        sharedCount: Number(f.sharedCount || 0),
+        signalStrength: Number(f.signalStrength || 0),
+        effect: f.tier || "No Signal",
+        effectClass: f.tierClass || "is-neutral",
+        line: f.headline || "No verified signal mapped.",
+        investmentImpact: f.investmentImpact || "",
+        actionableCheck: f.actionableCheck || GROUP_DECISION_QUESTIONS[group] || "",
+        provenanceMix: f.provenanceMix || { filing: 0, primary: 0, press: 0, aggregator: 0, total: 0, verifiedSharePct: 0 },
+        coverage: f.coverage || { totalPaths: 0, sharedBridgeCount: 0, hubCoverage: [], uniqueSources: 0, datedCount: 0, undatedCount: 0 },
+        sourceIds: asList(f.sourceIds),
+        rankedRecords: asList(f.rankedRecords)
+      };
+    });
+    return {
+      overall: {
+        label: di.executive.verdict || "Limited Coverage",
+        cls: di.executive.verdictClass || "is-neutral"
+      },
+      executive: {
+        ...di.executive,
+        quarantinedCount
+      },
+      factors,
+      investmentEffect: di.executive.investmentEffect || ""
+    };
+  }
+
   const nodes = asList(bridgeMap?.nodes);
   const edges = asList(bridgeMap?.edges);
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
-
   const byGroup = { access: [], lineage: [], timing: [], caution: [] };
   for (const e of edges) {
     const g = deriveContributionGroupFrontend(e);
     if (byGroup[g]) byGroup[g].push(e);
   }
-
   const topNames = (list) => {
     const seen = new Set();
     const out = [];
@@ -2512,17 +2547,13 @@ function buildFourFactorDecisionSummary(bridgeMap) {
     }
     return out;
   };
-
   const accessEdges = byGroup.access.filter((e) => deriveEdgeVerdict(e, nodeById.get(e.to)).key !== "context");
   const accessShared = accessEdges.filter((e) => e.isSharedBridge).length;
   const lineageEdges = byGroup.lineage;
   const lineageShared = lineageEdges.filter((e) => e.isSharedBridge).length;
   const timingEdges = byGroup.timing;
   const totalTiming = timingEdges.length;
-  const latestTimingDate = timingEdges.map((e) => e.date)
-    .filter(Boolean)
-    .sort()
-    .pop();
+  const latestTimingDate = timingEdges.map((e) => e.date).filter(Boolean).sort().pop();
   const cautionEdges = byGroup.caution;
   const idsFrom = (items) => [...new Set(asList(items).flatMap((item) => [
     ...asList(item?.sourceIds),
@@ -2533,7 +2564,9 @@ function buildFourFactorDecisionSummary(bridgeMap) {
       group: "access",
       label: "Access",
       count: accessEdges.length,
-      effect: accessShared > 0 ? "Beneficial · Strong" : accessEdges.length > 0 ? "Beneficial" : "No Signal",
+      sharedCount: accessShared,
+      signalStrength: accessEdges.length ? Math.min(95, accessEdges.length * 16 + accessShared * 14) : 0,
+      effect: accessShared > 0 ? "Strong" : accessEdges.length > 0 ? "Moderate" : "No Signal",
       effectClass: accessEdges.length > 0 ? "is-beneficial" : "is-neutral",
       line: accessShared > 0
         ? `Shared syndicate bridges (${topNames(accessEdges).join(", ") || accessShared}) unlock warm intros.`
@@ -2543,13 +2576,19 @@ function buildFourFactorDecisionSummary(bridgeMap) {
       investmentImpact: accessEdges.length > 0
         ? "Improves warm access; it does not establish company quality."
         : "No mapped access edge to change the decision.",
-      sourceIds: idsFrom(accessEdges)
+      actionableCheck: GROUP_DECISION_QUESTIONS.access,
+      provenanceMix: { filing: 0, primary: 0, press: 0, aggregator: 0, total: 0, verifiedSharePct: 0 },
+      coverage: { totalPaths: accessEdges.length, sharedBridgeCount: accessShared, hubCoverage: [], uniqueSources: 0, datedCount: 0, undatedCount: accessEdges.length },
+      sourceIds: idsFrom(accessEdges),
+      rankedRecords: []
     },
     {
       group: "lineage",
       label: "Lineage",
       count: lineageEdges.length,
-      effect: lineageShared > 0 ? "Beneficial · Strong" : lineageEdges.length > 0 ? "Beneficial" : "No Signal",
+      sharedCount: lineageShared,
+      signalStrength: lineageEdges.length ? Math.min(95, lineageEdges.length * 16 + lineageShared * 14) : 0,
+      effect: lineageShared > 0 ? "Strong" : lineageEdges.length > 0 ? "Moderate" : "No Signal",
       effectClass: lineageEdges.length > 0 ? "is-beneficial" : "is-neutral",
       line: lineageShared > 0
         ? `Shared founder/exec ties (${topNames(lineageEdges).join(", ") || lineageShared}) give direct reference edge.`
@@ -2559,13 +2598,19 @@ function buildFourFactorDecisionSummary(bridgeMap) {
       investmentImpact: lineageEdges.length > 0
         ? "Supports team diligence and references; execution still needs proof."
         : "Team conviction remains open on this map.",
-      sourceIds: idsFrom(lineageEdges)
+      actionableCheck: GROUP_DECISION_QUESTIONS.lineage,
+      provenanceMix: { filing: 0, primary: 0, press: 0, aggregator: 0, total: 0, verifiedSharePct: 0 },
+      coverage: { totalPaths: lineageEdges.length, sharedBridgeCount: lineageShared, hubCoverage: [], uniqueSources: 0, datedCount: 0, undatedCount: lineageEdges.length },
+      sourceIds: idsFrom(lineageEdges),
+      rankedRecords: []
     },
     {
       group: "timing",
       label: "Timing",
       count: totalTiming,
-      effect: totalTiming >= 3 ? "Beneficial · Active" : totalTiming > 0 ? "Catalyst" : "No Signal",
+      sharedCount: 0,
+      signalStrength: totalTiming ? Math.min(95, totalTiming * 18) : 0,
+      effect: totalTiming >= 3 ? "Active" : totalTiming > 0 ? "Catalyst" : "No Signal",
       effectClass: totalTiming > 0 ? "is-beneficial" : "is-neutral",
       line: totalTiming > 0
         ? `${totalTiming} dated milestones${latestTimingDate ? ` (latest ${latestTimingDate})` : ""} show active momentum.`
@@ -2573,41 +2618,119 @@ function buildFourFactorDecisionSummary(bridgeMap) {
       investmentImpact: totalTiming > 0
         ? "Adds a catalyst to diligence; confirm it is current before advancing."
         : "No mapped catalyst to change timing conviction.",
-      sourceIds: idsFrom(timingEdges)
+      actionableCheck: GROUP_DECISION_QUESTIONS.timing,
+      provenanceMix: { filing: 0, primary: 0, press: 0, aggregator: 0, total: 0, verifiedSharePct: 0 },
+      coverage: { totalPaths: totalTiming, sharedBridgeCount: 0, hubCoverage: [], uniqueSources: 0, datedCount: totalTiming, undatedCount: 0 },
+      sourceIds: idsFrom(timingEdges),
+      rankedRecords: []
     },
     {
       group: "caution",
       label: "Caution",
       count: cautionEdges.length,
+      sharedCount: 0,
+      signalStrength: cautionEdges.length ? Math.min(95, cautionEdges.length * 22) : 0,
       effect: cautionEdges.length > 0 ? "Risk · Watch" : "Clear",
       effectClass: cautionEdges.length > 0 ? "is-caution" : "is-beneficial",
       line: cautionEdges.length > 0
-        ? `${topNames(cautionEdges).join(", ") || `${cautionEdges.length} risk signal(s)`} - check competitive/IP conflict.`
+        ? `${topNames(cautionEdges).join(", ") || `${cautionEdges.length} risk signal(s)`} - check competitive overlap.`
         : "No direct competitor or conflict flags surfaced in Cala.",
       investmentImpact: cautionEdges.length > 0
         ? "Raises diligence risk; investigate before advancing."
         : "No mapped conflict surfaced; this does not rule out risk.",
-      sourceIds: idsFrom(cautionEdges)
+      actionableCheck: GROUP_DECISION_QUESTIONS.caution,
+      provenanceMix: { filing: 0, primary: 0, press: 0, aggregator: 0, total: 0, verifiedSharePct: 0 },
+      coverage: { totalPaths: cautionEdges.length, sharedBridgeCount: 0, hubCoverage: [], uniqueSources: 0, datedCount: 0, undatedCount: cautionEdges.length },
+      sourceIds: idsFrom(cautionEdges),
+      rankedRecords: []
     }
   ];
-
   const hasBeneficial = accessEdges.length > 0 || lineageEdges.length > 0 || totalTiming > 0;
   const overall = cautionEdges.length > 0 && hasBeneficial
-    ? { label: "Mixed · Actionable + Risks", cls: "is-mixed" }
+    ? { label: "Actionable · Verify Risks", cls: "is-mixed" }
     : cautionEdges.length > 0
     ? { label: "Caution · Verify Risks", cls: "is-caution" }
     : hasBeneficial
     ? { label: "Beneficial Signals", cls: "is-beneficial" }
     : { label: "Limited Coverage", cls: "is-neutral" };
+  return {
+    overall,
+    executive: {
+      verdict: overall.label,
+      verdictClass: overall.cls,
+      evidenceScore: Math.round(factors.reduce((sum, f) => sum + f.signalStrength, 0) / 4),
+      reliabilityGrade: "B",
+      verifiedSharePct: 0,
+      provenanceMix: { filing: 0, primary: 0, press: 0, aggregator: 0, total: 0, verifiedSharePct: 0 },
+      sharedBridgeHighlights: [],
+      warmIntroRoutes: [],
+      dataAnomalies: [],
+      quarantinedCount
+    },
+    factors,
+    investmentEffect: overall.cls === "is-mixed"
+      ? "Advance only with targeted diligence: actionable signals coexist with risks."
+      : overall.cls === "is-caution"
+      ? "Resolve the mapped risk before advancing the investment decision."
+      : overall.cls === "is-beneficial"
+      ? "Use mapped signals for targeted outreach; verify fundamentals directly."
+      : "The map lacks enough evidence to shift the investment decision."
+  };
+}
 
-  const investmentEffect = overall.cls === "is-mixed"
-    ? "Advance only with targeted diligence: actionable signals coexist with risks."
-    : overall.cls === "is-caution"
-    ? "Resolve the mapped risk before advancing the investment decision."
-    : overall.cls === "is-beneficial"
-    ? "Use the signals to guide outreach; they do not establish investment merit."
-    : "The map lacks enough evidence to shift the investment decision.";
-  return { overall, factors, investmentEffect };
+function focusDecisionSignalOnMap({ edgeId = "", nodeId = "", group = "" } = {}) {
+  if (!state.bridgeMap) return;
+  if (state.decisionPanelExpanded) {
+    setDecisionPanelExpanded(false);
+  }
+  state.decisionSummaryOpen = false;
+  const pop = $("#decisionSummaryPopover");
+  if (pop) pop.hidden = true;
+  $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", "false");
+
+  const validGroup = ["access", "lineage", "timing", "caution"].includes(group) ? group : "";
+  if (validGroup && state.expandedGroupKey !== validGroup) {
+    state.expandedGroupKey = validGroup;
+    syncConstellationControls();
+    renderConstellationMap(undefined, { fit: false });
+  }
+
+  const layout = state.mapLayoutNodes;
+  const displayEdges = asList(layout?.displayEdges);
+  const matchedEdge = edgeId
+    ? displayEdges.find((it) => it.id === edgeId)
+    : nodeId
+    ? displayEdges.find((it) => it.to === nodeId || it.from === nodeId)
+    : null;
+
+  if (matchedEdge) {
+    state.selectedEdgeId = matchedEdge.id;
+    state.selectedNodeId = null;
+  } else if (nodeId && layout?.posMap?.has(nodeId)) {
+    state.selectedEdgeId = null;
+    state.selectedNodeId = nodeId;
+  } else if (validGroup && layout?.posMap?.has(`hub-${validGroup}`)) {
+    state.selectedEdgeId = null;
+    state.selectedNodeId = `hub-${validGroup}`;
+  } else {
+    state.selectedEdgeId = null;
+    state.selectedNodeId = null;
+  }
+
+  state.hoveredNodeId = null;
+  state.hoveredEdgeId = null;
+  applyPathLaserIsolation();
+  syncClearFocusButton();
+
+  const focusTarget = matchedEdge
+    ? (matchedEdge.realNodeId || (layout?.posMap?.has(matchedEdge.to) ? matchedEdge.to : matchedEdge.from))
+    : (nodeId && layout?.posMap?.has(nodeId))
+    ? nodeId
+    : (validGroup ? `hub-${validGroup}` : null);
+  if (focusTarget) focusNodeOnMap(focusTarget);
+
+  renderDecisionSummaryWidget();
+  setStatus("Focused signal on constellation map. Click the isolated curve or node to inspect its dossier.");
 }
 
 function renderDecisionSummaryWidget() {
@@ -2615,7 +2738,9 @@ function renderDecisionSummaryWidget() {
   const pillDot = $("#decisionPillDot");
   const pillLabel = $("#decisionPillLabel");
   const overallBadge = $("#decisionOverallBadge");
+  const gradeBadge = $("#decisionGradeBadge");
   const factorList = $("#decisionFactorList");
+  const bridgeStrip = $("#decisionBridgeStrip");
   const pop = $("#decisionSummaryPopover");
   if (!pillBtn || !factorList) return;
 
@@ -2624,6 +2749,8 @@ function renderDecisionSummaryWidget() {
     pillBtn.disabled = true;
     if (pillLabel) pillLabel.textContent = "Decision · 4 Factors";
     if (pop) pop.hidden = true;
+    if (gradeBadge) gradeBadge.hidden = true;
+    if (bridgeStrip) bridgeStrip.hidden = true;
     $("#decisionAiOutput")?.setAttribute("hidden", "");
     $("#decisionAiPrompt")?.removeAttribute("hidden");
     pop?.classList.remove("has-ai-results");
@@ -2637,18 +2764,26 @@ function renderDecisionSummaryWidget() {
     pillDot.className = `decision-pill-dot ${summary.overall.cls}`;
   }
   if (pillLabel) {
-    pillLabel.textContent = `Decision · ${summary.overall.label}`;
+    const scoreTag = summary.executive?.evidenceScore ? ` · ${summary.executive.evidenceScore}/100` : "";
+    pillLabel.textContent = `Decision · ${summary.overall.label}${scoreTag}`;
   }
   if (overallBadge) {
     overallBadge.className = `decision-verdict-badge ${summary.overall.cls}`;
     overallBadge.textContent = summary.overall.label;
+  }
+  if (gradeBadge) {
+    const hasExec = Boolean(summary.executive && summary.executive.provenanceMix?.total > 0);
+    gradeBadge.hidden = !hasExec;
+    if (hasExec) {
+      gradeBadge.textContent = `Score ${summary.executive.evidenceScore}/100 · Grade ${summary.executive.reliabilityGrade} · ${summary.executive.verifiedSharePct}% Verified`;
+    }
   }
   if (!summary.factors.some((factor) => factor.group === state.decisionSelectedFactor)) {
     state.decisionSelectedFactor = summary.factors[0]?.group || "access";
   }
   const selectedFactor = summary.factors.find((factor) => factor.group === state.decisionSelectedFactor);
   const title = $(".decision-pop-title");
-  if (title) title.textContent = state.decisionDetailView ? `${selectedFactor?.label || "Factor"} analysis` : "4-Factor Decision";
+  if (title) title.textContent = state.decisionDetailView ? `${selectedFactor?.label || "Factor"} Analysis` : "4-Factor Decision";
   factorList.hidden = state.decisionDetailView;
   $("#decisionAiPrompt")?.toggleAttribute("hidden", state.decisionDetailView);
   pop?.classList.toggle("is-expanded", state.decisionPanelExpanded);
@@ -2669,15 +2804,52 @@ function renderDecisionSummaryWidget() {
         <div class="decision-factor-top">
           <span class="decision-factor-name">
             <span class="fam-dot" style="background:${getContributionColorHex(f.group)}"></span>
-            ${escapeHtml(f.label)} <span class="decision-factor-count">(${f.count})</span>
+            <span>${escapeHtml(f.label)}</span>
+            <span class="decision-factor-count">(${f.count})</span>
+            ${f.sharedCount > 0 ? `<span class="decision-shared-micro">${f.sharedCount} shared</span>` : ""}
           </span>
-          <span class="decision-effect-pill ${escapeHtml(f.effectClass)}">${escapeHtml(f.effect)}</span>
+          <span class="decision-factor-score-wrap">
+            <span class="decision-score-val">${f.signalStrength}</span>
+            <span class="decision-effect-pill ${escapeHtml(f.effectClass)}">${escapeHtml(f.effect)}</span>
+          </span>
+        </div>
+        <div class="decision-score-track" aria-hidden="true">
+          <i style="width:${f.signalStrength > 0 ? Math.max(6, f.signalStrength) : 0}%;background:${getContributionColorHex(f.group)}"></i>
         </div>
         <div class="decision-factor-line">${escapeHtml(f.line)}</div>
       </button>
     `
     )
     .join("");
+
+  if (bridgeStrip) {
+    const highlights = asList(summary.executive?.sharedBridgeHighlights).slice(0, 2);
+    const introFallback = !highlights.length ? asList(summary.executive?.warmIntroRoutes).slice(0, 2) : [];
+    const items = highlights.length
+      ? highlights.map((h) => ({
+          label: h.name,
+          sub: `${asList(h.sharedHubs).length || 2} hubs · ${h.sourceRank || "PRIMARY"}`,
+          edgeId: h.edgeId || "",
+          nodeId: h.nodeId || "",
+          group: h.group || "access"
+        }))
+      : introFallback.map((r) => ({
+          label: r.entityName,
+          sub: r.isLead ? `Lead · ${r.focalName}` : `Intro · ${r.focalName}`,
+          edgeId: r.edgeId || "",
+          nodeId: r.nodeId || "",
+          group: "access"
+        }));
+    const showStrip = !state.decisionDetailView && items.length > 0;
+    bridgeStrip.hidden = !showStrip;
+    bridgeStrip.innerHTML = showStrip
+      ? `<span class="decision-bridge-kicker">Key Bridges · Click to Locate</span><div class="decision-bridge-chips">${items
+          .map(
+            (it) => `<button type="button" class="decision-bridge-chip" data-focus-edge-id="${escapeHtml(it.edgeId)}" data-focus-node-id="${escapeHtml(it.nodeId)}" data-focus-group="${escapeHtml(it.group)}"><strong>${escapeHtml(it.label)}</strong><span>${escapeHtml(it.sub)}</span></button>`
+          )
+          .join("")}</div>`
+      : "";
+  }
   renderDecisionFactorAnalysis(summary);
 }
 
@@ -2700,64 +2872,102 @@ function setDecisionPanelExpanded(expanded) {
 function fourFactorClaudeCacheKey(summary, bridgeMap) {
   const focalNames = asList(bridgeMap?.focalEntities).map((f) => f.name).filter(Boolean);
   const title = focalNames.length ? `${focalNames.join(" + ")} · 4-Factor Investment Decision` : "4-Factor Investment Decision";
-  const cacheKey = `4factor:${title}:${JSON.stringify(summary.factors.map((factor) => ({
+  const cacheKey = `4factor:v2:${title}:${JSON.stringify(summary.factors.map((factor) => ({
     group: factor.group,
     count: factor.count,
+    signalStrength: factor.signalStrength,
     effect: factor.effect,
     line: factor.line,
-    investmentImpact: factor.investmentImpact,
     sourceIds: factor.sourceIds,
-    records: getDecisionFactorEvidence(bridgeMap, factor).records.slice(0, 6)
+    records: getDecisionFactorEvidence(bridgeMap, factor).records.slice(0, 6).map((r) => r.path + r.relation)
   })))}`;
   return { title, cacheKey };
 }
 
+function collectDecisionSourceMap(bridgeMap, extraSources = []) {
+  const sourceObjects = [
+    ...(Array.isArray(state.analysis?.sources) ? state.analysis.sources : Object.values(state.analysis?.sources || {})),
+    ...(Array.isArray(bridgeMap?.sources) ? bridgeMap.sources : Object.values(bridgeMap?.sources || {})),
+    ...asList(extraSources)
+  ];
+  const map = new Map();
+  for (const source of sourceObjects) {
+    const id = source?.id || source?.sourceId || source?.source_id;
+    if (id) map.set(String(id), { ...source, id: String(id) });
+  }
+  return map;
+}
+
 function getDecisionFactorEvidence(bridgeMap, factor) {
-  const nodes = new Map(asList(bridgeMap?.nodes).map((node) => [node.id, node]));
-  const isFocal = (id) => Boolean(nodes.get(id)?.isFocalEntity || nodes.get(id)?.kind === "anchor");
-  const sourceList = state.analysis?.sources || bridgeMap?.sources || {};
-  const sources = Array.isArray(sourceList) ? sourceList : Object.values(sourceList);
-  const sourceIdOf = (source) => source?.id || source?.sourceId || source?.source_id || null;
-  const sourceById = new Map(sources.filter(sourceIdOf).map((source) => {
-    const id = String(sourceIdOf(source));
-    return [id, { ...source, id }];
-  }));
-  const readSourceIds = (item) => [...new Set([
-    ...asList(item?.sourceIds),
-    item?.sourceId,
-    ...asList(item?.evidenceSources).map(sourceIdOf)
-  ].filter(Boolean))];
-  const edges = asList(bridgeMap?.edges)
-    .filter((edge) => !edge.id?.startsWith("tree-spoke-") && deriveContributionGroupFrontend(edge) === factor.group);
-  const records = edges.map((edge) => {
-    const fromNode = nodes.get(edge.from);
-    const toNode = nodes.get(edge.to);
-    const fromName = cleanText(fromNode?.label || fromNode?.name || edge.from);
-    const toName = cleanText(toNode?.label || toNode?.name || edge.to);
-    const pathNames = isFocal(edge.from) ? `${fromName} → ${toName}`
-      : isFocal(edge.to) ? `${toName} → ${fromName}`
-      : `${fromName} ↔ ${toName}`;
-    const relation = cleanText(edge.label || edge.relation || edge.relationType || edge.bridgeFamily || "Verified Cala path");
-    const sourceIds = readSourceIds(edge);
-    for (const source of asList(edge.evidenceSources)) {
-      const id = sourceIdOf(source);
-      if (id && !sourceById.has(String(id))) sourceById.set(String(id), { ...source, id: String(id) });
-    }
-    return {
-      type: cleanText(edge.relationType || edge.relation || edge.bridgeFamily || relation),
-      path: pathNames,
-      relation,
-      detail: cleanText(edge.detail || edge.whyMatters || edge.description),
-      date: cleanText(edge.date || edge.asOfDate),
-      sourceIds
-    };
-  });
+  const sourceById = collectDecisionSourceMap(bridgeMap);
+  const ranked = asList(factor?.rankedRecords);
+  let records = [];
+
+  if (ranked.length > 0) {
+    records = ranked.map((r) => ({
+      id: r.id || "",
+      edgeId: r.edgeId || "",
+      nodeId: r.nodeId || "",
+      focalEntityId: r.focalEntityId || "",
+      type: cleanText(r.type || r.relation || "Mapped path"),
+      path: cleanText(r.path || `${r.canonicalFrom || ""} → ${r.canonicalTo || ""}`),
+      canonicalFrom: cleanText(r.canonicalFrom || ""),
+      canonicalTo: cleanText(r.canonicalTo || ""),
+      relation: cleanText(r.relation || "Verified Cala path"),
+      detail: cleanText(r.detail || ""),
+      date: cleanText(r.date || ""),
+      sourceRank: cleanText(r.sourceRank || "AGGREGATOR"),
+      isSharedBridge: Boolean(r.isSharedBridge),
+      isLead: Boolean(r.isLead),
+      isAnomaly: Boolean(r.isAnomaly),
+      sharedHubs: asList(r.sharedHubs),
+      signalWeight: Number(r.signalWeight || 0),
+      sourceIds: [...new Set(asList(r.sourceIds).filter(Boolean).map(String))]
+    }));
+  } else {
+    const nodes = new Map(asList(bridgeMap?.nodes).map((node) => [node.id, node]));
+    const sourceIdOf = (source) => source?.id || source?.sourceId || source?.source_id || null;
+    const readSourceIds = (item) => [...new Set([
+      ...asList(item?.sourceIds),
+      item?.sourceId,
+      ...asList(item?.evidenceSources).map(sourceIdOf)
+    ].filter(Boolean).map(String))];
+    const edges = asList(bridgeMap?.edges)
+      .filter((edge) => !edge.id?.startsWith("tree-spoke-") && deriveContributionGroupFrontend(edge) === factor.group);
+    records = edges.map((edge) => {
+      const fromNode = nodes.get(edge.from);
+      const toNode = nodes.get(edge.to);
+      const fromName = cleanText(fromNode?.label || fromNode?.name || edge.from);
+      const toName = cleanText(toNode?.label || toNode?.name || edge.to);
+      const pathNames = `${fromName} → ${toName}`;
+      const relation = cleanText(edge.label || edge.relation || edge.relationType || edge.bridgeFamily || "Verified Cala path");
+      const sIds = readSourceIds(edge);
+      for (const source of asList(edge.evidenceSources)) {
+        const id = sourceIdOf(source);
+        if (id && !sourceById.has(String(id))) sourceById.set(String(id), { ...source, id: String(id) });
+      }
+      return {
+        id: edge.id || "",
+        edgeId: edge.id || "",
+        nodeId: edge.to || edge.from || "",
+        type: cleanText(edge.relationType || edge.relation || edge.bridgeFamily || relation),
+        path: pathNames,
+        relation,
+        detail: cleanText(edge.detail || edge.whyMatters || edge.description),
+        date: cleanText(edge.date || edge.asOfDate),
+        sourceRank: cleanText(edge.topSourceRank || "AGGREGATOR"),
+        isSharedBridge: Boolean(edge.isSharedBridge),
+        isLead: Boolean(edge.isLead),
+        isAnomaly: Boolean(edge.isAnomaly),
+        sourceIds: sIds
+      };
+    });
+  }
 
   const sourceIds = [...new Set([
-    ...factor.sourceIds,
+    ...asList(factor?.sourceIds).map(String),
     ...records.flatMap((record) => record.sourceIds)
   ])];
-  const entityNames = new Set(records.flatMap((record) => record.path.split(/\s(?:→|↔)\s/)).filter(Boolean));
   const buckets = new Map();
   for (const record of records) {
     const label = record.type.replace(/_/g, " ").replace(/\s+/g, " ").trim() || "Mapped path";
@@ -2767,13 +2977,59 @@ function getDecisionFactorEvidence(bridgeMap, factor) {
     .map(([label, count]) => ({ label, count }))
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
     .slice(0, 4);
+
   return {
     records,
     sources: sourceIds.map((id) => sourceById.get(id)).filter(Boolean),
     sourceIds,
-    entityCount: entityNames.size,
     breakdown
   };
+}
+
+function renderProvenanceMixBar(mix = {}) {
+  const f = Number(mix.filing || 0);
+  const p = Number(mix.primary || 0);
+  const r = Number(mix.press || 0);
+  const a = Number(mix.aggregator || 0);
+  const total = Math.max(1, f + p + r + a);
+  const seg = (val, cls, title) => val > 0
+    ? `<span class="prov-seg ${cls}" style="width:${Math.max(4, Math.round((val / total) * 100))}%" title="${title}: ${val}"></span>`
+    : "";
+  const chips = [
+    f > 0 ? `<span class="prov-chip is-filing">FILING ${f}</span>` : "",
+    p > 0 ? `<span class="prov-chip is-primary">PRIMARY ${p}</span>` : "",
+    r > 0 ? `<span class="prov-chip is-press">PRESS ${r}</span>` : "",
+    a > 0 ? `<span class="prov-chip is-agg">AGG ${a}</span>` : ""
+  ].filter(Boolean).join("");
+  return `
+    <div class="decision-provenance-block">
+      <div class="decision-provenance-track" aria-label="Evidence provenance breakdown">${seg(f, "is-filing", "Filing")}${seg(p, "is-primary", "Primary")}${seg(r, "is-press", "Press")}${seg(a, "is-agg", "Aggregator")}</div>
+      <div class="decision-provenance-legend">${chips || `<span class="decision-ai-no-chart">No tier breakdown available.</span>`}</div>
+    </div>
+  `;
+}
+
+function renderDecisionDrawer(key, title, badgeText, bodyHtml, isOpen) {
+  return `
+    <section class="decision-drawer ${isOpen ? "is-open" : ""}">
+      <button
+        type="button"
+        class="decision-drawer-toggle"
+        data-decision-drawer="${escapeHtml(key)}"
+        aria-expanded="${Boolean(isOpen)}"
+        aria-controls="decisionDrawerPanel-${escapeHtml(key)}"
+      >
+        <span class="decision-drawer-title">${escapeHtml(title)}</span>
+        <span class="decision-drawer-right">
+          ${badgeText ? `<span class="decision-ai-evidence-count">${escapeHtml(badgeText)}</span>` : ""}
+          <span class="decision-drawer-chevron" aria-hidden="true">${isOpen ? "−" : "+"}</span>
+        </span>
+      </button>
+      <div class="decision-drawer-panel" id="decisionDrawerPanel-${escapeHtml(key)}" ${isOpen ? "" : "hidden"}>
+        ${bodyHtml}
+      </div>
+    </section>
+  `;
 }
 
 function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(state.bridgeMap)) {
@@ -2794,23 +3050,46 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
   if (promptEl) promptEl.hidden = true;
   pop?.classList.add("has-ai-results");
 
+  const switcherHtml = `
+    <div class="decision-factor-switcher" role="tablist" aria-label="Switch factor">
+      ${summary.factors.map((f) => `
+        <button
+          type="button"
+          class="decision-mini-pill ${f.group === factor.group ? "is-active" : ""}"
+          role="tab"
+          aria-selected="${f.group === factor.group}"
+          data-switch-factor="${escapeHtml(f.group)}"
+        >
+          <span class="fam-dot" style="background:${getContributionColorHex(f.group)}"></span>
+          <span>${escapeHtml(f.label)}</span>
+          <b>${f.signalStrength}</b>
+        </button>
+      `).join("")}
+    </div>
+  `;
+
+  const navHtml = `
+    <div class="decision-ai-navigation">
+      <button type="button" class="decision-ai-back" data-decision-back="true">&larr; Factors</button>
+      ${switcherHtml}
+      <button type="button" class="decision-ai-expand" data-decision-expand="true" aria-pressed="${state.decisionPanelExpanded}">${state.decisionPanelExpanded ? "Return to map" : "Expand"}</button>
+    </div>
+  `;
+
   if (state.decisionAnalysisStatus === "loading") {
     outEl.removeAttribute("aria-labelledby");
     outEl.setAttribute("aria-label", `${factor.label} analysis is loading`);
     outEl.innerHTML = `
-      <div class="decision-ai-navigation">
-        <button type="button" class="decision-ai-back" data-decision-back="true">← All factors</button>
-        <button type="button" class="decision-ai-expand" data-decision-expand="true" aria-pressed="${state.decisionPanelExpanded}">${state.decisionPanelExpanded ? "Return to map" : "Expand"}</button>
-      </div>
+      ${navHtml}
       <div class="decision-ai-card decision-ai-loading-card">
         <div class="decision-ai-head">
-          <span>CLAUDE AI · ANALYZING</span>
-          <span class="decision-ai-step">${summary.factors.findIndex((item) => item.group === factor.group) + 1} / 4</span>
+          <span>CLAUDE AI · ANALYZING ALL 4 FACTORS</span>
+          <span class="decision-ai-step">${factor.signalStrength}/100</span>
         </div>
         <div class="decision-ai-loading-state" role="status" aria-live="polite">
           <span class="decision-ai-loading-indicator" aria-hidden="true"></span>
-          <strong>Analyzing the ${escapeHtml(factor.label.toLowerCase())} network signal</strong>
-          <span>Assessing its effect on the investment decision…</span>
+          <strong>Synthesizing ${escapeHtml(factor.label.toLowerCase())} & cross-hub signals</strong>
+          <span>Grounding every takeaway in verified Cala citations...</span>
         </div>
       </div>
     `;
@@ -2826,182 +3105,225 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
   const factorAnalysis = factorAnalyses.get(factor.group);
   const claudeAnalyzed = state.decisionAnalysisStatus === "ready" && res?.controlPlaneMode === "anthropic-connection-analyst";
   const candidateEffect = cleanText(factorAnalysis?.decisionEffect?.text || factorInsight?.text);
-  const mapEffect = cleanText(factorInsight?.text || factor.impact || factor.line || factor.investmentImpact);
+  const mapEffect = cleanText(factor.investmentImpact || factorInsight?.text || factor.line);
   const effectSource = factorAnalysis?.decisionEffectSource;
   const heuristicClaudeEffect = Boolean(candidateEffect && candidateEffect !== mapEffect && candidateEffect !== cleanText(factor.investmentImpact));
   const hasClaudeFactorEffect = claudeAnalyzed && effectSource !== "map-fallback" && effectSource !== "fallback" &&
     (effectSource === "anthropic" || (!effectSource && heuristicClaudeEffect));
-  const decisionImpact = hasClaudeFactorEffect ? candidateEffect : mapEffect;
-  const showDecisionEffect = state.decisionAnalysisStatus === "ready" && Boolean(decisionImpact);
-  const sourceIdsForFactor = new Set(factor.sourceIds);
-  const factorInsights = asList(res?.insights).filter((item) =>
-    asList(item.sourceIds).some((id) => sourceIdsForFactor.has(id))
-  );
+  const decisionImpact = hasClaudeFactorEffect ? candidateEffect : (mapEffect || "No verified signal mapped in this factor.");
+
   const evidenceData = getDecisionFactorEvidence(state.bridgeMap, factor);
-  const transmittedFactor = asList(res?.analysisInput?.decisionFactors).find((item) => item.group === factor.group);
-  const submittedRecords = transmittedFactor?.records || evidenceData.records.slice(0, 6);
-  const submittedSourceIds = transmittedFactor?.sourceIds || [...new Set([
-    ...factor.sourceIds,
-    ...submittedRecords.flatMap((record) => record.sourceIds || [])
-  ])];
-  const sourceObjects = [
-    ...(Array.isArray(state.analysis?.sources) ? state.analysis.sources : Object.values(state.analysis?.sources || {})),
-    ...(Array.isArray(state.bridgeMap?.sources) ? state.bridgeMap.sources : Object.values(state.bridgeMap?.sources || {})),
-    ...evidenceData.sources,
-    ...asList(res?.analysisInput?.sources)
-  ];
-  const sourceById = new Map(sourceObjects.map((source) => {
-    const id = source?.id || source?.sourceId || source?.source_id;
-    return id ? [String(id), { ...source, id: String(id) }] : null;
-  }).filter(Boolean));
+  const sourceById = collectDecisionSourceMap(state.bridgeMap, [...evidenceData.sources, ...asList(res?.analysisInput?.sources)]);
+  const submittedRecords = evidenceData.records.slice(0, 8);
+  const submittedSourceIds = [...new Set([...factor.sourceIds, ...submittedRecords.flatMap((r) => r.sourceIds)])];
+  const decisionEffectSourceIds = asList(factorAnalysis?.decisionEffect?.sourceIds);
+
   const renderCitations = (sourceIds) => asList(sourceIds)
+    .slice(0, 3)
     .map((id) => {
       const source = sourceById.get(String(id));
-      // Titles distinguish the actual evidence records; the publisher is often
-      // just the same generic "Cala" label for every citation.
-      const label = source?.title || source?.publisher || (source ? source.id : `Cala source ${id}`);
-      return `<span class="ai-cite-pill">${escapeHtml(label)}</span>`;
+      const label = cleanText(source?.title || source?.publisher || `Cala source ${id}`);
+      return `<span class="ai-cite-pill" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
     })
     .join("");
-  const submittedBuckets = new Map();
-  for (const record of submittedRecords) {
-    const label = cleanText(record.type).replace(/_/g, " ") || "Mapped path";
-    submittedBuckets.set(label, (submittedBuckets.get(label) || 0) + 1);
-  }
-  const submittedBreakdown = [...submittedBuckets.entries()].map(([label, count]) => ({ label, count }));
-  const signalMax = Math.max(1, ...submittedBreakdown.map((item) => item.count));
-  const signalBars = submittedBreakdown.length
-    ? submittedBreakdown.map((item) => `
-      <div class="decision-ai-bar-row">
-        <span title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</span>
-        <div class="decision-ai-bar-track"><i style="width:${Math.max(8, Math.round((item.count / signalMax) * 100))}%"></i></div>
-        <b>${item.count}</b>
-      </div>
-    `).join("")
-    : `<div class="decision-ai-no-chart">No categorized Cala records for this factor.</div>`;
-  const sourceCards = submittedSourceIds.map((id) => sourceById.get(String(id)) || { id, title: `Cala source ${id}` }).map((source) => {
+
+  const reasoningList = claudeAnalyzed ? asList(factorAnalysis?.reasoning).slice(0, 3) : [];
+  const sourceIdsForFactor = new Set(submittedSourceIds);
+  const factorInsights = asList(res?.insights).filter((item) =>
+    asList(item.sourceIds).some((id) => sourceIdsForFactor.has(String(id)))
+  );
+  const factorNextCheck = cleanText(factorAnalysis?.nextCheck || factor.actionableCheck || GROUP_DECISION_QUESTIONS[factor.group]);
+  const fallbackLimitation = submittedRecords.length
+    ? "Mapped relationships confirm network existence only; they do not establish product quality, revenue traction, or commercial terms."
+    : "No mapped Cala records were returned for this factor; verify outside Cala before deciding.";
+  const factorLimitation = cleanText(factorAnalysis?.limitation || fallbackLimitation);
+
+  const reasoningHtml = reasoningList.length
+    ? `<ul class="decision-ai-bullets">${reasoningList.map((item) => `<li>${escapeHtml(item.text)}</li>`).join("")}</ul>`
+    : submittedRecords.length
+    ? `<ul class="decision-ai-bullets">${submittedRecords.slice(0, 2).map((r) => `<li>${escapeHtml(r.path)} (${escapeHtml(r.relation)}${r.date ? `, ${escapeHtml(r.date)}` : ""})</li>`).join("")}</ul>`
+    : `<p class="decision-ai-no-reasoning">No mapped relationships recorded for this factor.</p>`;
+
+  const crossInsightsHtml = factorInsights.length
+    ? `<div class="decision-ai-further"><strong>Cross-Factor Signal</strong><ul class="decision-ai-bullets">${factorInsights.map((it) => `<li>${escapeHtml(it.text)}</li>`).join("")}</ul></div>`
+    : "";
+
+  const reasoningDrawerBody = `
+    <div class="decision-ai-detail-block">
+      <div><span class="decision-ai-section-label">Evidence Reasoning</span>${reasoningHtml}</div>
+      ${crossInsightsHtml}
+      <div class="decision-ai-limitation"><strong>Scope & Limitation</strong><p>${escapeHtml(factorLimitation)}</p></div>
+    </div>
+  `;
+
+  const connectionRowsHtml = submittedRecords.length
+    ? `<div class="decision-ai-evidence-list">${submittedRecords.map((rec) => {
+        const canFocus = Boolean(rec.edgeId || rec.nodeId);
+        return `
+          <article class="decision-ai-evidence-row">
+            <div class="decision-ai-record-head">
+              <strong>${escapeHtml(rec.path)}</strong>
+              <span class="decision-row-badges">
+                ${rec.isSharedBridge ? `<span class="decision-badge-shared">Shared</span>` : ""}
+                <span class="source-tier" data-tier="${escapeHtml(rec.sourceRank || "AGGREGATOR")}">${escapeHtml(rec.sourceRank || "AGG")}</span>
+              </span>
+            </div>
+            <p>${escapeHtml(rec.detail || rec.relation)}</p>
+            <div class="decision-ai-record-meta">
+              <span>${rec.date ? escapeHtml(rec.date) : "Undated"} · ${escapeHtml(rec.relation)}</span>
+              ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Focus map</button>` : ""}
+            </div>
+          </article>
+        `;
+      }).join("")}</div>`
+    : `<div class="decision-ai-no-chart">No mapped relationship records for this factor.</div>`;
+
+  const sourceCardsHtml = submittedSourceIds.slice(0, 10).map((id) => sourceById.get(String(id)) || { id, title: `Cala record ${id}` }).map((source) => {
     const title = cleanText(source.title || source.publisher || source.id);
     const publisher = cleanText(source.publisher || source.source || "");
     const rank = cleanText(source.sourceRank || source.source_rank || "");
     const date = cleanText(source.date || source.asOfDate || "");
     const url = cleanText(source.url || source.document || "");
     const externalUrl = /^https?:\/\//i.test(url) ? url : "";
-    return `<article class="decision-ai-source-card">
-      <div><strong>${escapeHtml(title)}</strong><span>${escapeHtml([publisher, rank, date].filter(Boolean).join(" · ") || `Source ID ${source.id}`)}</span></div>
-      ${externalUrl ? `<a href="${escapeHtml(externalUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : ""}
-    </article>`;
+    return `
+      <article class="decision-ai-source-card">
+        <div>
+          <strong>${escapeHtml(title)}</strong>
+          <span>${escapeHtml([publisher, rank, date].filter(Boolean).join(" · ") || source.id)}</span>
+        </div>
+        ${externalUrl ? `<a href="${escapeHtml(externalUrl)}" target="_blank" rel="noopener noreferrer">Open &nearr;</a>` : ""}
+      </article>
+    `;
   }).join("");
-  const evidenceRows = submittedRecords.map((record) => `
-    <article class="decision-ai-evidence-row">
-      <div class="decision-ai-record-head">
-        <strong>${escapeHtml(record.path)}</strong>
-        <span>${escapeHtml(record.type.replace(/_/g, " "))}</span>
+
+  const anomalies = asList(summary.executive?.dataAnomalies);
+  const quarantinedCount = Number(summary.executive?.quarantinedCount || 0);
+  const dataQualityHtml = (anomalies.length || quarantinedCount > 0)
+    ? `
+      <div class="decision-quality-box">
+        <div class="decision-quality-head">
+          <strong>Data Hygiene &amp; Quarantined Flags</strong>
+          <span>${quarantinedCount} raw anomalies filtered</span>
+        </div>
+        ${anomalies.length ? `<ul class="decision-quality-list">${anomalies.slice(0, 3).map((a) => `<li><strong>${escapeHtml(a.path || a.kind)}:</strong> ${escapeHtml(a.detail)}</li>`).join("")}</ul>` : `<p class="decision-ai-no-reasoning">No high-severity timing conflicts flagged; raw bulk-crawl and generic edges were quarantined cleanly.</p>`}
       </div>
-      <p>${escapeHtml(record.detail || record.relation)}</p>
-      <div class="decision-ai-record-meta">
-        ${record.date ? `<time>${escapeHtml(record.date)}</time>` : "<span>Undated</span>"}
-        <span>${escapeHtml(record.relation)}</span>
-        ${renderCitations(record.sourceIds)}
-      </div>
-    </article>
-  `).join("");
-  const statusLabel = state.decisionAnalysisStatus === "loading"
-    ? "CLAUDE AI · ANALYZING"
-    : hasClaudeFactorEffect
-    ? "CLAUDE ANALYSIS"
+    `
+    : "";
+
+  const sourcesDrawerBody = `
+    <div class="decision-sources-wrap">
+      ${renderProvenanceMixBar(factor.provenanceMix)}
+      <div class="decision-ai-sources-used">${sourceCardsHtml || `<span class="decision-ai-no-chart">No source cards linked.</span>`}</div>
+      ${dataQualityHtml}
+    </div>
+  `;
+
+  const statusLabel = hasClaudeFactorEffect
+    ? (res?.fromCache ? "CLAUDE · CACHED" : "CLAUDE AI")
     : state.decisionAnalysisStatus === "ready"
-    ? "MAP-BASED FALLBACK"
+    ? "MAP BASELINE"
     : state.decisionAnalysisStatus === "error"
     ? "CLAUDE UNAVAILABLE"
-    : "MAP-BASED READ";
-  const decisionEffectSourceIds = asList(factorAnalysis?.decisionEffect?.sourceIds);
-  const factorCitations = renderCitations(decisionEffectSourceIds.length ? decisionEffectSourceIds : factorInsight?.sourceIds);
-  const reasoningRows = (claudeAnalyzed ? asList(factorAnalysis?.reasoning) : []).slice(0, 3).map((item) => `
-    <li>${escapeHtml(item.text)}</li>
-  `).join("");
-  const analysisLogic = reasoningRows
-    ? `<section class="decision-ai-reasoning"><span class="decision-ai-section-label">Why this network signal matters</span><ul class="decision-ai-bullets">${reasoningRows}</ul></section>`
-    : "";
-  const factorNextCheck = cleanText(factorAnalysis?.nextCheck || GROUP_DECISION_QUESTIONS[factor.group]);
-  const fallbackLimitation = submittedRecords.length
-    ? "These mapped relationships establish network connections only; they do not prove product quality, commercial traction, or investment merit."
-    : "No mapped Cala records were submitted for this factor, so this view cannot establish whether the signal is present or absent outside the map.";
-  const factorLimitation = cleanText(factorAnalysis?.limitation || fallbackLimitation);
-  const crossInsightRows = factorInsights.map((item) => `
-    <li>${escapeHtml(item.text)} ${renderCitations(item.sourceIds)}</li>
-  `).join("");
-  const evidenceDisclosure = claudeAnalyzed ? `
-    <details class="decision-ai-evidence-disclosure">
-      <summary>
-        <span><strong>Evidence & sources</strong><small>Inspect the Cala records behind this analysis</small></span>
-        <span class="decision-ai-evidence-count">${submittedRecords.length} records · ${submittedSourceIds.length} sources</span>
-      </summary>
-      <div class="decision-ai-evidence-content">
-        <p class="decision-ai-transparency">${hasClaudeFactorEffect
-          ? "These exact mapped relationships and source references were included in Claude's analysis."
-          : "Claude did not return a source-grounded effect for this factor, so the map baseline is shown. Inspect the submitted records below."}</p>
-        <section class="decision-ai-detail-block" aria-label="Analysis details">
-          <div class="decision-ai-detail-heading">Reasoning and diligence</div>
-          ${analysisLogic || `<p class="decision-ai-no-reasoning">Claude did not return separate reasoning points for this factor. Review the cited network records below.</p>`}
-          <div class="decision-ai-limitation"><strong>What this evidence cannot prove</strong><p>${escapeHtml(factorLimitation)}</p></div>
-          <div class="decision-ai-next-check"><span class="decision-ai-section-label">Next diligence step</span><p>${escapeHtml(factorNextCheck)}</p></div>
-        </section>
-        <div class="decision-ai-input-summary"><strong>Network signal</strong><span>${escapeHtml(factor.line)}</span></div>
-        <div class="decision-ai-metrics" aria-label="Cala evidence metrics">
-          <div><span>Signals</span><strong>${factor.count.toLocaleString()}</strong></div>
-          <div><span>Records sent</span><strong>${submittedRecords.length.toLocaleString()}</strong></div>
-          <div><span>Sources sent</span><strong>${submittedSourceIds.length.toLocaleString()}</strong></div>
-        </div>
-        <section class="decision-ai-breakdown" aria-label="Factor evidence by record type">
-          <div class="decision-ai-section-label">Record mix</div>
-          ${signalBars}
-        </section>
-        <div class="decision-ai-cited-sources"><strong>${hasClaudeFactorEffect ? "Sources cited for this effect" : "Cala source references"}</strong>${factorCitations || `<span class="decision-ai-no-chart">No factor-level citations were returned.</span>`}</div>
-        <div class="decision-ai-sources-used">
-          <strong>Source references sent</strong>
-          ${sourceCards || `<span class="decision-ai-no-chart">No source IDs were attached to this factor input.</span>`}
-        </div>
-        ${crossInsightRows ? `<div class="decision-ai-further"><strong>Related cross-factor signal</strong><ul class="decision-ai-bullets">${crossInsightRows}</ul></div>` : ""}
-        <div class="decision-ai-evidence-list">
-          <div class="decision-ai-record-list-head"><strong>Records in analysis request</strong><span>${submittedRecords.length} of ${evidenceData.records.length}</span></div>
-          ${evidenceRows || `<div class="decision-ai-no-chart">No individual relationship records were supplied for this factor.</div>`}
-        </div>
-      </div>
-    </details>
-  ` : "";
+    : "MAP READ";
   const canRetryClaude = Boolean(res?.anthropicConfigured && res?.fallbackReason &&
     !/no mapped citations|not configured/i.test(res.fallbackReason));
-  const retryButton = `<button type="button" class="decision-ai-retry" data-decision-retry="true">Retry Claude analysis</button>`;
-  const fallbackNote = res?.fallbackReason
+  const retryButton = `<button type="button" class="decision-ai-retry" data-decision-retry="true">Retry Claude</button>`;
+  const analysisMessage = state.decisionAnalysisStatus === "error"
+    ? `<div class="decision-ai-fallback" role="alert"><span>Claude unavailable: ${escapeHtml(state.decisionAnalysisError)}</span>${retryButton}</div>`
+    : res?.fallbackReason
     ? `<div class="decision-ai-fallback" role="status"><span>${escapeHtml(res.fallbackReason)}</span>${canRetryClaude ? retryButton : ""}</div>`
     : "";
-  const analysisMessage = state.decisionAnalysisStatus === "loading"
-    ? `<p class="decision-ai-loading" role="status">Claude is assessing how this connection signal affects the investment decision.</p>`
-    : state.decisionAnalysisStatus === "error"
-    ? `<div class="decision-ai-fallback" role="alert"><span>Claude analysis unavailable: ${escapeHtml(state.decisionAnalysisError)} No effect summary is shown until an analysis response is available.</span>${retryButton}</div>`
-    : fallbackNote;
 
-  outEl.innerHTML = `
-    <div class="decision-ai-navigation">
-      <button type="button" class="decision-ai-back" data-decision-back="true">← All factors</button>
-      <button type="button" class="decision-ai-expand" data-decision-expand="true" aria-pressed="${state.decisionPanelExpanded}">${state.decisionPanelExpanded ? "Return to map" : "Expand"}</button>
+  const kpiStripHtml = `
+    <div class="decision-ai-metrics" aria-label="Cala evidence metrics">
+      <div><span>Paths</span><strong>${factor.count.toLocaleString()}</strong><small>${factor.sharedCount ? `${factor.sharedCount} shared` : "direct links"}</small></div>
+      <div><span>Verified</span><strong>${factor.provenanceMix?.verifiedSharePct ?? 0}%</strong><small>FILING / PRIMARY</small></div>
+      <div><span>Sources</span><strong>${submittedSourceIds.length}</strong><small>${factor.coverage?.datedCount || 0} dated</small></div>
     </div>
-    <div class="decision-ai-card">
-      <div class="decision-ai-head">
-        <span>${statusLabel}</span>
-        <span class="decision-ai-step">${summary.factors.findIndex((item) => item.group === factor.group) + 1} / 4</span>
+  `;
+
+  const factorHeadHtml = `
+    <div class="decision-ai-factor-head">
+      <div class="decision-head-left">
+        <span class="fam-dot" style="background:${getContributionColorHex(factor.group)}"></span>
+        <strong id="decisionAiSelectedHeading">${escapeHtml(factor.label)}</strong>
+        <span class="decision-score-chip">${factor.signalStrength}/100</span>
       </div>
-      <section class="decision-ai-factor-panel" aria-label="${escapeHtml(factor.label)} analysis">
-        <div class="decision-ai-factor-head">
-          <div><span class="decision-ai-section-label">Selected factor</span><strong id="decisionAiSelectedHeading">${escapeHtml(factor.label)}</strong></div>
-          <span class="decision-effect-pill ${escapeHtml(factor.effectClass)}">${escapeHtml(factor.effect)}</span>
+      <div class="decision-head-right">
+        <span class="decision-effect-pill ${escapeHtml(factor.effectClass)}">${escapeHtml(factor.effect)}</span>
+        <span class="decision-mode-tag ${hasClaudeFactorEffect ? "is-claude" : ""}">${statusLabel}</span>
+      </div>
+    </div>
+  `;
+
+  const takeawayBlockHtml = `
+    <div class="decision-ai-impact-block ${hasClaudeFactorEffect ? "" : "is-fallback"}">
+      <div class="decision-takeaway-top">
+        <span class="decision-ai-section-label">${hasClaudeFactorEffect ? "Claude Takeaway" : "Map Takeaway"}</span>
+        ${decisionEffectSourceIds.length ? `<span class="decision-cite-count">${decisionEffectSourceIds.length} cited</span>` : ""}
+      </div>
+      <p>${escapeHtml(decisionImpact)}</p>
+      ${decisionEffectSourceIds.length && state.decisionPanelExpanded ? `<div class="decision-ai-citations">${renderCitations(decisionEffectSourceIds)}</div>` : ""}
+    </div>
+    <div class="decision-ai-next-check">
+      <span class="decision-ai-section-label">Next Diligence Check</span>
+      <p>${escapeHtml(factorNextCheck)}</p>
+    </div>
+  `;
+
+  if (state.decisionPanelExpanded) {
+    const exec = summary.executive || {};
+    const icTakeaway = cleanText((claudeAnalyzed && res?.summary) || summary.investmentEffect);
+    outEl.innerHTML = `
+      ${navHtml}
+      <div class="decision-exec-banner">
+        <div class="decision-exec-top">
+          <span class="decision-verdict-badge ${escapeHtml(summary.overall.cls)}">${escapeHtml(summary.overall.label)}</span>
+          <span class="decision-exec-score">Evidence Score ${exec.evidenceScore ?? factor.signalStrength}/100 · Grade ${escapeHtml(exec.reliabilityGrade || "B")} · ${exec.verifiedSharePct ?? 0}% Verified</span>
+          ${quarantinedCount > 0 ? `<span class="decision-exec-quarantine">${quarantinedCount} raw noise filtered</span>` : ""}
         </div>
-        ${showDecisionEffect ? `<div class="decision-ai-impact-block ${hasClaudeFactorEffect ? "" : "is-fallback"}">
-          <span class="decision-ai-section-label">${hasClaudeFactorEffect ? "Effect on investment decision" : "Map-based fallback · no Claude effect for this factor"}</span><p>${escapeHtml(decisionImpact)}</p>
-        </div>` : ""}
+        ${icTakeaway ? `<p class="decision-exec-ic">${escapeHtml(icTakeaway)}</p>` : ""}
+      </div>
+      <div class="decision-workspace-grid">
+        <div class="decision-col-primary">
+          <section class="decision-ai-factor-panel" aria-label="${escapeHtml(factor.label)} analysis">
+            ${factorHeadHtml}
+            ${takeawayBlockHtml}
+            ${reasoningDrawerBody}
+            ${analysisMessage}
+          </section>
+        </div>
+        <div class="decision-col-evidence">
+          ${kpiStripHtml}
+          <section class="decision-evidence-panel">
+            <div class="decision-panel-subhead"><strong>Supporting Connections</strong><span>${submittedRecords.length} ranked paths</span></div>
+            ${connectionRowsHtml}
+          </section>
+          <section class="decision-evidence-panel">
+            <div class="decision-panel-subhead"><strong>Verified Sources &amp; Quality</strong><span>${submittedSourceIds.length} sources</span></div>
+            ${sourcesDrawerBody}
+          </section>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const drawers = state.decisionOpenDrawers || { reasoning: false, connections: false, sources: false };
+  outEl.innerHTML = `
+    ${navHtml}
+    <div class="decision-ai-card">
+      <section class="decision-ai-factor-panel" aria-label="${escapeHtml(factor.label)} analysis">
+        ${factorHeadHtml}
+        ${kpiStripHtml}
+        ${takeawayBlockHtml}
         ${analysisMessage}
       </section>
-      ${evidenceDisclosure}
+      <div class="decision-drawers-stack">
+        ${renderDrawer("reasoning", "Reasoning & Scope", `${reasoningList.length || Math.min(2, submittedRecords.length)} points`, reasoningDrawerBody, drawers.reasoning)}
+        ${renderDrawer("connections", "Supporting Connections", `${submittedRecords.length} paths`, connectionRowsHtml, drawers.connections)}
+        ${renderDrawer("sources", "Verified Sources & Quality", `${factor.provenanceMix?.verifiedSharePct ?? 0}% · ${submittedSourceIds.length}`, sourcesDrawerBody, drawers.sources)}
+      </div>
     </div>
   `;
 }
@@ -3049,31 +3371,32 @@ async function runFourFactorClaudeInsight(factorGroup = state.decisionSelectedFa
   renderDecisionSummaryWidget();
   requestAnimationFrame(() => $("#decisionAiOutput")?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
 
-  const sourceObjects = [
-    ...(Array.isArray(state.analysis?.sources) ? state.analysis.sources : Object.values(state.analysis?.sources || {})),
-    ...(Array.isArray(state.bridgeMap?.sources) ? state.bridgeMap.sources : Object.values(state.bridgeMap?.sources || {})),
-    ...summary.factors.flatMap((factor) => getDecisionFactorEvidence(state.bridgeMap, factor).sources)
-  ];
-  const sourceById = new Map(sourceObjects.map((source) => {
-    const id = source?.id || source?.sourceId || source?.source_id;
-    return id ? [String(id), { ...source, id: String(id) }] : null;
-  }).filter(Boolean));
+  const sourceById = collectDecisionSourceMap(
+    state.bridgeMap,
+    summary.factors.flatMap((factor) => getDecisionFactorEvidence(state.bridgeMap, factor).sources)
+  );
   const factorEvidence = summary.factors.map((factor) => {
     const data = getDecisionFactorEvidence(state.bridgeMap, factor);
     return { factor, records: data.records.slice(0, 6) };
   });
+
+  // Round-robin prioritize sources across all 4 factors so no factor starves within the 32-source cap.
   const sourceIdsToSend = new Set();
-  for (const { factor, records } of factorEvidence) {
-    let selectedForFactor = 0;
-    const candidateIds = [...records.flatMap((record) => record.sourceIds), ...factor.sourceIds];
-    for (const id of [...new Set(candidateIds)]) {
-      if (selectedForFactor >= 8 || sourceIdsToSend.size >= 32) break;
-      if (!sourceById.has(String(id))) continue;
-      const before = sourceIdsToSend.size;
-      if (id && sourceById.has(String(id))) sourceIdsToSend.add(String(id));
-      if (sourceIdsToSend.size > before) selectedForFactor += 1;
+  const pools = factorEvidence.map(({ factor, records }) => [...new Set([
+    ...asList(factor.sourceIds).map(String),
+    ...records.flatMap((record) => record.sourceIds.map(String))
+  ])]);
+  const maxPoolLen = Math.max(0, ...pools.map((p) => p.length));
+  for (let i = 0; i < maxPoolLen && sourceIdsToSend.size < 32; i++) {
+    for (const pool of pools) {
+      const id = pool[i];
+      if (id && !sourceIdsToSend.has(id) && sourceById.has(id)) {
+        sourceIdsToSend.add(id);
+        if (sourceIdsToSend.size >= 32) break;
+      }
     }
   }
+
   const allSources = [...sourceIdsToSend].map((id) => ({
     id,
     title: sourceById.get(id)?.title || sourceById.get(id)?.publisher || `Cala source ${id}`,
@@ -3087,6 +3410,11 @@ async function runFourFactorClaudeInsight(factorGroup = state.decisionSelectedFa
     effect: factor.effect,
     impact: factor.investmentImpact,
     evidence: factor.line,
+    metrics: {
+      signalStrength: factor.signalStrength,
+      sharedCount: factor.sharedCount,
+      verifiedSharePct: factor.provenanceMix?.verifiedSharePct
+    },
     sourceIds: [...new Set([...factor.sourceIds, ...records.flatMap((record) => record.sourceIds)])]
       .filter((id) => sourceIdsToSend.has(String(id)))
       .map(String),
@@ -3097,11 +3425,13 @@ async function runFourFactorClaudeInsight(factorGroup = state.decisionSelectedFa
       relation: record.relation,
       detail: record.detail,
       date: record.date,
+      sourceRank: record.sourceRank,
+      isSharedBridge: record.isSharedBridge,
       sourceIds: record.sourceIds.filter((id) => sourceIdsToSend.has(String(id))).map(String)
     }))
   }));
   const evidenceFacts = serializedFactors.flatMap((factor) => factor.records.map((record) => ({
-    text: `${factor.label}: ${record.path} — ${record.relation}${record.date ? ` (${record.date})` : ""}. ${record.detail || ""}`.trim(),
+    text: `${factor.label}: ${record.path} · ${record.relation}${record.date ? ` (${record.date})` : ""}. ${record.detail || ""}`.trim(),
     sourceIds: record.sourceIds
   })));
   try {
@@ -3115,6 +3445,7 @@ async function runFourFactorClaudeInsight(factorGroup = state.decisionSelectedFa
         whyMatters: summary.investmentEffect,
         facts: evidenceFacts,
         decisionFactors: serializedFactors,
+        anomalies: summary.executive?.dataAnomalies || [],
         sources: allSources
       })
     });
@@ -3127,13 +3458,13 @@ async function runFourFactorClaudeInsight(factorGroup = state.decisionSelectedFa
     if (state.decisionAnalysisRequestId === requestId && state.decisionAnalysisKey === cacheKey) {
       state.decisionAnalysisResult = res;
       state.decisionAnalysisStatus = "ready";
-      renderDecisionFactorAnalysis(summary);
+      renderDecisionSummaryWidget();
     }
   } catch (err) {
     if (state.decisionAnalysisRequestId === requestId && state.decisionAnalysisKey === cacheKey) {
       state.decisionAnalysisStatus = "error";
       state.decisionAnalysisError = err?.message || "Unknown analysis error";
-      renderDecisionFactorAnalysis(summary);
+      renderDecisionSummaryWidget();
     }
   } finally {
     if (state.decisionAnalysisRequestId === requestId && state.decisionAnalysisPendingKey === cacheKey) {
@@ -4198,6 +4529,9 @@ function resetMapView({ stayOnMap = false } = {}) {
   state.hoveredEdgeId = null;
   state.compareBoxOpen = false;
   state.decisionSummaryOpen = false;
+  state.decisionDetailView = false;
+  state.decisionAnalysisStarted = false;
+  state.decisionOpenDrawers = { reasoning: false, connections: false, sources: false };
   closeSuggestPopup();
   closeCompareSuggest();
   const sInput = $("#aiSearchInput");
@@ -4661,6 +4995,9 @@ function renderConnectionInspectorBody(dossier) {
   }
   if (linkGaps.length) {
     dealParts.push({ k: "Unindexed in Cala", v: linkGaps.join(", ") });
+  }
+  if (edge.isAnomaly && edge.anomalyReason) {
+    dealParts.push({ k: "Data Flag", v: edge.anomalyReason });
   }
 
   const coInvestorsHtml = peers.length
@@ -5532,6 +5869,33 @@ function bindFilterAndHudEvents() {
     $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", "false");
   });
   $("#decisionAiOutput")?.addEventListener("click", (e) => {
+    const focusBtn = e.target.closest("[data-focus-edge-id], [data-focus-node-id]");
+    if (focusBtn) {
+      focusDecisionSignalOnMap({
+        edgeId: focusBtn.dataset.focusEdgeId || "",
+        nodeId: focusBtn.dataset.focusNodeId || "",
+        group: focusBtn.dataset.focusGroup || ""
+      });
+      return;
+    }
+    const switchBtn = e.target.closest("[data-switch-factor]");
+    if (switchBtn) {
+      const grp = switchBtn.dataset.switchFactor;
+      if (grp && grp !== state.decisionSelectedFactor) {
+        runFourFactorClaudeInsight(grp);
+      }
+      return;
+    }
+    const drawerBtn = e.target.closest("[data-decision-drawer]");
+    if (drawerBtn) {
+      const key = drawerBtn.dataset.decisionDrawer;
+      if (key && state.decisionOpenDrawers) {
+        state.decisionOpenDrawers[key] = !state.decisionOpenDrawers[key];
+        renderDecisionFactorAnalysis();
+        $(`[data-decision-drawer="${CSS.escape(key)}"]`)?.focus();
+      }
+      return;
+    }
     if (e.target.closest("[data-decision-retry]")) {
       runFourFactorClaudeInsight(state.decisionSelectedFactor);
       return;
@@ -5539,6 +5903,7 @@ function bindFilterAndHudEvents() {
     if (e.target.closest("[data-decision-back]")) {
       state.decisionDetailView = false;
       state.decisionAnalysisStarted = false;
+      state.decisionOpenDrawers = { reasoning: false, connections: false, sources: false };
       setDecisionPanelExpanded(false);
       renderDecisionSummaryWidget();
       $("#decisionFactorTab-" + CSS.escape(state.decisionSelectedFactor))?.focus();
@@ -5549,6 +5914,15 @@ function bindFilterAndHudEvents() {
       renderDecisionSummaryWidget();
       $("[data-decision-expand]")?.focus();
     }
+  });
+  $("#decisionBridgeStrip")?.addEventListener("click", (e) => {
+    const focusBtn = e.target.closest("[data-focus-edge-id], [data-focus-node-id]");
+    if (!focusBtn) return;
+    focusDecisionSignalOnMap({
+      edgeId: focusBtn.dataset.focusEdgeId || "",
+      nodeId: focusBtn.dataset.focusNodeId || "",
+      group: focusBtn.dataset.focusGroup || ""
+    });
   });
   $("#decisionSummaryPopover")?.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;

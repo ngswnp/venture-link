@@ -352,13 +352,15 @@
                 <div class="decision-pop-title-row">
                   <span class="decision-pop-title">4-Factor Decision</span>
                   <span class="decision-verdict-badge is-neutral" id="decisionOverallBadge">Ready</span>
+                  <span class="decision-grade-badge" id="decisionGradeBadge" hidden></span>
                 </div>
                 <div class="decision-pop-actions">
                   <button type="button" class="legend-pop-close" id="decisionSummaryCloseBtn" aria-label="Close decision summary">x</button>
                 </div>
               </div>
               <div class="decision-factor-list" id="decisionFactorList" role="tablist" aria-label="Decision factors" aria-orientation="vertical"></div>
-              <div class="decision-ai-prompt" id="decisionAiPrompt">Choose a factor to see its Claude analysis.</div>
+              <div class="decision-bridge-strip" id="decisionBridgeStrip" hidden></div>
+              <div class="decision-ai-prompt" id="decisionAiPrompt">Select any factor for grounded Claude analysis.</div>
               <div class="decision-ai-output" id="decisionAiOutput" role="tabpanel" hidden></div>
             </div>
             <button

@@ -50,3 +50,12 @@ Tested live on `OpenAI + Anthropic` (`POST /api/analyze` + `POST /api/connection
   - **Before -> After (`OpenAI + Anthropic`)**: Cold latency `35,633 ms -> 14,356 ms` (~2.48x faster), warm cache hit `3 ms` (`fromCache: true`), grounded factor `decisionEffectSource === 'anthropic'` improved to `4/4` (`access`, `lineage`, `timing`, `caution`) with `dropped: 0` and grounded `executiveTakeaway` (`M&A Completed (2026-03-19)`, `$30B`, `$13B`, `$40M`).
   - **Cross-Scenario Verification (`NVIDIA + OpenAI`)**: Cold `15,655 ms`, `4/4` `decisionEffectSource === 'anthropic'`, `4/4` non-empty record-grounded `nextCheck` checks, `dropped: 0`.
 
+## Step 4: Progressive-Disclosure Low-Text Decision UI/UX (`public/index.html`, `public/app.js`, `public/styles.css`)
+- **Implemented**:
+  - Updated `#decisionSummaryPopover` (`public/index.html`) with `#decisionGradeBadge` (`Score N/100 · Grade X · Y% Verified`) and clickable `#decisionBridgeStrip` bridge highlights.
+  - Wired `buildFourFactorDecisionSummary` and `getDecisionFactorEvidence` in `public/app.js` directly to `bridgeMap.decisionIntelligence` (`signalStrength`, provenance mix, canonical `From → To` direction, hub-balanced `rankedRecords`, and quarantined anomaly count).
+  - Updated Compact Popover with 4 low-text factor scorecards (`0–100` progress bar, `N shared` micro-tag, truncated 1-line headline) and top 2 map-clickable bridge highlight chips (`data-focus-edge-id`, `data-focus-node-id`).
+  - Redesigned Factor Detail View and Expanded 2-Column Executive Workspace with sticky 4-factor pill switcher (`0 ms` cached switching), 3 KPI tiles (`Paths`, `Verified`, `Sources`), Claude Takeaway, Next Diligence Check, stacked Provenance Mix bar, Data Hygiene & Quarantined Flags box, accessible `<button aria-expanded>` drawers (`Reasoning & Scope`, `Supporting Connections`, `Verified Sources & Quality` — zero `<details>` tags), `focusDecisionSignalOnMap` 1-click curve/node isolation, and Connection Inspector `Data Flag` surfacing.
+  - Added full Dark, High-Contrast `body.theme-light`, and Mobile (`<= 700px`) styling in `public/styles.css` with zero green hex/rgba values.
+- **Checks Passed**: `node --check` on `server.mjs`, `src/*.mjs`, `public/app.js` (`0` errors); `grep -c "<details"` returned `0` in both `public/index.html` and `public/app.js`; zero green CSS values; `npm test` passed (`68/68`).
+
