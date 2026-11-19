@@ -59,3 +59,15 @@ Tested live on `OpenAI + Anthropic` (`POST /api/analyze` + `POST /api/connection
   - Added full Dark, High-Contrast `body.theme-light`, and Mobile (`<= 700px`) styling in `public/styles.css` with zero green hex/rgba values.
 - **Checks Passed**: `node --check` on `server.mjs`, `src/*.mjs`, `public/app.js` (`0` errors); `grep -c "<details"` returned `0` in both `public/index.html` and `public/app.js`; zero green CSS values; `npm test` passed (`68/68`).
 
+## Step 5: Live Multi-Scenario Hygiene, Investor-Round Fix & Edge Brief Grounding (`src/engine.mjs`, `src/llmControlPlane.mjs`)
+- **Bugs Found & Fixed During Live Multi-Scenario HTTP Benchmark (`http://127.0.0.1:4173`)**:
+  - **Investor Portfolio-Round Timeline Pollution**: `Sequoia Capital` (`Series C` / `Series B` / `Series F`) and `NVIDIA` (`Ineffable Intelligence SEED $1.1B` / `Series A`) previously pushed `FundingRound` participations with `role: INVESTOR` / `LEAD_INVESTOR` / `LENDER` into the investor's own `timingEventsByEntity`, creating false `ROUND_SEQUENCE_ANOMALY` flags (`5` false flags on Sequoia Capital, `3` on Nvidia). Scoped `recordTimingCatalyst` in `src/engine.mjs` to exclude investor-role funding-round participations while preserving `Pass 2` `Investor -> Issuer` access edges.
+  - **Company-to-Company `IS_MEMBER_OF` Leakage on Neighbor Entities**: Generalized cross-entity `IS_MEMBER_OF` suppression to quarantine unverified non-person, non-investor, non-consortium edges even when one endpoint is outside `focalById` (eliminating `OpenAI IS_MEMBER_OF Anthropic PBC` from `NVIDIA + OpenAI`).
+  - **`B2B` False `$2B` Rejection & Missing `summarySourceIds`**: Fixed `currencyRe` lookbehind `(?<![A-Za-z0-9_.])` in `src/llmControlPlane.mjs` so tokens like `B2B` are never misread as `$2B`, added `summarySourceIds` to `mode: 'connection'` schema, and expanded `executiveTakeaway` cap to `420` chars with clean sanitization (`v8:` cache key).
+- **Checks Passed**:
+  - `npm test`: `70/70` pass across all 8 suites (including 2 new regression tests in `test/entity-map.test.mjs` and `test/llmControlPlane.test.mjs`).
+  - Live `OpenAI + Anthropic`: `24ms` analyze, `score 84` (`Grade A`, `70%` verified, `25` quarantined), `4/4` `anthropic` factors, `dropped: 0`, `14,094 ms` cold / `5 ms` warm.
+  - Live `NVIDIA + OpenAI`: `38ms` analyze, `score 87` (`Grade A`, `74%` verified, `44` quarantined), `timingAnoms: []`, `OpenAI IS_MEMBER_OF Anthropic PBC` eliminated, `4/4` `anthropic` factors, `dropped: 0`, `12,895 ms` cold.
+  - Live `Sequoia Capital`: `10ms` analyze, `score 54` (`Grade B`, `83%` verified), `timingAnoms: []`, and single-edge `AI Diligence Brief` (`Sequoia Capital → fal.ai`) returned `anthropic-connection-analyst` (`2,868 ms`, `dropped: 0`, `2` grounded insights).
+  - HTTP validation: `GET /` `200`, `GET /api/bootstrap` `200`, `POST /api/connection-insight {}` `400`.
+

@@ -4337,18 +4337,32 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
       rawRecord || targetEntity
     );
 
+    if (
+      relationType === 'IS_MEMBER_OF' &&
+      !isMembershipConsortiumEntity(fromEntity) &&
+      !isMembershipConsortiumEntity(toEntity) &&
+      (
+        (focalById.has(from) && focalById.has(to)) ||
+        (
+          entityMapType(fromEntity).toLowerCase() !== 'person' &&
+          entityMapType(toEntity).toLowerCase() !== 'person' &&
+          !isLikelyInvestorEntity(fromEntity) &&
+          !isLikelyInvestorEntity(toEntity)
+        )
+      )
+    ) {
+      quarantinedAnomalies.push({
+        kind: 'quarantined_noise_edge',
+        relation: relationType,
+        path: `${fromEntity.name} -> ${toEntity.name}`,
+        detail: `Suppressed unverified cross-entity IS_MEMBER_OF link between ${fromEntity.name} and ${toEntity.name}.`,
+        sourceRank,
+        sourceIds
+      });
+      return null;
+    }
+
     if (focalById.has(from) && focalById.has(to)) {
-      if (relationType === 'IS_MEMBER_OF' && !isMembershipConsortiumEntity(fromEntity) && !isMembershipConsortiumEntity(toEntity)) {
-        quarantinedAnomalies.push({
-          kind: 'quarantined_noise_edge',
-          relation: relationType,
-          path: `${fromEntity.name} -> ${toEntity.name}`,
-          detail: `Suppressed unverified cross-entity IS_MEMBER_OF link between ${fromEntity.name} and ${toEntity.name}.`,
-          sourceRank,
-          sourceIds
-        });
-        return null;
-      }
       if (
         relationType === 'INVESTED_IN' &&
         !isRoundExpanded &&
@@ -4471,6 +4485,10 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
                 isLead: Boolean(rawTarget.properties?.is_lead),
                 rawRecord: rawTarget
               });
+            }
+            // Portfolio rounds where the focal entity is merely an investor must NOT pollute the investor's own financing timeline.
+            if (isFundingRoundEntity(target) && ['INVESTOR', 'LEAD_INVESTOR', 'LENDER'].includes(roundRole)) {
+              continue;
             }
             const origin = rawTarget.properties?.sources?.[0] || rawTarget.sources?.[0] || null;
             const date =

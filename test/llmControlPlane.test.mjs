@@ -768,3 +768,31 @@ test('compact currency tokens ($30B, $40M) pass while ungrounded $99B drops and 
   assert.doesNotMatch(timing.reasoning[0].text, /\$99B/);
   assert.match(timing.nextCheck, /Beta Series G/);
 });
+
+test('mode connection preserves B2B text without false $2B rejection and grounds summarySourceIds', async () => {
+  const packet = {
+    mode: 'connection',
+    title: 'Sequoia Capital → Samplead',
+    hopType: '1-hop direct',
+    relation: 'INVESTED_IN',
+    whyMatters: 'Direct investor link.',
+    facts: [{ text: 'Sequoia Capital invested in Samplead.', date: '2026-08-25', sourceIds: ['src-b2b-long-id-1234567890'] }],
+    sources: [{ id: 'src-b2b-long-id-1234567890', title: 'Samplead B2B article', publisher: 'CTech', date: '2026-08-25', sourceRank: 'PRIMARY' }]
+  };
+  const payload = {
+    summary: 'Sequoia Capital backed B2B sales platform Samplead.',
+    summarySourceIds: ['s1'],
+    insights: [{ text: 'Direct Sequoia backing aligns Samplead with enterprise B2B automation buyers.', sourceIds: ['s1'] }],
+    question: 'Confirm whether Sequoia Capital led or co-invested in Samplead.'
+  };
+  const mockFetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(payload) }] })
+  });
+  const res = await analyzeConnectionWithCitationGate(packet, { apiKey: 'test-key', cache: new Map(), disableDiskCache: true, fetchFn: mockFetch });
+  assert.equal(res.controlPlaneMode, 'anthropic-connection-analyst');
+  assert.equal(res.droppedUnverifiedCount, 0);
+  assert.equal(res.summary, 'Sequoia Capital backed B2B sales platform Samplead.');
+  assert.match(res.insights[0].text, /B2B/);
+});

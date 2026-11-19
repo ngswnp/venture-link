@@ -508,7 +508,7 @@ function filterVerifiedBullets(rawBullets = [], { allowedYears, allowedNumbers, 
     }
 
     const currencyValues = [];
-    const currencyRe = /(?:€|EUR|£|GBP|\$|USD)\s*(\d+(?:[.,]\d+)?)\s*(?:[MBKmbk]|million|billion)?\b|(\d+(?:[.,]\d+)?)\s*(?:[MB]\b|million\b|billion\b)/g;
+    const currencyRe = /(?:€|EUR|£|GBP|\$|USD)\s*(\d+(?:[.,]\d+)?)\s*(?:[MBKmbk]|million|billion)?\b|(?<![A-Za-z0-9_.])(\d+(?:[.,]\d+)?)\s*(?:[MB]\b|million\b|billion\b)/g;
     let m;
     while ((m = currencyRe.exec(item.text)) !== null) {
       const rawNum = (m[1] || m[2] || '').replace(',', '.');
@@ -856,7 +856,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
   const cache = options.cache || connectionInsightCache;
   const useDiskCache = !options.cache && !options.disableDiskCache;
   const diskCachePath = options.diskCachePath || DEFAULT_INSIGHT_DISK_CACHE;
-  const cacheKey = `v6:${groundedPacket.mode}:${JSON.stringify(groundedPacket)}`;
+  const cacheKey = `v8:${groundedPacket.mode}:${JSON.stringify(groundedPacket)}`;
   const diskHash = useDiskCache ? crypto.createHash('sha256').update(cacheKey).digest('hex') : null;
   if (cache.has(cacheKey)) {
     return { ...cache.get(cacheKey), fromCache: true };
@@ -911,15 +911,15 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
     'Include all four factors, including factors with no evidence. For an empty factor, state no mapped evidence was supplied and do not create an effect.',
     'Each citation must belong to the same factor and appear on a record or factor source in input JSON. Keep observed records separate from investment implications.',
     'ALWAYS emit a non-empty nextCheck starting with “Verify whether”, “Confirm whether”, or “Ask whether” naming ONLY entities, roles, or event labels verbatim in that factor.',
-    'Use plain evidence nouns from the records (investors, backers, founders, roles, milestones, sector overlap). Do NOT use restricted words like institutional, deal, stage, early, fundraising, raise, traction, validation, governance, information, window, cap, table, ownership, market, board rights, runway, burn, liquidity, performance, authority, primary, fund, portfolio, allocation, VC, IP, or LP unless verbatim in THAT factor.',
+    'Use plain evidence nouns from the records (investors, backers, organizations, founders, roles, milestones, sector overlap). FORBIDDEN words unless verbatim in THAT factor: fund, portfolio, deal, stage, early, fundraising, raise, traction, validation, governance, information, window, cap, table, ownership, market, board rights, runway, burn, liquidity, performance, authority, primary, allocation, institutional, VC, IP, LP.',
     'At most 2 cross-record insights; cite each with exact source IDs.'
   ].join('\n') : [
     'Strict VC investment-diligence analyst grounded ONLY in input JSON.',
     'Analyze why the connection or entity graph matters for deal access, operator lineage, timing, or competitive caution.',
-    'NEVER invent numbers, round sizes, dates, or entities not present in input JSON.',
+    'NEVER invent numbers, round sizes, dates, or entities not present in input JSON. Never write source IDs like s1 inside prose sentences.',
     'Output ONE compact single-line JSON only (no markdown fences):',
-    '{"summary":"20-35 word crisp investment takeaway","insights":[{"text":"1 sharp verified insight","sourceIds":["exact-source-id"]}],"question":"1 concrete next diligence question"}.',
-    'Max 3 insights. Every insight MUST cite at least 1 exact sourceId from input.sources.'
+    '{"summary":"20-35 word crisp investment takeaway","summarySourceIds":["exact-source-id"],"insights":[{"text":"1 sharp verified insight","sourceIds":["exact-source-id"]}],"question":"1 concrete next diligence question"}.',
+    'Max 3 insights. Both summarySourceIds and every insight MUST cite at least 1 exact sourceId from input.sources.'
   ].join('\n');
 
   try {
@@ -1058,7 +1058,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
         ? parsed.summary
         : '';
     const gatedSummary = filterVerifiedBullets([{
-      text: rawSummaryInput.slice(0, 320),
+      text: sanitizeShortText(rawSummaryInput, 420),
       sourceIds: summarySourceIds
     }], { ...groundings, useRegistryCheck: false }).bullets[0];
     if (
@@ -1081,7 +1081,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
     const rawSummary = gatedSummary?.text || '';
     const summaryYears = rawSummary.match(/\b(?:19|20)\d{2}\b/g) || [];
     const safeSummary = rawSummary && !summaryYears.some((y) => !groundings.allowedYears.has(y))
-      ? rawSummary.slice(0, 320)
+      ? sanitizeShortText(rawSummary, 420)
       : fallback.summary;
     const rawQuestion = typeof parsed?.question === 'string' ? parsed.question.trim() : '';
     const safeQuestion = rawQuestion ? rawQuestion.slice(0, 220) : fallback.question;

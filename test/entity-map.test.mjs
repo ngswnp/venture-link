@@ -692,3 +692,68 @@ test('buildEntityBridgeMap promotes title-only dated Timing events with register
   assert.ok(!bridgeMap.nodes.some((node) => node.fullTitle === 'Undated milestone'));
   assert.ok(!bridgeMap.nodes.some((node) => node.fullTitle === 'Uncited milestone'));
 });
+
+test('buildEntityBridgeMap keeps investor-role FundingRound participation out of investor timingEventsByEntity and suppresses company-to-company IS_MEMBER_OF noise', () => {
+  const investor = {
+    id: 'inv-focal',
+    name: 'Anchor Ventures',
+    entity_type: 'Organization',
+    properties: {},
+    relationships: {
+      outgoing: {
+        PARTICIPATES_IN_FUNDING_ROUND: [
+          {
+            id: 'portfolio-round-c',
+            name: 'Funding Round',
+            entity_type: 'FundingRound',
+            properties: {
+              role: 'INVESTOR',
+              round_label: { value: 'Series C' },
+              event_date: '2026-01-15',
+              sources: [{ name: 'Portfolio Series C', document: 'https://example.com/c', published_time: '2026-01-15', source_rank: 'PRIMARY' }]
+            }
+          }
+        ]
+      },
+      incoming: {}
+    }
+  };
+  const companyA = {
+    id: 'comp-a',
+    name: 'Alpha AI',
+    entity_type: 'Company',
+    properties: {},
+    relationships: {
+      outgoing: {
+        IS_MEMBER_OF: [
+          {
+            id: 'comp-b',
+            name: 'Beta AI Corp',
+            entity_type: 'Company',
+            properties: { sources: [{ name: 'Blog post', document: 'https://news.example/post', source_rank: 'PRESS' }] }
+          }
+        ]
+      },
+      incoming: {}
+    }
+  };
+  const roundNeighbor = {
+    id: 'portfolio-round-c',
+    name: 'Funding Round',
+    entity_type: 'FundingRound',
+    properties: { round_label: { value: 'Series C' }, event_date: '2026-01-15' },
+    relationships: {
+      incoming: {
+        PARTICIPATES_IN_FUNDING_ROUND: [
+          { id: 'inv-focal', name: 'Anchor Ventures', entity_type: 'Organization', properties: { role: 'INVESTOR', sources: [{ name: 'Doc', document: 'https://example.com/c' }] } },
+          { id: 'comp-a', name: 'Alpha AI', entity_type: 'Company', properties: { role: 'ISSUER', sources: [{ name: 'Doc', document: 'https://example.com/c' }] } }
+        ]
+      },
+      outgoing: {}
+    }
+  };
+  const bridgeMap = buildEntityBridgeMap([investor, companyA], [roundNeighbor], { multiCenter: true });
+  assert.equal((bridgeMap.timingEventsByEntity['inv-focal'] || []).length, 0, 'Investor participation in a portfolio round must not become investor timing event');
+  assert.ok(!bridgeMap.edges.some((e) => e.relation === 'IS_MEMBER_OF' && e.to === 'comp-b'), 'Unverified company-to-company IS_MEMBER_OF must be quarantined');
+  assert.ok(bridgeMap.edges.some((e) => e.relation === 'INVESTED_IN' && e.from === 'inv-focal' && e.to === 'comp-a'), 'Pass 2 should still emit Investor -> Issuer edge');
+});
