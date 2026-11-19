@@ -37,7 +37,7 @@
     <a href="#search" class="brand" id="brandHomeLink" aria-label="VentureLink Home">
       <span class="brand-stack">
         <span class="brand-line-top">Venture</span>
-        <span class="brand-line-bottom">l<span class="brand-i-wrap"><span class="brand-dotless-i">&imath;</span><svg class="brand-tri-dots" viewBox="0 0 12 7" aria-hidden="true"><circle class="dot-side" cx="2.5" cy="4.3" r="1.15" /><circle class="dot-apex" cx="6" cy="1.9" r="1.38" /><circle class="dot-side" cx="9.5" cy="4.3" r="1.15" /></svg></span>nk</span>
+        <span class="brand-line-bottom">link</span>
       </span>
     </a>
 
@@ -58,7 +58,7 @@
     </nav>
 
     <div class="top-right" id="inlineCalibrationBar">
-      <span id="mapStatus" class="map-status-note" aria-live="polite">Live Cala graph ready</span>
+      <span id="mapStatus" class="map-status-note sr-only" aria-live="polite">Live Cala graph ready</span>
 
       <button
         type="button"
@@ -582,48 +582,19 @@
             <div id="constellationNodesLayer" class="constellation-nodes-layer"></div>
           </div>
 
-          <!-- Top-left Compact Explored Entities Bar & Quick Add Drawer -->
+          <!-- Top-left Compact Explored Entities Bar -->
           <aside class="explored-entities-box" id="exploredEntitiesBox" aria-label="Entities on this map">
             <div class="explored-compact-bar" id="exploredCompactBar">
               <div id="pinnedEntitiesList" class="pinned-entities-list"></div>
-              <span class="anchor-mode-badge" id="anchorModePill">Explorer</span>
-              <button
-                type="button"
-                class="explored-compare-toggle-btn"
-                id="toggleCompareBoxBtn"
-                aria-expanded="false"
-                aria-controls="exploredCompareDrawer"
-                title="Add another entity or manage canvas"
-              >
-                + Add
-              </button>
               <button
                 type="button"
                 class="explored-compact-clear-btn"
                 id="clearMapQuickBtn"
-                title="Clear map and return to search home"
+                title="Reset and clear the map"
                 hidden
               >
                 Reset
               </button>
-            </div>
-
-            <div class="explored-compare-drawer" id="exploredCompareDrawer" hidden>
-              <div class="compare-entity-wrap">
-                <input
-                  type="text"
-                  id="compareEntityInput"
-                  class="compare-entity-input"
-                  placeholder="+ Add entity to map (company, fund, person)"
-                  autocomplete="off"
-                  aria-label="Add another entity to this map"
-                />
-                <div id="compareEntitySuggest" class="compare-entity-suggest" hidden></div>
-              </div>
-              <div class="explored-box-footer">
-                <span class="explored-hint-copy">Searching above also adds to map</span>
-                <button type="button" class="explored-clear-btn" id="clearExploredEntitiesBtn" title="Clear all entities from canvas">Clear all</button>
-              </div>
             </div>
           </aside>
 
@@ -659,14 +630,13 @@
             </div>
           </div>
 
-          <!-- Top-right Vertical Translucent Zoom Rail -->
+          <!-- Top-right Horizontal Translucent Zoom Bar -->
           <div class="map-zoom-controls map-vertical-controls" id="mapZoomToolbar" aria-label="Map controls">
             <button type="button" class="zoom-icon-btn" id="mapZoomInBtn" aria-label="Zoom in" title="Zoom in">+</button>
             <span class="zoom-readout num-tabular" id="mapZoomReadout">100%</span>
             <button type="button" class="zoom-icon-btn" id="mapZoomOutBtn" aria-label="Zoom out" title="Zoom out">-</button>
             <span class="zoom-sep" aria-hidden="true"></span>
             <button type="button" class="zoom-text-btn" id="mapFitViewBtn" title="Fit constellation to viewport">Fit</button>
-            <button type="button" class="zoom-text-btn" id="mapCenterBtn" title="Center constellation">Ctr</button>
           </div>
 
           <!-- Bottom-left Key Toggle Pill + Legend Popover -->
@@ -777,6 +747,7 @@
             <button id="dossierShowMapBtn" type="button" class="btn sm">Locate on map</button>
             <button id="dossierCenterBtn" type="button" class="btn sm">Focus only this</button>
             <button id="dossierAddBtn" type="button" class="btn sm primary" hidden>+ Expand on map</button>
+            <button id="dossierExpandBtn" type="button" class="btn sm" title="Expand to full dossier view" aria-pressed="false">Full</button>
             <button id="dossierCloseBtn" type="button" class="drawer-close-btn" aria-label="Close entity dossier">
               <span aria-hidden="true">&times;</span>
             </button>
@@ -800,6 +771,9 @@
 
   <!-- Transient Non-Intrusive Toast Banner -->
   <div id="uiToastBanner" class="ui-toast" role="status" aria-live="polite" hidden></div>
+
+  <!-- Dedicated Institutional IC Print Sheet (shown only in @media print) -->
+  <div id="icPrintSheet" class="ic-print-sheet" aria-hidden="true"></div>
 
   <script type="module" src="/app.js"></script>
 </body>

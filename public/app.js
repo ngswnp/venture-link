@@ -15,10 +15,22 @@ import {
   setMapNodeVelocity,
   stepMapPhysics
 } from "./mapPhysics.js";
+import {
+  buildIcDiligenceMemoMarkdown,
+  buildShareableWorkspaceUrl,
+  buildVerifiedConnectionsCsv,
+  computeMapUniqueProvenance,
+  connectionStarKey,
+  formatInstitutionalEntityName,
+  formatInstitutionalPath,
+  matchClaudeFindingToRecord,
+  parseShareableWorkspaceParams
+} from "./analystTools.js";
 
 const THEME_STORAGE_KEY = "rte_theme_v2";
 const MAP_STATE_STORAGE_KEY = "rte_entity_map_v2";
 const PERSPECTIVE_STORAGE_KEY = "rte_perspective_v1";
+const STARRED_CONNECTIONS_STORAGE_KEY = "vl_starred_conns_v1";
 const MISSING = "Not found in Cala";
 
 const STRUCTURAL_ROLE_META = {
@@ -181,6 +193,8 @@ const state = {
   compareSearchTimer: null,
   compareSeq: 0,
   dossier: null,
+  dossierExpanded: false,
+  starredConnectionKeys: new Set(),
   dossierCache: new Map(),
   aiInsightCache: new Map(),
   toastTimer: null,
@@ -287,7 +301,7 @@ function formatReadableEntityLabel(rawLabel, date = null) {
     const yr = date && String(date).length >= 4 ? ` (${String(date).slice(0, 4)})` : "";
     return `${words.slice(0, 3).join(" ")}${yr}`;
   }
-  return text;
+  return formatInstitutionalEntityName(text) || text;
 }
 
 function formatCompactEntityName(rawLabel, maxWords = 2, maxChars = 18) {
@@ -512,6 +526,38 @@ function savePerspectiveToStorage() {
       entityType: p.entityType || p.type || "Organization"
     }));
   } catch (_) {}
+}
+
+function loadStarredConnectionsFromStorage() {
+  try {
+    const raw = localStorage.getItem(STARRED_CONNECTIONS_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveStarredConnectionsToStorage() {
+  try {
+    localStorage.setItem(STARRED_CONNECTIONS_STORAGE_KEY, JSON.stringify([...state.starredConnectionKeys].slice(0, 200)));
+  } catch (_) {}
+}
+
+function toggleStarredConnection(starKey) {
+  const k = cleanText(starKey);
+  if (!k) return false;
+  let nowStarred;
+  if (state.starredConnectionKeys.has(k)) {
+    state.starredConnectionKeys.delete(k);
+    nowStarred = false;
+  } else {
+    state.starredConnectionKeys.add(k);
+    nowStarred = true;
+  }
+  saveStarredConnectionsToStorage();
+  return nowStarred;
 }
 
 function loadPerspectiveFromStorage() {
@@ -2184,6 +2230,8 @@ function applyMapViewportTransform() {
   const vp = $("#mapPanZoomViewport");
   if (vp) {
     vp.style.transform = `translate(${state.mapPanX}px, ${state.mapPanY}px) scale(${state.mapZoom})`;
+    const labelScale = Math.min(2.35, Math.max(1, 0.78 / Math.max(0.22, state.mapZoom)));
+    vp.style.setProperty("--map-label-scale", labelScale.toFixed(3));
   }
   const canvasEl = $("#bridgeMapCanvas");
   if (canvasEl) {
@@ -2392,7 +2440,7 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
       $("#constellationEmptyKicker").textContent = emptyMap ? "Map ready" : "No verified Cala paths in view";
       $("#constellationEmptyTitle").textContent = emptyMap ? "Your map is clear" : "Adjust filters or explore another entity";
       $("#constellationEmptyDesc").textContent = emptyMap
-        ? "Search above or use + Add to put another entity on the map."
+        ? "Search any company, fund, or person above to put an entity on the map."
         : "Only verified Cala relationships with evidence are drawn. Reset active filters or search a new entity above.";
       const resetFiltersBtn = $("#emptyResetFiltersBtn");
       if (resetFiltersBtn) resetFiltersBtn.hidden = emptyMap;
@@ -2676,44 +2724,28 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
 
 function renderExploredEntitiesBox() {
   const listEl = $("#pinnedEntitiesList");
-  const drawerEl = $("#exploredCompareDrawer");
   const boxEl = $("#exploredEntitiesBox");
-  const toggleBtnEl = $("#toggleCompareBoxBtn");
   const clearQuickBtn = $("#clearMapQuickBtn");
-  const modeBadgeEl = $("#anchorModePill");
   if (!listEl) return;
 
   const count = state.pinnedEntities.length;
-  const isDrawerOpen = Boolean(state.compareBoxOpen);
-  if (boxEl) boxEl.classList.toggle("is-expanded", isDrawerOpen);
-  if (drawerEl) drawerEl.hidden = !isDrawerOpen;
-  if (toggleBtnEl) {
-    toggleBtnEl.setAttribute("aria-expanded", String(isDrawerOpen));
-    toggleBtnEl.classList.toggle("is-active", isDrawerOpen);
-    toggleBtnEl.textContent = isDrawerOpen ? "Close" : "+ Add";
+  if (boxEl) {
+    boxEl.hidden = count === 0;
+    boxEl.classList.remove("is-expanded");
   }
   if (clearQuickBtn) {
     clearQuickBtn.hidden = count === 0;
-  }
-  if (modeBadgeEl) {
-    const am = getActiveAnalysisMode();
-    modeBadgeEl.textContent =
-      am === "perspective_triage"
-        ? `Triage · ${state.perspectiveEntity?.name || "Firm"}`
-        : am === "single_teardown"
-          ? "Company Teardown"
-          : `Ecosystem · ${count}`;
   }
 
   listEl.innerHTML = state.pinnedEntities
     .map((pin, idx) => {
       const pal = ANCHOR_PALETTE[idx % ANCHOR_PALETTE.length];
-      const removeBtn = `<button type="button" class="pinned-entity-remove" data-unpin-key="${escapeHtml(pin.id || pin.key)}" aria-label="Remove ${escapeHtml(pin.name)}">x</button>`;
+      const cleanPinName = formatInstitutionalEntityName(pin.name) || pin.name;
+      const removeBtn = `<button type="button" class="pinned-entity-remove" data-unpin-key="${escapeHtml(pin.id || pin.key)}" aria-label="Remove ${escapeHtml(cleanPinName)}">x</button>`;
       return `
         <span class="pinned-entity-chip" data-pin-id="${escapeHtml(pin.id || pin.key)}">
           <span class="pinned-entity-dot" style="background:${pal.hex}; color:${pal.hex};"></span>
-          <span class="pinned-entity-name" title="${escapeHtml(pin.name)}">${escapeHtml(pin.name)}</span>
-          ${isDrawerOpen ? `<span class="pinned-entity-kind">${escapeHtml(typeBadge(pin))}</span>` : ""}
+          <span class="pinned-entity-name" title="${escapeHtml(cleanPinName)}">${escapeHtml(cleanPinName)}</span>
           ${removeBtn}
         </span>
       `;
@@ -3377,11 +3409,14 @@ function renderDecisionSummaryWidget() {
     overallBadge.textContent = stance.label;
   }
   if (gradeBadge) {
-    const hasExec = Boolean(summary.executive && summary.executive.provenanceMix?.total > 0);
+    const hasExec = Boolean(summary.executive && (summary.executive.provenanceMix?.total > 0 || asList(bridgeMap.edges).length));
     gradeBadge.hidden = !hasExec;
     if (hasExec) {
+      const compactSourceMap = collectDecisionSourceMap(bridgeMap);
+      const compactMapProv = computeMapUniqueProvenance(bridgeMap, compactSourceMap);
+      const pct = compactMapProv.total > 0 ? compactMapProv.verifiedSharePct : Number(summary.executive.verifiedSharePct || 0);
       const totalPaths = summary.factors.reduce((sum, f) => sum + Number(f.count || 0), 0);
-      gradeBadge.textContent = `Real Cala Data · ${sourceQualityPhrase(summary.executive.verifiedSharePct)} · ${totalPaths} paths`;
+      gradeBadge.textContent = `Real Cala Data · Map ${pct}% Filing/Primary · ${totalPaths} paths`;
     }
   }
   if (!summary.factors.some((factor) => factor.group === state.decisionSelectedFactor)) {
@@ -3412,6 +3447,8 @@ function renderDecisionSummaryWidget() {
           <div class="decision-cta-actions">
             <button type="button" class="decision-cta-pill" data-cta-add-peer="true">+ Add Peer</button>
             <button type="button" class="decision-cta-pill" data-cta-set-perspective="true">Set Perspective</button>
+            <button type="button" class="decision-cta-pill" data-export-action="copy-memo">IC Memo</button>
+            <button type="button" class="decision-cta-pill" data-export-action="download-csv">CSV</button>
           </div>
         </div>
       `;
@@ -3422,16 +3459,22 @@ function renderDecisionSummaryWidget() {
       modeMetaBar.hidden = false;
       modeMetaBar.innerHTML = `
         <div class="decision-target-focus-bar">
-          <span class="decision-focus-kicker">Evaluate Primary Target:</span>
+          <div class="decision-focus-header-row">
+            <span class="decision-focus-kicker">Evaluate Primary Target:</span>
+            <div class="decision-cta-actions">
+              <button type="button" class="decision-cta-pill" data-export-action="copy-memo">IC Memo</button>
+              <button type="button" class="decision-cta-pill" data-export-action="download-csv">CSV</button>
+            </div>
+          </div>
           <div class="decision-focus-pills" role="group" aria-label="Evaluate mapped entity as primary target">
             <button type="button" class="decision-focus-chip ${!activePrimary ? "is-active" : ""}" data-primary-target-id="">All Peers</button>
-            ${focals.slice(0, 4).map((f) => `<button type="button" class="decision-focus-chip ${activePrimary === f.id ? "is-active" : ""}" data-primary-target-id="${escapeHtml(f.id)}">${escapeHtml(f.name)}</button>`).join("")}
+            ${focals.slice(0, 4).map((f) => `<button type="button" class="decision-focus-chip ${activePrimary === f.id ? "is-active" : ""}" data-primary-target-id="${escapeHtml(f.id)}">${escapeHtml(formatInstitutionalEntityName(f.name))}</button>`).join("")}
           </div>
-          ${bottlenecks.length ? `<div class="decision-bottleneck-note"><strong>Shared Bottleneck:</strong> ${escapeHtml(bottlenecks.map((b) => b.name).slice(0, 2).join(", "))}</div>` : ""}
+          ${bottlenecks.length ? `<div class="decision-bottleneck-note"><strong>Shared Bottleneck:</strong> ${escapeHtml(bottlenecks.map((b) => formatInstitutionalEntityName(b.name)).slice(0, 2).join(", "))}</div>` : ""}
         </div>
       `;
     } else {
-      const pName = state.perspectiveEntity?.name || summary.executive?.perspectiveEntity?.name || "My Firm";
+      const pName = formatInstitutionalEntityName(state.perspectiveEntity?.name || summary.executive?.perspectiveEntity?.name || "My Firm");
       const warmCount = asList(summary.executive?.warmIntroChains).length;
       const conflictCount = asList(summary.executive?.portfolioConflicts).length;
       modeMetaBar.hidden = false;
@@ -3441,7 +3484,8 @@ function renderDecisionSummaryWidget() {
             <strong>Seat:</strong> ${escapeHtml(pName)} &middot; ${warmCount > 0 ? `${warmCount} warm intro path${warmCount === 1 ? "" : "s"}` : "Cold outreach"}${conflictCount ? ` &middot; ${conflictCount} portfolio overlap` : ""}
           </div>
           <div class="decision-cta-actions">
-            <button type="button" class="decision-cta-pill" data-copy-triage-brief="true">Copy Brief</button>
+            <button type="button" class="decision-cta-pill" data-export-action="copy-memo">IC Memo</button>
+            <button type="button" class="decision-cta-pill" data-export-action="download-csv">CSV</button>
             <button type="button" class="decision-cta-pill" data-reset-perspective="true">Neutral</button>
           </div>
         </div>
@@ -3824,27 +3868,14 @@ function isPersonBridgeRecord(rec, bridgeMap = state.bridgeMap) {
 }
 
 function deriveConnectionAnalystInsight(rec, factorGroup, findings = []) {
+  const isPerson = isPersonBridgeRecord(rec);
+  const strictClaudeMeaning = matchClaudeFindingToRecord(rec, findings, { factorGroup, isPerson });
+  if (strictClaudeMeaning) {
+    return strictClaudeMeaning;
+  }
   const recPath = cleanText(rec?.path);
   const recFrom = cleanText(rec?.canonicalFrom || recPath.split(/\s*(?:→|↔)\s*/)[0]);
   const recTo = cleanText(rec?.canonicalTo || recPath.split(/\s*(?:→|↔)\s*/)[1]);
-  const firstFromEntity = cleanText(recFrom.split(",")[0]);
-  const isPerson = isPersonBridgeRecord(rec);
-  for (const f of asList(findings)) {
-    const conn = cleanText(f?.connection);
-    const meaning = cleanText(f?.meaning);
-    if (!conn || !meaning) continue;
-    if (isPerson && factorGroup === "access" && /\b(?:institutional\s+investor|vc\s+firm)\b/i.test(meaning)) {
-      continue;
-    }
-    const connLower = conn.toLowerCase();
-    const connLeft = cleanText(conn.split(/\s*(?:→|↔)\s*/)[0]).toLowerCase();
-    if (
-      connLower === recPath.toLowerCase() ||
-      (firstFromEntity && firstFromEntity.length > 2 && connLeft.includes(firstFromEntity.toLowerCase()) && !/openai|anthropic/i.test(firstFromEntity))
-    ) {
-      return meaning;
-    }
-  }
   const mode = getActiveAnalysisMode();
   const detail = cleanText(rec?.detail);
   const rel = cleanText(rec?.relation || rec?.type);
@@ -4105,6 +4136,206 @@ function mergeExpandedConnectionRecords(records = [], factorGroup = "access", br
   });
 }
 
+function buildAnalystExportToolbarHtml(starredCount = 0) {
+  const starBadge = starredCount > 0 ? `<span class="decision-export-star-count">&#9733; ${starredCount} flagged</span>` : "";
+  return `
+    <div class="decision-export-bar" role="group" aria-label="Analyst deliverables and sharing">
+      <div class="decision-export-bar-left">
+        <span class="decision-focus-kicker">Analyst Deliverables</span>
+        ${starBadge}
+      </div>
+      <div class="decision-export-actions">
+        <button type="button" class="decision-export-btn is-primary" data-export-action="copy-memo">Copy IC Memo</button>
+        <button type="button" class="decision-export-btn" data-export-action="download-md">Download .md</button>
+        <button type="button" class="decision-export-btn" data-export-action="download-csv">Export CSV</button>
+        <button type="button" class="decision-export-btn" data-export-action="print-brief">Print / PDF</button>
+        <button type="button" class="decision-export-btn" data-export-action="copy-share-link">Share Link</button>
+      </div>
+    </div>
+  `;
+}
+
+function collectAllFactorRecordsMap(summary, bridgeMap = state.bridgeMap) {
+  const map = {};
+  for (const f of asList(summary?.factors)) {
+    const ev = getDecisionFactorEvidence(bridgeMap, f);
+    map[f.group] = mergeExpandedConnectionRecords(ev.records, f.group, bridgeMap);
+  }
+  return map;
+}
+
+function downloadTextFile(filename, content, mimeType = "text/plain;charset=utf-8") {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function buildIcPrintSheetHtml({ summary, bridgeMap, sourceById, factorEvidenceByGroup, claudeResult, starredKeys }) {
+  const exec = summary?.executive || {};
+  const mapProv = computeMapUniqueProvenance(bridgeMap, sourceById);
+  const provPct = mapProv.total > 0 ? mapProv.verifiedSharePct : Number(exec.verifiedSharePct || 0);
+  const srcCount = mapProv.total > 0 ? mapProv.total : Number(exec.provenanceMix?.total || 0);
+  const focalNames = asList(bridgeMap?.focalEntities).map((f) => formatInstitutionalEntityName(f.name || f.label)).filter(Boolean);
+  const claudeFactors = new Map(asList(claudeResult?.factorAnalyses).map((a) => [a.group, a]));
+  const today = new Date().toISOString().slice(0, 10);
+
+  const starredHtml = [];
+  if (starredKeys.size > 0) {
+    for (const f of asList(summary?.factors)) {
+      for (const rec of asList(factorEvidenceByGroup[f.group])) {
+        if (!starredKeys.has(connectionStarKey(rec))) continue;
+        starredHtml.push(`<li><strong>[${escapeHtml(f.shortTabLabel || f.label)}] ${escapeHtml(formatInstitutionalPath(rec.path))}</strong> (${escapeHtml(rec.sourceRank || "CALA")}${rec.date ? ` · ${escapeHtml(rec.date)}` : ""}) — ${escapeHtml(deriveConnectionAnalystInsight(rec, f.group, claudeFactors.get(f.group)?.findings))}</li>`);
+      }
+    }
+  }
+
+  const factorsHtml = asList(summary?.factors).map((f) => {
+    const fa = claudeFactors.get(f.group);
+    const verdict = fa?.verdict || f.effect || "Mapped";
+    const headline = fa?.headline || f.line || "";
+    const takeaway = fa?.decisionEffect?.text || f.investmentImpact || "";
+    const nextCheck = fa?.nextCheck || f.actionableCheck || "";
+    const recs = asList(factorEvidenceByGroup[f.group]).slice(0, 5);
+    return `
+      <section class="ic-print-section">
+        <h3>${escapeHtml(f.displayLabel || f.label)} &mdash; <span>${escapeHtml(verdict)}</span> (${f.count} paths)</h3>
+        ${headline ? `<p class="ic-print-lead"><strong>${escapeHtml(headline)}</strong></p>` : ""}
+        ${takeaway ? `<p>${escapeHtml(takeaway)}</p>` : ""}
+        ${nextCheck ? `<p class="ic-print-check"><strong>Diligence check:</strong> ${escapeHtml(nextCheck)}</p>` : ""}
+        ${recs.length ? `<ul>${recs.map((r) => `<li><strong>${escapeHtml(formatInstitutionalPath(r.path))}</strong> [${escapeHtml(r.sourceRank || "CALA")}${r.date ? `, ${escapeHtml(r.date)}` : ""}]: ${escapeHtml(deriveConnectionAnalystInsight(r, f.group, fa?.findings))}</li>`).join("")}</ul>` : ""}
+      </section>
+    `;
+  }).join("");
+
+  const gaps = asList(exec.missingDisclosures);
+  return `
+    <div class="ic-print-doc">
+      <header class="ic-print-header">
+        <div>
+          <span class="ic-print-kicker">VENTURELINK · INVESTMENT COMMITTEE DILIGENCE MEMO</span>
+          <h1>${escapeHtml(focalNames.join(" · ") || "Entity Map Analysis")}</h1>
+          <p>${escapeHtml(exec.modeLabel || "")}${exec.perspectiveEntity?.name ? ` · Seat: ${escapeHtml(formatInstitutionalEntityName(exec.perspectiveEntity.name))}` : ""} · Generated ${today}</p>
+        </div>
+        <div class="ic-print-badge">
+          <strong>${escapeHtml(summary?.overall?.label || "Ready")}</strong>
+          <span>100% Real Cala Data · ${provPct}% Filing/Primary (${srcCount} sources)</span>
+        </div>
+      </header>
+      <p class="ic-print-exec">${escapeHtml(claudeResult?.summary || summary?.investmentEffect || "")}</p>
+      ${starredHtml.length ? `<section class="ic-print-section"><h3>Flagged Connections for IC (${starredHtml.length})</h3><ul>${starredHtml.join("")}</ul></section>` : ""}
+      ${factorsHtml}
+      ${gaps.length ? `<section class="ic-print-section"><h3>Explicit Cala Disclosure Gaps</h3><ul>${gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join("")}</ul></section>` : ""}
+    </div>
+  `;
+}
+
+async function runAnalystExportAction(action) {
+  if (!state.bridgeMap) return;
+  const summary = buildFourFactorDecisionSummary(state.bridgeMap);
+  const res = currentDecisionAnalysisResult();
+  const sourceById = collectDecisionSourceMap(state.bridgeMap, asList(res?.analysisInput?.sources));
+  const factorEvidenceByGroup = collectAllFactorRecordsMap(summary, state.bridgeMap);
+  const claudeByGroup = new Map(asList(res?.factorAnalyses).map((a) => [a.group, a]));
+  const deriveInsight = (rec, group) => deriveConnectionAnalystInsight(rec, group, claudeByGroup.get(group)?.findings);
+  const slug = (state.pinnedEntities.map((p) => p.name).join("-") || "cala-map")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "cala-map";
+  const today = new Date().toISOString().slice(0, 10);
+
+  if (action === "copy-memo") {
+    const md = buildIcDiligenceMemoMarkdown({
+      summary,
+      bridgeMap: state.bridgeMap,
+      sourceById,
+      factorEvidenceByGroup,
+      claudeResult: res,
+      starredKeys: state.starredConnectionKeys,
+      deriveInsight,
+      generatedAt: today
+    });
+    try {
+      await navigator.clipboard?.writeText(md);
+      showToast("Copied Investment Committee Markdown memo to clipboard.");
+    } catch {
+      downloadTextFile(`VentureLink-IC-Memo-${slug}-${today}.md`, md, "text/markdown;charset=utf-8");
+      showToast("Clipboard unavailable — downloaded IC Memo (.md).");
+    }
+    return;
+  }
+
+  if (action === "download-md") {
+    const md = buildIcDiligenceMemoMarkdown({
+      summary,
+      bridgeMap: state.bridgeMap,
+      sourceById,
+      factorEvidenceByGroup,
+      claudeResult: res,
+      starredKeys: state.starredConnectionKeys,
+      deriveInsight,
+      generatedAt: today
+    });
+    downloadTextFile(`VentureLink-IC-Memo-${slug}-${today}.md`, md, "text/markdown;charset=utf-8");
+    showToast(`Downloaded VentureLink-IC-Memo-${slug}-${today}.md`);
+    return;
+  }
+
+  if (action === "download-csv") {
+    const csv = buildVerifiedConnectionsCsv({
+      summary,
+      sourceById,
+      factorEvidenceByGroup,
+      starredKeys: state.starredConnectionKeys,
+      deriveInsight
+    });
+    downloadTextFile(`VentureLink-Connections-${slug}-${today}.csv`, csv, "text/csv;charset=utf-8");
+    showToast(`Exported verified Cala connections CSV.`);
+    return;
+  }
+
+  if (action === "print-brief") {
+    const sheet = $("#icPrintSheet");
+    if (sheet) {
+      sheet.innerHTML = buildIcPrintSheetHtml({
+        summary,
+        bridgeMap: state.bridgeMap,
+        sourceById,
+        factorEvidenceByGroup,
+        claudeResult: res,
+        starredKeys: state.starredConnectionKeys
+      });
+    }
+    try {
+      window.print();
+    } catch {
+      showToast("Print dialog unavailable in this browser context.", true);
+    }
+    return;
+  }
+
+  if (action === "copy-share-link") {
+    const url = buildShareableWorkspaceUrl(
+      window.location.origin,
+      window.location.pathname,
+      state.pinnedEntities,
+      state.perspectiveEntity
+    );
+    try {
+      await navigator.clipboard?.writeText(url);
+      showToast("Copied shareable VentureLink workspace link.");
+    } catch {
+      showToast(url);
+    }
+  }
+}
+
 function buildExpandedModeSnapshotHtml(summary, factor, activeMode) {
   const exec = summary.executive || {};
   const byGroup = new Map(asList(summary.factors).map((f) => [f.group, f]));
@@ -4294,6 +4525,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
       const ub = /^https?:\/\//i.test(sb.url || sb.document || "") ? 0 : 1;
       return ua - ub;
     });
+  const mapProvMix = computeMapUniqueProvenance(state.bridgeMap, sourceById);
   const decisionEffectSourceIds = asList(factorAnalysis?.decisionEffect?.sourceIds);
 
   const renderCitations = (sourceIds, max = 3) => asList(sourceIds)
@@ -4452,7 +4684,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
             <strong id="decisionAiSelectedHeading">${escapeHtml(factorHeadline)}</strong>
           </div>
           <div class="decision-head-meter is-wide">
-            <span class="decision-hero-submeta">${factor.count} verified paths · ${factor.sharedCount ? `${factor.sharedCount} cross-hub shared` : "direct links"} · ${provMixForDisplay.verifiedSharePct ?? 0}% Filing/Primary (${submittedSourceIds.length} Cala sources)</span>
+            <span class="decision-hero-submeta">${factor.count} verified paths · ${factor.sharedCount ? `${factor.sharedCount} cross-hub shared` : "direct links"} · Lens: ${provMixForDisplay.verifiedSharePct ?? 0}% Filing/Primary (${submittedSourceIds.length} Cala sources)</span>
           </div>
         </div>
       </div>
@@ -4507,17 +4739,32 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
     const expDrawers = state.decisionExpandedOpenDrawers || { icThesis: false, reasoning: false, sourcesList: false, hygiene: false };
     const ptsCount = reasoningList.length || Math.min(2, submittedRecords.length);
 
-    const displayRecords = mergeExpandedConnectionRecords(submittedRecords, factor.group, state.bridgeMap);
+    const rawMergedRecords = mergeExpandedConnectionRecords(submittedRecords, factor.group, state.bridgeMap);
+    const displayRecords = [...rawMergedRecords].sort((a, b) => {
+      const sa = state.starredConnectionKeys.has(connectionStarKey(a)) ? 1 : 0;
+      const sb = state.starredConnectionKeys.has(connectionStarKey(b)) ? 1 : 0;
+      return sb - sa;
+    });
+    const starredInViewCount = displayRecords.filter((rec) => state.starredConnectionKeys.has(connectionStarKey(rec))).length;
     const compactConnectionRowsHtml = displayRecords.length
       ? `<div class="decision-ai-evidence-list is-compact-table">${displayRecords.slice(0, 6).map((rec) => {
           const canFocus = Boolean(rec.edgeId || rec.nodeId);
+          const inspectableNodeId = rec.nodeId && !String(rec.nodeId).startsWith("caution:") ? rec.nodeId : "";
+          const starKey = connectionStarKey(rec);
+          const isStarred = state.starredConnectionKeys.has(starKey);
+          const displayPath = formatInstitutionalPath(rec.path);
           const analystInsight = deriveConnectionAnalystInsight(rec, factor.group, findingsList);
           const roleTag = getConnectionRoleTag(rec, state.bridgeMap);
+          const cardCitesHtml = renderCitations(rec.sourceIds, 2);
           return `
-            <article class="decision-ai-evidence-row is-insight-card">
+            <article class="decision-ai-evidence-row is-insight-card ${isStarred ? "is-starred-ic" : ""}">
               <div class="decision-insight-card-top">
-                <strong class="decision-compact-path">${escapeHtml(rec.path)}</strong>
-                ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Focus map</button>` : ""}
+                <strong class="decision-compact-path" title="${escapeHtml(rec.path)}">${escapeHtml(displayPath)}</strong>
+                <div class="decision-card-actions">
+                  <button type="button" class="decision-star-btn ${isStarred ? "is-starred" : ""}" data-star-connection-key="${escapeHtml(starKey)}" aria-pressed="${isStarred}" title="${isStarred ? "Remove IC flag" : "Flag connection for IC memo"}">${isStarred ? "&#9733; Flagged" : "&#9734; Flag"}</button>
+                  ${inspectableNodeId ? `<button type="button" class="decision-focus-btn" data-inspect-node-id="${escapeHtml(inspectableNodeId)}">Inspect</button>` : ""}
+                  ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Focus map</button>` : ""}
+                </div>
               </div>
               <div class="decision-insight-card-badges">
                 <span class="decision-role-tag ${escapeHtml(roleTag.cls)}">${escapeHtml(roleTag.label)}</span>
@@ -4526,6 +4773,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
                 <span class="source-tier" data-tier="${escapeHtml(rec.sourceRank || "AGGREGATOR")}">${escapeHtml(rec.sourceRank || "AGG")}</span>
               </div>
               <p class="decision-connection-meaning">${escapeHtml(analystInsight)}</p>
+              ${cardCitesHtml ? `<div class="decision-card-cites">${cardCitesHtml}</div>` : ""}
             </article>
           `;
         }).join("")}</div>`
@@ -4562,12 +4810,11 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
         </div>
       `;
     } else {
-      const pName = state.perspectiveEntity?.name || exec.perspectiveEntity?.name || "My Firm";
+      const pName = formatInstitutionalEntityName(state.perspectiveEntity?.name || exec.perspectiveEntity?.name || "My Firm");
       expandedModeControlsHtml = `
         <div class="decision-exec-mode-controls">
           <span class="decision-mode-note"><strong>Perspective Seat:</strong> ${escapeHtml(pName)}</span>
           <div class="decision-cta-actions">
-            <button type="button" class="decision-cta-pill" data-copy-triage-brief="true">Copy Brief</button>
             <button type="button" class="decision-cta-pill" data-reset-perspective="true">Reset Neutral</button>
           </div>
         </div>
@@ -4595,6 +4842,9 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
       ? `${displayRecords.length} key links (${factor.count} paths)`
       : `${displayRecords.length} verified link${displayRecords.length === 1 ? "" : "s"}`;
 
+    const mapVerifiedPctDisplay = mapProvMix.total > 0 ? mapProvMix.verifiedSharePct : Number(exec.verifiedSharePct || 0);
+    const mapSourceCountDisplay = mapProvMix.total > 0 ? `${mapProvMix.total} sources` : `${submittedSourceIds.length} cited`;
+
     outEl.innerHTML = `
       ${navHtml}
       <div class="decision-exec-banner is-streamlined">
@@ -4602,14 +4852,15 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
           <span class="decision-exec-mode-badge">${escapeHtml(modeBadgeLabel)}</span>
           <span class="decision-verdict-badge ${escapeHtml(overallStance.cls)}">${escapeHtml(overallStance.label)}</span>
           <div class="decision-exec-kpi-pills">
-            <span class="decision-cala-verified-badge"><span class="cala-trust-dot" aria-hidden="true"></span><b>Real Cala Data</b> · ${exec.verifiedSharePct ?? 0}% Filing/Primary</span>
+            <span class="decision-cala-verified-badge"><span class="cala-trust-dot" aria-hidden="true"></span><b>Real Cala Data</b> · Map ${mapVerifiedPctDisplay}% Filing/Primary (${mapSourceCountDisplay})</span>
             <span class="decision-exec-pill"><b>${factor.count}</b> ${escapeHtml(factor.shortTabLabel || factor.label)} paths</span>
-            <span class="decision-exec-pill"><b>${submittedSourceIds.length}</b> cited Cala sources</span>
+            <span class="decision-exec-pill"><b>${submittedSourceIds.length}</b> lens sources</span>
           </div>
           ${quarantinedCount > 0 ? `<span class="decision-exec-quarantine">${quarantinedCount} raw noise filtered</span>` : ""}
         </div>
         ${icTakeaway ? `<p class="decision-exec-ic">${escapeHtml(icTakeaway)}</p>` : ""}
         ${expandedModeControlsHtml}
+        ${buildAnalystExportToolbarHtml(starredInViewCount || state.starredConnectionKeys.size)}
       </div>
       <div class="decision-workspace-grid">
         <div class="decision-col-primary">
@@ -4627,7 +4878,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
             ${compactConnectionRowsHtml}
           </section>
           <section class="decision-evidence-panel">
-            <div class="decision-panel-subhead"><strong>Evidence Provenance &amp; Sources</strong><span>${submittedSourceIds.length} Cala sources · ${provMixForDisplay.verifiedSharePct ?? 0}% Filing/Primary</span></div>
+            <div class="decision-panel-subhead"><strong>Evidence Provenance &amp; Sources</strong><span>Lens: ${submittedSourceIds.length} Cala sources · ${provMixForDisplay.verifiedSharePct ?? 0}% Filing/Primary</span></div>
             <div class="decision-cala-assurance"><span class="cala-trust-dot" aria-hidden="true"></span><span>Contributed strictly by <strong>real, verified Cala Knowledge Graph records &amp; filings</strong> — zero synthetic estimates.</span></div>
             ${provBarHtml}
             ${expandedSourcesDrawerHtml}
@@ -5243,8 +5494,8 @@ function buildEdgeContextMeta(edge) {
     ? layout?.primaryAnchor || nodeById.get(edge.from) || { id: edge.from, label: edge.from }
     : nodeById.get(edge.from) || { id: edge.from, label: edge.from };
   const toNode = nodeById.get(edge.realNodeId || edge.to) || { id: edge.to, label: edge.to };
-  const fromName = nameOf(fromNode);
-  const toName = nameOf(toNode);
+  const fromName = formatInstitutionalEntityName(nameOf(fromNode)) || nameOf(fromNode);
+  const toName = formatInstitutionalEntityName(nameOf(toNode)) || nameOf(toNode);
   const fromType = fromNode?.id ? typeBadge(fromNode) : "";
   const toType = toNode?.id ? typeBadge(toNode) : "";
 
@@ -5253,9 +5504,9 @@ function buildEdgeContextMeta(edge) {
   const arrowSymbol = edge.isSymmetric ? "\u2194" : "\u2192";
   const anyLead = siblings.some((s) => s.isLead);
   const sharedBridgeNode = edge.sharedBridgeNodeId ? nodeById.get(edge.sharedBridgeNodeId) : null;
-  const sharedBridgeNodeName = sharedBridgeNode ? nameOf(sharedBridgeNode) : "";
+  const sharedBridgeNodeName = sharedBridgeNode ? (formatInstitutionalEntityName(nameOf(sharedBridgeNode)) || nameOf(sharedBridgeNode)) : "";
   const allHubNames = asList(edge.sharedByFocalEntityIds)
-    .map((id) => nameOf(nodeById.get(id) || { label: id }))
+    .map((id) => formatInstitutionalEntityName(nameOf(nodeById.get(id) || { label: id })))
     .filter(Boolean);
   const focalAnchorIds = new Set([
     ...asList(state.bridgeMap?.focalEntities).map((f) => String(f.id)),
@@ -5269,10 +5520,10 @@ function buildEdgeContextMeta(edge) {
       : focalAnchorIds.has(String(edge.to))
         ? String(edge.to)
         : String(edge.focalEntityId || "");
-  const currentFocalLabel = currentFocalId ? nameOf(nodeById.get(currentFocalId) || { label: "" }) : "";
+  const currentFocalLabel = currentFocalId ? formatInstitutionalEntityName(nameOf(nodeById.get(currentFocalId) || { label: "" })) : "";
   const otherFocalNames = asList(edge.sharedByFocalEntityIds)
     .filter((id) => String(id) !== currentFocalId)
-    .map((id) => nameOf(nodeById.get(id) || { label: id }))
+    .map((id) => formatInstitutionalEntityName(nameOf(nodeById.get(id) || { label: id })))
     .filter(Boolean);
 
   const factRows = [];
@@ -5939,10 +6190,16 @@ function resetMapView({ stayOnMap = false } = {}) {
   state.entityProfiles = {};
   state.mapLayoutNodes = null;
   state.expandedGroupKey = null;
+  state.contributionGroup = "all";
+  state.sharedOnly = false;
+  state.filingOnly = false;
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
   state.hoveredNodeId = null;
   state.hoveredEdgeId = null;
+  if (state.dossier) {
+    closeEntityDossier({ preserveSelection: true });
+  }
   state.compareBoxOpen = false;
   state.decisionSummaryOpen = false;
   state.decisionDetailView = false;
@@ -5967,7 +6224,7 @@ function resetMapView({ stayOnMap = false } = {}) {
   renderConstellationMap(null);
   renderDecisionSummaryWidget();
   setStatus(stayOnMap
-    ? "Map is clear. Search above or use + Add to map another entity."
+    ? "Map reset. Search any company, fund, or person above to map Cala links."
     : "Search any entity above or click a quick pick to map Cala paths.");
 }
 
@@ -6033,6 +6290,26 @@ function isEntityOnMap(node) {
   return state.pinnedEntities.some((p) => p.id === id);
 }
 
+function syncDossierLayoutState() {
+  const backdrop = $("#entityDossierBackdrop");
+  const modal = $("#entityDossierModal");
+  const expandBtn = $("#dossierExpandBtn");
+  const open = Boolean(state.dossier);
+  const isFull = Boolean(open && state.dossierExpanded);
+  document.body.classList.toggle("has-left-inspector-open", open && !isFull);
+  if (backdrop) {
+    backdrop.classList.toggle("is-full-modal", isFull);
+  }
+  if (modal) {
+    modal.setAttribute("aria-modal", isFull ? "true" : "false");
+  }
+  if (expandBtn) {
+    expandBtn.textContent = isFull ? "Dock left" : "Full";
+    expandBtn.setAttribute("aria-pressed", String(isFull));
+    expandBtn.title = isFull ? "Dock simplified info tab to the left" : "Expand to full dossier view";
+  }
+}
+
 async function openEntityDossier(node, options = {}) {
   const id = idOf(node);
   if (!id) return;
@@ -6041,6 +6318,11 @@ async function openEntityDossier(node, options = {}) {
   const initial = dataForDossier(node);
   const cached = state.dossierCache.get(id);
   const currentFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (!state.dossier && typeof options.expanded !== "boolean") {
+    state.dossierExpanded = false;
+  } else if (typeof options.expanded === "boolean") {
+    state.dossierExpanded = options.expanded;
+  }
 
   state.selectedNodeId = state.mapLayoutNodes?.nodeById?.has(id) ? id : null;
   state.selectedEdgeId = null;
@@ -6059,8 +6341,9 @@ async function openEntityDossier(node, options = {}) {
   };
 
   $("#entityDossierBackdrop").hidden = false;
+  syncDossierLayoutState();
   renderDossier({ resetScroll: true });
-  $("#entityDossierModal")?.focus();
+  $("#entityDossierModal")?.focus({ preventScroll: true });
 
   if (cached) return;
 
@@ -6092,6 +6375,11 @@ function openConnectionInspector(edge, options = {}) {
   if (!edge) return;
   const ctx = buildEdgeContextMeta(edge);
   const currentFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (!state.dossier && typeof options.expanded !== "boolean") {
+    state.dossierExpanded = false;
+  } else if (typeof options.expanded === "boolean") {
+    state.dossierExpanded = options.expanded;
+  }
   state.selectedEdgeId = edge.id;
   state.selectedNodeId = null;
   state.hoveredNodeId = null;
@@ -6106,8 +6394,9 @@ function openConnectionInspector(edge, options = {}) {
     returnFocus: options.returnFocus || state.dossier?.returnFocus || currentFocus
   };
   $("#entityDossierBackdrop").hidden = false;
+  syncDossierLayoutState();
   renderDossier({ resetScroll: true });
-  $("#entityDossierModal")?.focus();
+  $("#entityDossierModal")?.focus({ preventScroll: true });
 }
 
 function closeEntityDossier(options = {}) {
@@ -6115,6 +6404,8 @@ function closeEntityDossier(options = {}) {
   const backdrop = $("#entityDossierBackdrop");
   if (backdrop) backdrop.hidden = true;
   state.dossier = null;
+  state.dossierExpanded = false;
+  syncDossierLayoutState();
   if (!options.preserveSelection) {
     clearMapIsolation();
   }
@@ -6417,25 +6708,38 @@ function renderConnectionInspectorBody(dossier) {
     arrowSymbol
   } = ctx;
 
-  const { citations, totalCount, hasExternalRecords } = collectEdgeCitations(siblings, { limit: 40 });
+  const isCompactDock = !state.dossierExpanded;
+  const { citations, totalCount, hasExternalRecords } = collectEdgeCitations(siblings, { limit: isCompactDock ? 6 : 40 });
+  const connStarRec = {
+    canonicalFrom: fromName,
+    canonicalTo: toName,
+    structuralRole: edge.structuralRole || deriveStructuralRoleFrontend(edge),
+    relation: rawRelations[0] || edge.label || "",
+    path: `${fromName} ${arrowSymbol} ${toName}`
+  };
+  const starKey = connectionStarKey(connStarRec);
+  const isStarred = state.starredConnectionKeys.has(starKey);
 
   const pivotActionsHtml = `
     <section class="dossier-section conn-pivot-bar">
       <div class="conn-pivot-buttons">
         ${fromNode?.id ? `<button type="button" class="conn-pivot-btn" data-inspect-entity-id="${escapeHtml(fromNode.id)}">Inspect ${escapeHtml(fromName)}${fromType ? ` (${escapeHtml(fromType)})` : ""} &rarr;</button>` : ""}
         ${toNode?.id && toNode.id !== fromNode?.id ? `<button type="button" class="conn-pivot-btn" data-inspect-entity-id="${escapeHtml(toNode.id)}">Inspect ${escapeHtml(toName)}${toType ? ` (${escapeHtml(toType)})` : ""} &rarr;</button>` : ""}
-        <button type="button" class="conn-pivot-btn is-isolate" data-isolate-edge-id="${escapeHtml(edge.id)}">Isolate curve on map</button>
+        <button type="button" class="conn-pivot-btn decision-star-btn ${isStarred ? "is-starred" : ""}" data-star-connection-key="${escapeHtml(starKey)}" aria-pressed="${isStarred}">${isStarred ? "&#9733; Flagged for IC" : "&#9734; Flag for IC"}</button>
+        <button type="button" class="conn-pivot-btn is-isolate" data-isolate-edge-id="${escapeHtml(edge.id)}">Isolate on map</button>
       </div>
     </section>
   `;
 
-  const rolesHtml = factRows.length
-    ? `<div class="timeline">${factRows
+  const displayedFacts = isCompactDock ? factRows.slice(0, 4) : factRows;
+  const hiddenFactCount = Math.max(0, factRows.length - displayedFacts.length);
+  const rolesHtml = displayedFacts.length
+    ? `<div class="timeline">${displayedFacts
         .map(
           (row) => `
           <div class="timeline-item">
             ${row.date ? `<time>${escapeHtml(row.date)}</time>` : ""}
-            <div style="flex:1 1 240px; min-width:0;">
+            <div style="flex:1 1 200px; min-width:0;">
               ${row.label ? `<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:2px;">${escapeHtml(row.label)}</div>` : ""}
               <strong>${escapeHtml(row.fact)}</strong>
             </div>
@@ -6443,7 +6747,7 @@ function renderConnectionInspectorBody(dossier) {
           </div>
         `
         )
-        .join("")}</div>`
+        .join("")}</div>${hiddenFactCount ? `<p class="dossier-missing-line">+${hiddenFactCount} additional facts in Full view</p>` : ""}`
     : `<p class="dossier-empty">${escapeHtml(`${fromName} connected to ${toName}`)}</p>`;
 
   const dealParts = [
@@ -6463,15 +6767,17 @@ function renderConnectionInspectorBody(dossier) {
     dealParts.push({ k: "Data Flag", v: edge.anomalyReason });
   }
 
+  const maxPeers = isCompactDock ? 6 : 14;
   const coInvestorsHtml = peers.length
     ? `
       <div style="margin-top:10px;">
         <div style="font-size:11.5px;font-weight:700;color:var(--muted);margin-bottom:6px;">VERIFIED ROUND CO-INVESTORS (${edge.syndicateTotalCount || peers.length})</div>
         <div class="inline-chip-row">
           ${peers
-            .slice(0, 14)
+            .slice(0, maxPeers)
             .map((p) => {
-              const label = `${p.name}${p.isLead ? " (Lead)" : ""}`;
+              const pCleanName = formatInstitutionalEntityName(p.name) || p.name;
+              const label = `${pCleanName}${p.isLead ? " (Lead)" : ""}`;
               return p.id
                 ? `<button type="button" class="inline-chip" data-inspect-entity-id="${escapeHtml(p.id)}">${escapeHtml(label)}</button>`
                 : `<span class="inline-chip">${escapeHtml(label)}</span>`;
@@ -6601,7 +6907,8 @@ function renderDossierTabContent(dossier) {
 
     const populated = schemaFields.filter((f) => f.value);
     const missing = schemaFields.filter((f) => !f.value);
-    const displayCards = populated.length ? populated : [{ label: "Category", value: entityKind }];
+    const allCards = populated.length ? populated : [{ label: "Category", value: entityKind }];
+    const displayCards = state.dossierExpanded ? allCards : allCards.slice(0, 4);
 
     const connCount = Math.max(remoteConns.length, mapEdges.length);
     const kpiHtml = `
@@ -6625,7 +6932,7 @@ function renderDossierTabContent(dossier) {
       </div>
     `;
 
-    const topConnPreview = (remoteConns.length ? remoteConns : mapEdges).slice(0, 3);
+    const topConnPreview = (remoteConns.length ? remoteConns : mapEdges).slice(0, state.dossierExpanded ? 3 : 4);
     const previewHtml = topConnPreview.length
       ? `
       <section class="dossier-section">
@@ -6671,14 +6978,14 @@ function renderDossierTabContent(dossier) {
       </section>`
       : "";
 
-    const aliasHtml = aliasList.length
+    const aliasHtml = state.dossierExpanded && aliasList.length
       ? `<div class="dossier-alias-row"><span class="dossier-alias-lbl">Also known as:</span><div class="inline-chip-row">${aliasList.slice(0, 8).map((a) => `<span class="inline-chip">${escapeHtml(a)}</span>`).join("")}</div></div>`
       : "";
 
     return `
       ${loading}
       ${kpiHtml}
-      ${renderAiInsightSection(dossier)}
+      ${state.dossierExpanded ? renderAiInsightSection(dossier) : ""}
       <section class="dossier-section">
         <div class="dossier-section-head-row">
           <h3>Identity</h3>
@@ -6690,11 +6997,14 @@ function renderDossierTabContent(dossier) {
         ${aliasHtml}
         ${missing.length ? `<p class="dossier-missing-line"><span>Not indexed in Cala yet:</span> ${escapeHtml(missing.map((f) => f.label).join(" · "))}</p>` : ""}
       </section>
-      <section class="dossier-section">
-        <h3>Cala Summary</h3>
-        <p class="dossier-empty">${escapeHtml(cleanText(data.description || data.summary) || MISSING)}</p>
-      </section>
+      ${state.dossierExpanded ? `
+        <section class="dossier-section">
+          <h3>Cala Summary</h3>
+          <p class="dossier-empty">${escapeHtml(cleanText(data.description || data.summary) || MISSING)}</p>
+        </section>
+      ` : ""}
       ${previewHtml}
+      ${!state.dossierExpanded ? renderAiInsightSection(dossier) : ""}
     `;
   }
 
@@ -7209,7 +7519,7 @@ function bindFilterAndHudEvents() {
   };
 
   $("#toggleFiltersBtn")?.addEventListener("click", toggleFilters);
-  $("#clearMapQuickBtn")?.addEventListener("click", clearMapToHero);
+  $("#clearMapQuickBtn")?.addEventListener("click", clearMapToEmpty);
 
   $("#toggleSharedOnlyBtn")?.addEventListener("click", () => {
     state.sharedOnly = !state.sharedOnly;
@@ -7389,6 +7699,30 @@ function bindFilterAndHudEvents() {
   });
   $("#decisionSummaryCloseBtn")?.addEventListener("click", closeDecisionPopover);
   $("#decisionAiOutput")?.addEventListener("click", (e) => {
+    const starBtn = e.target.closest("[data-star-connection-key]");
+    if (starBtn) {
+      const listEl = $("#decisionAiOutput .decision-ai-evidence-list");
+      const prevScroll = listEl ? listEl.scrollTop : 0;
+      const nowStarred = toggleStarredConnection(starBtn.dataset.starConnectionKey);
+      renderDecisionFactorAnalysis();
+      const restoredList = $("#decisionAiOutput .decision-ai-evidence-list");
+      if (restoredList) restoredList.scrollTop = prevScroll;
+      showToast(nowStarred ? "Flagged connection for IC memo." : "Removed IC flag.");
+      return;
+    }
+    const inspectNodeBtn = e.target.closest("[data-inspect-node-id]");
+    if (inspectNodeBtn) {
+      const nodeId = inspectNodeBtn.dataset.inspectNodeId;
+      const node = (state.bridgeMap?.nodes || []).find((n) => String(n.id) === String(nodeId));
+      if (node) {
+        if (state.decisionPanelExpanded) {
+          setDecisionPanelExpanded(false);
+          renderDecisionSummaryWidget();
+        }
+        openEntityDossier(node);
+      }
+      return;
+    }
     const focusBtn = e.target.closest("[data-focus-edge-id], [data-focus-node-id]");
     if (focusBtn) {
       focusDecisionSignalOnMap({
@@ -7637,9 +7971,7 @@ function bindFilterAndHudEvents() {
         renderDecisionSummaryWidget();
       }
       if (window.innerWidth <= 900) closeDecisionPopover();
-      state.compareBoxOpen = true;
-      renderExploredEntitiesBox();
-      requestAnimationFrame(() => $("#compareEntityInput")?.focus());
+      requestAnimationFrame(() => $("#aiSearchInput")?.focus());
       return;
     }
     if (e.target.closest("[data-cta-set-perspective]")) {
@@ -7673,25 +8005,12 @@ function bindFilterAndHudEvents() {
       return;
     }
     if (e.target.closest("[data-copy-triage-brief]")) {
-      if (!state.bridgeMap) return;
-      const s = buildFourFactorDecisionSummary(state.bridgeMap);
-      const pName = state.perspectiveEntity?.name || s.executive?.perspectiveEntity?.name || "My Firm";
-      const targets = state.pinnedEntities.map((p) => p.name).join(", ");
-      const warm = asList(s.executive?.warmIntroChains).slice(0, 3).map((c) => `  - ${c.chainText}`);
-      const conflicts = asList(s.executive?.portfolioConflicts).slice(0, 3).map((c) => `  - ${c.reason}`);
-      const lines = [
-        `VentureLink Origination Triage (${pName} -> ${targets})`,
-        `Overall: ${s.overall.label} — ${s.investmentEffect}`,
-        ...s.factors.map((f) => `- ${f.displayLabel || f.label} [${f.effect}]: ${f.line}`),
-        ...(warm.length ? ["Warm Paths:", ...warm] : ["Warm Paths: None in Cala (cold outreach)"]),
-        ...(conflicts.length ? ["Portfolio Conflicts:", ...conflicts] : [])
-      ].join("\n");
-      try {
-        await navigator.clipboard?.writeText(lines);
-        showToast("Copied origination triage brief to clipboard.");
-      } catch {
-        showToast("Unable to access clipboard.", true);
-      }
+      await runAnalystExportAction("copy-memo");
+      return;
+    }
+    const exportBtn = e.target.closest("[data-export-action]");
+    if (exportBtn) {
+      await runAnalystExportAction(exportBtn.dataset.exportAction);
       return;
     }
     const targetBtn = e.target.closest("[data-primary-target-id]");
@@ -8129,7 +8448,11 @@ function bindCanvasAndMapInteractions() {
       e &&
       Math.hypot(e.clientX - pan.x, e.clientY - pan.y) <= 5
     ) {
-      clearMapIsolation();
+      if (state.dossier && !state.dossierExpanded) {
+        closeEntityDossier();
+      } else {
+        clearMapIsolation();
+      }
       hideMapTooltip();
     }
   };
@@ -8150,6 +8473,12 @@ function bindDossierEvents() {
   });
 
   $("#dossierCloseBtn")?.addEventListener("click", () => closeEntityDossier());
+  $("#dossierExpandBtn")?.addEventListener("click", () => {
+    if (!state.dossier) return;
+    state.dossierExpanded = !state.dossierExpanded;
+    syncDossierLayoutState();
+    renderDossier({ resetScroll: false });
+  });
   $("#dossierBackBtn")?.addEventListener("click", () => {
     const prev = state.dossier?.history?.pop();
     if (!prev) return;
@@ -8208,6 +8537,13 @@ function bindDossierEvents() {
   });
 
   $("#dossierBody")?.addEventListener("click", async (e) => {
+    const starBtn = e.target.closest("[data-star-connection-key]");
+    if (starBtn && state.dossier) {
+      const nowStarred = toggleStarredConnection(starBtn.dataset.starConnectionKey);
+      renderDossier({ resetScroll: false });
+      showToast(nowStarred ? "Flagged connection for IC memo." : "Removed IC flag.");
+      return;
+    }
     const aiBtn = e.target.closest("[data-run-ai-insight]");
     if (aiBtn && state.dossier) {
       const key = aiBtn.dataset.runAiInsight;
@@ -8383,6 +8719,7 @@ function bindDossierEvents() {
 // ---------- Bootstrap ----------
 
 async function initApp() {
+  state.starredConnectionKeys = loadStarredConnectionsFromStorage();
   applyTheme(getActiveTheme());
   bindSearchAndCommandEvents();
   bindFilterAndHudEvents();
@@ -8404,6 +8741,27 @@ async function initApp() {
 
   state.perspectiveEntity = loadPerspectiveFromStorage();
   syncPerspectiveControl();
+
+  const { mapTerms, perspectiveTerm } = parseShareableWorkspaceParams(window.location.search);
+  if (mapTerms.length > 0) {
+    if (perspectiveTerm) {
+      try {
+        const pMatches = await searchCalaEntities(perspectiveTerm);
+        state.perspectiveEntity = pMatches[0]
+          ? toEntityRef(pMatches[0])
+          : toEntityRef({ id: perspectiveTerm, name: perspectiveTerm, entityType: "Organization" });
+        savePerspectiveToStorage();
+      } catch (_) {}
+    } else {
+      state.perspectiveEntity = null;
+    }
+    syncPerspectiveControl();
+    try {
+      window.history.replaceState(null, "", window.location.pathname || "/");
+    } catch (_) {}
+    await handleEntitySearchSubmit(mapTerms.join(", "), { replace: true });
+    return;
+  }
 
   setStatus("Live Cala graph ready");
 }
