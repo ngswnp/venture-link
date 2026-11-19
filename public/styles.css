@@ -530,22 +530,58 @@ body:not(.is-config-overlay) #panel-config {
   display: inline-flex;
   flex-direction: column;
   align-items: flex-start;
-  line-height: 0.82;
+  line-height: 0.84;
 }
 
 .brand-line-top {
-  font-size: 19px;
+  font-size: 20px;
   font-weight: 800;
   color: var(--text-strong);
-  letter-spacing: -0.04em;
+  letter-spacing: -0.045em;
+  line-height: 0.88;
 }
 
 .brand-line-bottom {
-  font-size: 18.5px;
-  font-weight: 650;
+  display: inline-flex;
+  align-items: baseline;
+  font-size: 19px;
+  font-weight: 700;
   color: var(--text-strong);
-  letter-spacing: -0.035em;
-  margin-top: -1.5px;
+  letter-spacing: -0.03em;
+  line-height: 0.88;
+  margin-top: -1px;
+  padding-left: 0.5px;
+}
+
+.brand-i-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  margin: 0 1.4px 0 1.9px;
+}
+
+.brand-dotless-i {
+  display: inline-block;
+}
+
+.brand-tri-dots {
+  position: absolute;
+  left: 50%;
+  top: 0.75px;
+  width: 9px;
+  height: 5.2px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  overflow: visible;
+}
+
+.brand-tri-dots .dot-apex {
+  fill: #FF6B5B;
+}
+
+.brand-tri-dots .dot-side {
+  fill: var(--text-strong);
+  opacity: 0.92;
 }
 
 .brand .mark {
