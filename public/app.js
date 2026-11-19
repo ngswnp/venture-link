@@ -612,6 +612,39 @@ function getSharedImpactBadge(node, incidentEdges = []) {
   return "↔ Shared";
 }
 
+function switchHeroInfoTab(tabKey = "explorer", { focusSearch = false } = {}) {
+  const validTabs = new Set(["explorer", "cala-data", "insights", "process"]);
+  const nextTab = validTabs.has(tabKey) ? tabKey : "explorer";
+  state.heroActiveTab = nextTab;
+  const isExplorer = nextTab === "explorer";
+  document.body.classList.toggle("has-hero-info-tab", !isExplorer);
+
+  document.querySelectorAll("#heroCenterNav .hero-nav-pill[data-hero-tab]").forEach((btn) => {
+    const active = btn.dataset.heroTab === nextTab;
+    btn.classList.toggle("is-active", active);
+    btn.setAttribute("aria-current", active ? "page" : "false");
+    btn.querySelector(".hero-nav-dot")?.remove();
+    if (active) {
+      const dot = document.createElement("span");
+      dot.className = "hero-nav-dot";
+      dot.setAttribute("aria-hidden", "true");
+      btn.prepend(dot);
+    }
+  });
+
+  const infoWrap = $("#heroInfoPanelsWrap");
+  if (infoWrap) {
+    infoWrap.hidden = isExplorer;
+  }
+  document.querySelectorAll("#heroInfoPanelsWrap [data-hero-panel]").forEach((panel) => {
+    panel.hidden = isExplorer || panel.dataset.heroPanel !== nextTab;
+  });
+
+  if (isExplorer && focusSearch) {
+    requestAnimationFrame(() => $("#aiSearchInput")?.focus());
+  }
+}
+
 function setWorkspaceMode(mode) {
   const isMap = mode === "map";
   state.workspaceMode = isMap ? "map" : "hero";
@@ -621,7 +654,9 @@ function setWorkspaceMode(mode) {
   if (stage) {
     stage.hidden = !isMap;
   }
-  if (!isMap) {
+  if (isMap) {
+    switchHeroInfoTab("explorer");
+  } else {
     state.filtersPanelOpen = false;
     const ribbon = $("#constellationFilterRibbon");
     if (ribbon) ribbon.hidden = true;
@@ -7108,25 +7143,33 @@ function bindSearchAndCommandEvents() {
     }
   });
 
-  document.querySelectorAll("#heroCenterNav .hero-nav-pill[data-hero-pillar]").forEach((pill) => {
+  document.querySelectorAll("#heroCenterNav .hero-nav-pill[data-hero-tab]").forEach((pill) => {
     pill.addEventListener("click", () => {
-      document.querySelectorAll("#heroCenterNav .hero-nav-pill").forEach((b) => {
-        b.classList.remove("is-active");
-        b.querySelector(".hero-nav-dot")?.remove();
-      });
-      pill.classList.add("is-active");
-      const dot = document.createElement("span");
-      dot.className = "hero-nav-dot";
-      dot.setAttribute("aria-hidden", "true");
-      pill.prepend(dot);
-      const idx = Number(pill.dataset.heroPillar || 0);
-      document.querySelectorAll("#heroBottomStrip .hero-strip-item").forEach((el, itemIdx) => {
-        el.classList.toggle("is-featured", itemIdx === idx);
-      });
+      const targetTab = pill.dataset.heroTab || "explorer";
+      if (state.workspaceMode === "map") {
+        setWorkspaceMode("hero");
+      }
+      switchHeroInfoTab(targetTab);
     });
   });
 
+  $("#heroInfoPanelsWrap")?.addEventListener("click", async (e) => {
+    const switchBtn = e.target.closest("[data-switch-hero-tab]");
+    if (switchBtn) {
+      const targetTab = switchBtn.dataset.switchHeroTab || "explorer";
+      const focusSearch = switchBtn.dataset.focusSearch === "true";
+      switchHeroInfoTab(targetTab, { focusSearch });
+      return;
+    }
+    const sampleBtn = e.target.closest("[data-launch-sample-map]");
+    if (sampleBtn) {
+      switchHeroInfoTab("explorer");
+      await handleEntitySearchSubmit("OpenAI, Nvidia, Anthropic", { replace: true });
+    }
+  });
+
   $("#heroQuickDemoBtn")?.addEventListener("click", async () => {
+    switchHeroInfoTab("explorer");
     await handleEntitySearchSubmit("OpenAI, Nvidia, Anthropic", { replace: true });
   });
 

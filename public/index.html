@@ -41,14 +41,20 @@
       </span>
     </a>
 
-    <nav class="hero-center-nav" id="heroCenterNav" aria-label="Cala verification pillars">
-      <button type="button" class="hero-nav-pill is-active" data-hero-pillar="0">
+    <nav class="hero-center-nav" id="heroCenterNav" aria-label="VentureLink navigation tabs">
+      <button type="button" class="hero-nav-pill is-active" data-hero-tab="explorer">
         <span class="hero-nav-dot" aria-hidden="true"></span>
         <span>Graph Explorer</span>
       </button>
-      <button type="button" class="hero-nav-pill" data-hero-pillar="1">Real Cala Data</button>
-      <button type="button" class="hero-nav-pill" data-hero-pillar="2">Primary Filings</button>
-      <button type="button" class="hero-nav-pill" data-hero-pillar="3">4-Lens Briefs</button>
+      <button type="button" class="hero-nav-pill" data-hero-tab="cala-data">
+        <span>Real Cala Data</span>
+      </button>
+      <button type="button" class="hero-nav-pill" data-hero-tab="insights">
+        <span>Analysis Insights</span>
+      </button>
+      <button type="button" class="hero-nav-pill" data-hero-tab="process">
+        <span>Verification Process</span>
+      </button>
     </nav>
 
     <div class="top-right" id="inlineCalibrationBar">
@@ -296,6 +302,224 @@
             <strong>Source-cited briefs</strong>
             <span>Audit every link with one click</span>
           </div>
+        </div>
+
+        <!-- Dedicated Top-Nav Information Views (Real Cala Data / Analysis Insights / Verification Process) -->
+        <div class="hero-info-panels-wrap" id="heroInfoPanelsWrap" hidden>
+          <!-- TAB 2: REAL CALA DATA -->
+          <section class="hero-info-panel" id="heroInfoPanel-cala-data" data-hero-panel="cala-data" aria-label="Real and verified Cala data architecture" hidden>
+            <div class="hero-info-header">
+              <div class="hero-info-kicker">
+                <span class="cala-trust-dot" aria-hidden="true"></span>
+                <span>100% Real &amp; Reliable Cala Knowledge Graph Provenance</span>
+              </div>
+              <h2 class="hero-info-title">Every relationship is contributed by real, auditable Cala data.</h2>
+              <p class="hero-info-lead">
+                VentureLink never invents edges, estimates funding sizes, or extrapolates unverified claims. Every entity orb, relationship path, and decision takeaway is grounded directly in live Cala Knowledge Graph records and statutory filings.
+              </p>
+            </div>
+
+            <div class="hero-info-grid is-three-col">
+              <article class="hero-info-card is-highlight">
+                <div class="hero-info-card-top">
+                  <span class="hero-info-tag is-coral">Tier 1 &amp; Tier 2</span>
+                  <span class="hero-info-stat">FILING &middot; PRIMARY</span>
+                </div>
+                <h3>Statutory &amp; Primary Source Hierarchy</h3>
+                <p>
+                  Relationships backed by statutory filings (SEC 13F/Form D, UK Companies House, Finnish PRH, GLEIF LEI) and official primary corporate disclosures carry highest evidentiary weight (<b>1.00</b> and <b>0.82</b>), while secondary press and aggregator records are explicitly separated.
+                </p>
+                <div class="hero-info-pills">
+                  <span>SEC 13F &amp; Form D</span>
+                  <span>Official Registries</span>
+                  <span>Direct Disclosures</span>
+                </div>
+              </article>
+
+              <article class="hero-info-card">
+                <div class="hero-info-card-top">
+                  <span class="hero-info-tag">Automated Hygiene</span>
+                  <span class="hero-info-stat">Noise Quarantine</span>
+                </div>
+                <h3>Raw Co-Mention &amp; Anomaly Filtering</h3>
+                <p>
+                  Bulk-crawled web co-mentions, generic legal-shell containers, and chronological round-sequence conflicts (e.g., a Series B dated after a Series G) are automatically quarantined and flagged in the hygiene drawer rather than distorting your graph.
+                </p>
+                <div class="hero-info-pills">
+                  <span>Co-mention quarantine</span>
+                  <span>Chronology checks</span>
+                  <span>Shell deduplication</span>
+                </div>
+              </article>
+
+              <article class="hero-info-card">
+                <div class="hero-info-card-top">
+                  <span class="hero-info-tag">Zero Fabrication</span>
+                  <span class="hero-info-stat">Explicit Gaps</span>
+                </div>
+                <h3>Transparent Cala Disclosure Gaps</h3>
+                <p>
+                  Absence of evidence is never treated as clearance. When Cala has no indexed commercial customers, recent 18-month catalysts, or litigation flags for an entity, VentureLink surfaces an explicit <b>Cala Disclosure Gap</b> for off-map verification.
+                </p>
+                <div class="hero-info-pills">
+                  <span>Zero synthetic defaults</span>
+                  <span>Explicit missing fields</span>
+                  <span>Direct source URLs</span>
+                </div>
+              </article>
+            </div>
+
+            <div class="hero-info-footer">
+              <button type="button" class="floating-search-btn" data-switch-hero-tab="explorer" data-focus-search="true">
+                Search Live Cala Graph &rsaquo;
+              </button>
+              <button type="button" class="hero-secondary-link" data-switch-hero-tab="insights">
+                Next: Analysis Insights &rsaquo;
+              </button>
+            </div>
+          </section>
+
+          <!-- TAB 3: ANALYSIS INSIGHTS -->
+          <section class="hero-info-panel" id="heroInfoPanel-insights" data-hero-panel="insights" aria-label="Context-aware analyst insights" hidden>
+            <div class="hero-info-header">
+              <div class="hero-info-kicker">
+                <span class="cala-trust-dot" aria-hidden="true"></span>
+                <span>Context-Aware Institutional Decision Lenses</span>
+              </div>
+              <h2 class="hero-info-title">What analysts uncover from each mapped connection.</h2>
+              <p class="hero-info-lead">
+                VentureLink decouples objective corporate roles (Capital, Governance, Commercial Value Chain, Strategic Events) from your active decision mode &mdash; replacing arbitrary numeric scores with clear qualitative verdicts (<b>Strong signal</b>, <b>Watch item</b>, <b>Red flag</b>).
+              </p>
+            </div>
+
+            <div class="hero-info-grid is-three-col">
+              <article class="hero-info-card">
+                <div class="hero-info-card-top">
+                  <span class="hero-info-tag">1 Entity &middot; Neutral</span>
+                  <span class="hero-info-stat">Single Teardown</span>
+                </div>
+                <h3>Single-Company Structural Teardown</h3>
+                <p>
+                  Separates institutional cap-table backers from commercial supply/partner dependencies (never mislabeling a supplier as a warm intro), maps board &amp; M&amp;A ownership trees (<code>ACQUIRED</code> treated as corporate structure), and splits active catalysts (<b>&le;18m</b>) from older history.
+                </p>
+                <div class="hero-info-pills">
+                  <span>Capital &amp; Stack</span>
+                  <span>Gov &amp; M&amp;A</span>
+                  <span>&le;18m Catalysts</span>
+                </div>
+              </article>
+
+              <article class="hero-info-card is-highlight">
+                <div class="hero-info-card-top">
+                  <span class="hero-info-tag is-coral">2&ndash;4 Entities &middot; Neutral</span>
+                  <span class="hero-info-stat">Ecosystem Compare</span>
+                </div>
+                <h3>Multi-Entity Bottlenecks &amp; Conflicts</h3>
+                <p>
+                  Elevates shared cross-entity bridges onto a central spine: exposes <b>Dual-Backed Investor Conflicts</b> requiring Chinese walls, <b>Shared Commercial Bottlenecks</b> serving rival peers, <b>Talent &amp; Founder Spillover</b>, and an inline <b>Evaluate Primary Target</b> switcher.
+                </p>
+                <div class="hero-info-pills">
+                  <span>Dual-backer conflicts</span>
+                  <span>Shared bottlenecks</span>
+                  <span>Target focus switcher</span>
+                </div>
+              </article>
+
+              <article class="hero-info-card">
+                <div class="hero-info-card-top">
+                  <span class="hero-info-tag">My Firm Seat Set</span>
+                  <span class="hero-info-stat">Origination Triage</span>
+                </div>
+                <h3>Asymmetric 4-Factor Deal Triage</h3>
+                <p>
+                  When you set your fund or corporate buyer seat (e.g., Sequoia Capital or NVIDIA), Access and Caution compute asymmetrically from your firm: tracing concrete 1-hop/2-hop <b>Warm Intro Chains</b> (or explicit <b>Cold Outreach</b>) and flagging direct <b>Portfolio Overlaps</b>.
+                </p>
+                <div class="hero-info-pills">
+                  <span>Warm intro chains</span>
+                  <span>Portfolio overlap</span>
+                  <span>1-click triage brief</span>
+                </div>
+              </article>
+            </div>
+
+            <div class="hero-info-footer">
+              <button type="button" class="floating-search-btn" data-launch-sample-map="true">
+                Explore Live 3-Entity Sample Map &rsaquo;
+              </button>
+              <button type="button" class="hero-secondary-link" data-switch-hero-tab="process">
+                Next: Verification Process &rsaquo;
+              </button>
+            </div>
+          </section>
+
+          <!-- TAB 4: VERIFICATION PROCESS -->
+          <section class="hero-info-panel" id="heroInfoPanel-process" data-hero-panel="process" aria-label="End-to-end verification and AI gating process" hidden>
+            <div class="hero-info-header">
+              <div class="hero-info-kicker">
+                <span class="cala-trust-dot" aria-hidden="true"></span>
+                <span>4-Stage Deterministic &amp; Citation-Locked Pipeline</span>
+              </div>
+              <h2 class="hero-info-title">How raw Cala records become source-locked analyst briefs.</h2>
+              <p class="hero-info-lead">
+                Every search and expanded analysis tab runs through a 4-stage verification pipeline that combines live Cala graph retrieval with strict deterministic post-filtering so zero hallucinated facts ever reach the UI.
+              </p>
+            </div>
+
+            <div class="hero-info-grid is-four-col">
+              <article class="hero-info-card">
+                <div class="hero-info-card-top">
+                  <span class="hero-info-step">01</span>
+                  <span class="hero-info-stat">Live Retrieval</span>
+                </div>
+                <h3>Cala Graph &amp; Multi-Hop Expansion</h3>
+                <p>
+                  Resolves canonical Cala entities, expands 2-hop <code>FundingRound</code> co-investors, executive/founder tenures, commercial partners, and M&amp;A trees with budgeted live Cala queries.
+                </p>
+              </article>
+
+              <article class="hero-info-card">
+                <div class="hero-info-card-top">
+                  <span class="hero-info-step">02</span>
+                  <span class="hero-info-stat">Layer A / Layer B</span>
+                </div>
+                <h3>Structural Role &amp; 18m Recency Split</h3>
+                <p>
+                  Tags every edge with an objective structural role, applies the 18-month active catalyst cutoff, deduplicates shared multi-hub bridges, and selects the context mode automatically.
+                </p>
+              </article>
+
+              <article class="hero-info-card">
+                <div class="hero-info-card-top">
+                  <span class="hero-info-step">03</span>
+                  <span class="hero-info-stat">Claude Analyst</span>
+                </div>
+                <h3>Context-Aware AI Synthesis</h3>
+                <p>
+                  Prompts Claude exclusively with pre-verified Cala records and mode-aligned analyst instructions to produce plain-English headlines, per-connection meanings, and next diligence checks.
+                </p>
+              </article>
+
+              <article class="hero-info-card is-highlight">
+                <div class="hero-info-card-top">
+                  <span class="hero-info-step is-coral">04</span>
+                  <span class="hero-info-stat">Citation Gate</span>
+                </div>
+                <h3>Deterministic Claim &amp; Numeric Gate</h3>
+                <p>
+                  Validates every AI sentence against allowed Cala <code>sourceIds</code>, numbers, 4-digit years, and restricted-claim guards &mdash; dropping any ungrounded assertion before rendering clickable citations.
+                </p>
+              </article>
+            </div>
+
+            <div class="hero-info-footer">
+              <button type="button" class="floating-search-btn" data-switch-hero-tab="explorer" data-focus-search="true">
+                Start Exploring Live Cala Data &rsaquo;
+              </button>
+              <button type="button" class="hero-secondary-link" data-launch-sample-map="true">
+                Open OpenAI + Nvidia + Anthropic Map &rsaquo;
+              </button>
+            </div>
+          </section>
         </div>
 
         <!-- Floating Constellation Filter Ribbon -->
