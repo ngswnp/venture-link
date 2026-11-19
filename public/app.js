@@ -1786,6 +1786,13 @@ function syncClearFocusButton() {
   btn.hidden = !(state.selectedNodeId || state.selectedEdgeId);
 }
 
+function restoreDefaultMapStatus() {
+  const mappedLabel = state.pinnedEntities.length
+    ? `Mapped ${state.pinnedEntities.map((p) => cleanText(p.name)).filter(Boolean).join(" · ")}`
+    : "Search any entity above or click a quick pick to map Cala paths.";
+  setStatus(mappedLabel);
+}
+
 function clearMapIsolation(options = {}) {
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
@@ -1794,6 +1801,10 @@ function clearMapIsolation(options = {}) {
     state.hoveredEdgeId = null;
   }
   applyPathLaserIsolation();
+  const statusText = $("#mapStatus")?.textContent || "";
+  if (statusText.includes("Focused signal on constellation map")) {
+    restoreDefaultMapStatus();
+  }
 }
 
 function applyPathLaserIsolation() {
@@ -2733,6 +2744,22 @@ function focusDecisionSignalOnMap({ edgeId = "", nodeId = "", group = "" } = {})
   setStatus("Focused signal on constellation map. Click the isolated curve or node to inspect its dossier.");
 }
 
+function syncDecisionOverlayBodyClasses() {
+  const hasMapNodes = Boolean(state.bridgeMap && asList(state.bridgeMap.nodes).length);
+  const isPopOpen = Boolean(state.decisionSummaryOpen && hasMapNodes);
+  document.body.classList.toggle("has-decision-popover-open", isPopOpen && !state.decisionPanelExpanded);
+  document.body.classList.toggle("has-decision-detail-open", isPopOpen && Boolean(state.decisionDetailView) && !state.decisionPanelExpanded);
+}
+
+function resetDecisionPopoverScroll() {
+  const pop = $("#decisionSummaryPopover");
+  const out = $("#decisionAiOutput");
+  const list = $("#decisionFactorList");
+  if (pop) pop.scrollTop = 0;
+  if (out) out.scrollTop = 0;
+  if (list) list.scrollTop = 0;
+}
+
 function renderDecisionSummaryWidget() {
   const pillBtn = $("#decisionSummaryToggleBtn");
   const pillDot = $("#decisionPillDot");
@@ -2755,9 +2782,11 @@ function renderDecisionSummaryWidget() {
     $("#decisionAiPrompt")?.removeAttribute("hidden");
     pop?.classList.remove("has-ai-results");
     setDecisionPanelExpanded(false);
+    syncDecisionOverlayBodyClasses();
     return;
   }
   pillBtn.disabled = false;
+  syncDecisionOverlayBodyClasses();
   const summary = buildFourFactorDecisionSummary(bridgeMap);
 
   if (pillDot) {
@@ -2867,6 +2896,7 @@ function setDecisionPanelExpanded(expanded) {
   } else if (hud && pop.parentElement !== hud) {
     hud.insertBefore(pop, toggle || null);
   }
+  syncDecisionOverlayBodyClasses();
 }
 
 function fourFactorClaudeCacheKey(summary, bridgeMap) {
@@ -2886,14 +2916,22 @@ function fourFactorClaudeCacheKey(summary, bridgeMap) {
 
 function collectDecisionSourceMap(bridgeMap, extraSources = []) {
   const sourceObjects = [
-    ...(Array.isArray(state.analysis?.sources) ? state.analysis.sources : Object.values(state.analysis?.sources || {})),
+    ...asList(extraSources),
     ...(Array.isArray(bridgeMap?.sources) ? bridgeMap.sources : Object.values(bridgeMap?.sources || {})),
-    ...asList(extraSources)
+    ...(Array.isArray(state.analysis?.sources) ? state.analysis.sources : Object.values(state.analysis?.sources || {}))
   ];
   const map = new Map();
   for (const source of sourceObjects) {
     const id = source?.id || source?.sourceId || source?.source_id;
-    if (id) map.set(String(id), { ...source, id: String(id) });
+    if (!id) continue;
+    const key = String(id);
+    const merged = { ...(map.get(key) || {}), id: key };
+    for (const [k, v] of Object.entries(source)) {
+      if (v !== undefined && v !== null && v !== "") {
+        merged[k] = v;
+      }
+    }
+    map.set(key, merged);
   }
   return map;
 }
@@ -3009,9 +3047,33 @@ function renderProvenanceMixBar(mix = {}) {
   `;
 }
 
+const FACTOR_ROLE_SUBTITLES = {
+  access: "Syndicate & Warm Introduction Routes",
+  lineage: "Founder, Alumni & Executive Bridges",
+  timing: "Financing Velocity & Milestone Cadence",
+  caution: "Competitive Overlap & Governance Watch"
+};
+
+function computeSourceProvenanceMix(sourceIds = [], sourceById = new Map()) {
+  const counts = { filing: 0, primary: 0, press: 0, aggregator: 0, total: 0, verifiedSharePct: 0 };
+  for (const id of asList(sourceIds)) {
+    const src = sourceById.get(String(id));
+    const rank = String(src?.sourceRank || src?.source_rank || src?.sourceTier || src?.source_tier || "AGGREGATOR").toUpperCase();
+    if (rank.includes("FILING")) counts.filing += 1;
+    else if (rank.includes("PRIMARY")) counts.primary += 1;
+    else if (rank.includes("PRESS") || rank.includes("NEWS")) counts.press += 1;
+    else counts.aggregator += 1;
+    counts.total += 1;
+  }
+  if (counts.total > 0) {
+    counts.verifiedSharePct = Math.round(((counts.filing + counts.primary) / counts.total) * 100);
+  }
+  return counts;
+}
+
 function renderDecisionDrawer(key, title, badgeText, bodyHtml, isOpen) {
   return `
-    <section class="decision-drawer ${isOpen ? "is-open" : ""}">
+    <section class="decision-drawer ${isOpen ? "is-open" : ""}" data-decision-drawer-section="${escapeHtml(key)}">
       <button
         type="button"
         class="decision-drawer-toggle"
@@ -3129,12 +3191,17 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
     });
   const decisionEffectSourceIds = asList(factorAnalysis?.decisionEffect?.sourceIds);
 
-  const renderCitations = (sourceIds) => asList(sourceIds)
-    .slice(0, 3)
+  const renderCitations = (sourceIds, max = 3) => asList(sourceIds)
+    .slice(0, max)
     .map((id) => {
       const source = sourceById.get(String(id));
-      const label = cleanText(source?.title || source?.publisher || `Cala source ${id}`);
-      return `<span class="ai-cite-pill" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+      const label = cleanText(source?.publisher || source?.title || `Cala source ${id}`);
+      const fullTitle = cleanText(source?.title || label);
+      const url = cleanText(source?.url || source?.document || "");
+      const safeUrl = /^https?:\/\//i.test(url) ? url : "";
+      return safeUrl
+        ? `<a class="ai-cite-pill is-link" href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(fullTitle)}">${escapeHtml(label)} &#8599;</a>`
+        : `<span class="ai-cite-pill" title="${escapeHtml(fullTitle)}">${escapeHtml(label)}</span>`;
     })
     .join("");
 
@@ -3207,6 +3274,9 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
     `;
   }).join("");
 
+  const formatArrowText = (str) => String(str || "")
+    .replace(/\s*<->\s*/g, " \u2194 ")
+    .replace(/\s*->\s*/g, " \u2192 ");
   const anomalies = asList(summary.executive?.dataAnomalies);
   const quarantinedCount = Number(summary.executive?.quarantinedCount || 0);
   const dataQualityHtml = (anomalies.length || quarantinedCount > 0)
@@ -3216,16 +3286,20 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
           <strong>Data Hygiene &amp; Quarantined Flags</strong>
           <span>${quarantinedCount} raw anomalies filtered</span>
         </div>
-        ${anomalies.length ? `<ul class="decision-quality-list">${anomalies.slice(0, 3).map((a) => `<li><strong>${escapeHtml(a.path || a.kind)}:</strong> ${escapeHtml(a.detail)}</li>`).join("")}</ul>` : `<p class="decision-ai-no-reasoning">No high-severity timing conflicts flagged; raw bulk-crawl and generic edges were quarantined cleanly.</p>`}
+        ${anomalies.length ? `<ul class="decision-quality-list">${anomalies.slice(0, 2).map((a) => `<li><strong>${escapeHtml(formatArrowText(a.path || a.kind))}:</strong> ${escapeHtml(formatArrowText(a.detail))}</li>`).join("")}</ul>` : `<p class="decision-ai-no-reasoning">No high-severity timing conflicts flagged; raw bulk-crawl and generic edges were quarantined cleanly.</p>`}
       </div>
     `
     : "";
 
+  const sourceProvenanceMix = computeSourceProvenanceMix(submittedSourceIds, sourceById);
+  const provMixForDisplay = sourceProvenanceMix.total > 0 ? sourceProvenanceMix : factor.provenanceMix;
+  const provBarHtml = renderProvenanceMixBar(provMixForDisplay);
+
   const sourcesDrawerBody = `
     <div class="decision-sources-wrap">
-      ${renderProvenanceMixBar(factor.provenanceMix)}
-      <div class="decision-ai-sources-used">${sourceCardsHtml || `<span class="decision-ai-no-chart">No source cards linked.</span>`}</div>
       ${dataQualityHtml}
+      ${provBarHtml}
+      <div class="decision-ai-sources-used">${sourceCardsHtml || `<span class="decision-ai-no-chart">No source cards linked.</span>`}</div>
     </div>
   `;
 
@@ -3253,12 +3327,20 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
     </div>
   `;
 
+  const roleSubtitle = FACTOR_ROLE_SUBTITLES[factor.group] || `${factor.label} Signal Profile`;
   const factorHeadHtml = `
     <div class="decision-ai-factor-head">
       <div class="decision-head-left">
         <span class="fam-dot" style="background:${getContributionColorHex(factor.group)}"></span>
-        <strong id="decisionAiSelectedHeading">${escapeHtml(factor.label)}</strong>
-        <span class="decision-score-chip">${factor.signalStrength}/100</span>
+        <div class="decision-head-titles">
+          <strong id="decisionAiSelectedHeading">${escapeHtml(roleSubtitle)}</strong>
+          <div class="decision-head-meter">
+            <span class="decision-score-track is-inline" aria-hidden="true">
+              <i style="width:${factor.signalStrength > 0 ? Math.max(6, factor.signalStrength) : 0}%;background:${getContributionColorHex(factor.group)}"></i>
+            </span>
+            <span class="decision-score-chip">${factor.signalStrength}/100</span>
+          </div>
+        </div>
       </div>
       <div class="decision-head-right">
         <span class="decision-effect-pill ${escapeHtml(factor.effectClass)}">${escapeHtml(factor.effect)}</span>
@@ -3267,14 +3349,20 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
     </div>
   `;
 
+  const citeCountControlHtml = decisionEffectSourceIds.length
+    ? (state.decisionPanelExpanded
+        ? `<span class="decision-cite-count">${decisionEffectSourceIds.length} cited</span>`
+        : `<button type="button" class="decision-cite-count is-interactive" data-open-sources-drawer="true" title="View verified sources">${decisionEffectSourceIds.length} cited &#8595;</button>`)
+    : "";
+
   const takeawayBlockHtml = `
     <div class="decision-ai-impact-block ${hasClaudeFactorEffect ? "" : "is-fallback"}">
       <div class="decision-takeaway-top">
         <span class="decision-ai-section-label">${hasClaudeFactorEffect ? "Claude Takeaway" : "Map Takeaway"}</span>
-        ${decisionEffectSourceIds.length ? `<span class="decision-cite-count">${decisionEffectSourceIds.length} cited</span>` : ""}
+        ${citeCountControlHtml}
       </div>
       <p>${escapeHtml(decisionImpact)}</p>
-      ${decisionEffectSourceIds.length && state.decisionPanelExpanded ? `<div class="decision-ai-citations">${renderCitations(decisionEffectSourceIds)}</div>` : ""}
+      ${decisionEffectSourceIds.length ? `<div class="decision-ai-citations">${renderCitations(decisionEffectSourceIds, state.decisionPanelExpanded ? 3 : 2)}</div>` : ""}
     </div>
     <div class="decision-ai-next-check">
       <span class="decision-ai-section-label">Next Diligence Check</span>
@@ -3855,7 +3943,7 @@ function buildGroupBranchEdgeTooltipHtml(edge, fromNode, toNode, cgMeta, group) 
     </div>
     <div class="tip-route">
       <span>${escapeHtml(nameOf(fromNode || { label: edge.from }))}</span>
-      <span class="tip-arrow">-&gt;</span>
+      <span class="tip-arrow">&rarr;</span>
       <span>${escapeHtml(toNode?.label || cgMeta.headerLabel)}</span>
     </div>
     <div class="tip-spec-row"><span class="tip-k">Analyst Question:</span> ${escapeHtml(question)}</div>
@@ -3881,7 +3969,7 @@ function buildEdgeContextMeta(edge) {
 
   const siblings = getSiblingEdgesForTooltip(edge, layout);
   const rank = strongestTier(siblings);
-  const arrowSymbol = edge.isSymmetric ? "<->" : "->";
+  const arrowSymbol = edge.isSymmetric ? "\u2194" : "\u2192";
   const anyLead = siblings.some((s) => s.isLead);
   const sharedBridgeNode = edge.sharedBridgeNodeId ? nodeById.get(edge.sharedBridgeNodeId) : null;
   const sharedBridgeNodeName = sharedBridgeNode ? nameOf(sharedBridgeNode) : "";
@@ -4113,7 +4201,7 @@ function buildEdgeTooltipHtml(edge) {
 
   const sharedBridgeHtml =
     edge.isSharedBridge && sharedBridgeNodeName && otherFocalNames.length
-      ? `<div class="tip-spec-row"><span class="tip-k">Bridge Hub:</span> ${escapeHtml(sharedBridgeNodeName)} links ${escapeHtml(allHubNames.join(" <-> "))}</div>`
+      ? `<div class="tip-spec-row"><span class="tip-k">Bridge Hub:</span> ${escapeHtml(sharedBridgeNodeName)} links ${escapeHtml(allHubNames.join(" \u2194 "))}</div>`
       : "";
 
   const contextHtml = contextParts.length
@@ -4494,6 +4582,8 @@ async function addEntityToMap(entity) {
   if (sInput) sInput.value = "";
 
   if (ref.id && state.pinnedEntities.some((p) => p.id === ref.id)) {
+    state.compareBoxOpen = false;
+    renderExploredEntitiesBox();
     focusExistingMappedEntity(ref);
     return;
   }
@@ -4501,6 +4591,8 @@ async function addEntityToMap(entity) {
     showToast("Map displays up to 20 explored hubs cleanly. Remove one to add more.", true);
     return;
   }
+  state.compareBoxOpen = false;
+  renderExploredEntitiesBox();
   await runEntityMapAnalysis([...state.pinnedEntities, ref], {
     fit: true,
     discoverLive: true,
@@ -4642,6 +4734,7 @@ async function openEntityDossier(node, options = {}) {
   state.selectedEdgeId = null;
   state.hoveredNodeId = null;
   state.hoveredEdgeId = null;
+  hideMapTooltip();
   applyPathLaserIsolation();
 
   state.dossier = {
@@ -4691,6 +4784,7 @@ function openConnectionInspector(edge, options = {}) {
   state.selectedNodeId = null;
   state.hoveredNodeId = null;
   state.hoveredEdgeId = null;
+  hideMapTooltip();
   applyPathLaserIsolation();
   state.dossier = {
     mode: "connection",
@@ -4700,7 +4794,7 @@ function openConnectionInspector(edge, options = {}) {
     returnFocus: options.returnFocus || state.dossier?.returnFocus || currentFocus
   };
   $("#entityDossierBackdrop").hidden = false;
-  renderDossier();
+  renderDossier({ resetScroll: true });
   $("#entityDossierModal")?.focus();
 }
 
@@ -4879,6 +4973,20 @@ function buildDossierAiInsightPacket(dossier) {
   };
 }
 
+function formatCalaRelationDisplay(rawRelations = [], fromName = "", arrowSymbol = "\u2192", toName = "") {
+  const list = asList(rawRelations).map((r) => cleanText(r)).filter(Boolean);
+  if (!list.length) return "Verified entity link";
+  const humanize = (raw) => {
+    const words = String(raw || "").toLowerCase().replace(/_/g, " ").trim().replace(/\s+/g, " ");
+    return words ? words.replace(/\b[a-z]/g, (ch) => ch.toUpperCase()) : "";
+  };
+  const label = list.map((raw) => {
+    const h = humanize(raw);
+    return h && h.toUpperCase() !== raw.toUpperCase() ? `${h} · ${raw}` : raw;
+  }).join(", ");
+  return fromName && toName ? `${label} (${fromName} ${arrowSymbol} ${toName})` : label;
+}
+
 function renderAiInsightSection(dossier) {
   const key = dossierAiCacheKey(dossier);
   if (!key) return "";
@@ -4902,6 +5010,15 @@ function renderAiInsightSection(dossier) {
     const badgeLabel = isAi ? "Claude AI · Grounded in Cala" : "Deterministic Cala Brief";
     const packet = buildDossierAiInsightPacket(dossier);
     const sourceById = new Map((packet?.sources || []).map((s) => [s.id, s]));
+    const rawSources = dossier.mode === "connection"
+      ? collectEdgeCitations(dossier.ctx?.siblings, { limit: 40 }).citations
+      : sourcesFor(dossier.data);
+    const urlById = new Map();
+    for (const s of rawSources) {
+      const sid = cleanText(s?.id);
+      const rawUrl = cleanText(s?.url || s?.document || s?.link);
+      if (sid && /^https?:\/\//i.test(rawUrl)) urlById.set(sid, rawUrl);
+    }
     const insightsHtml = (res.insights || []).length
       ? `<ul class="ai-insight-list">${res.insights
           .map((item) => {
@@ -4909,7 +5026,13 @@ function renderAiInsightSection(dossier) {
               .map((sid) => sourceById.get(sid))
               .filter(Boolean)
               .slice(0, 2)
-              .map((src) => `<span class="ai-cite-chip" title="${escapeHtml(src.title)}">${escapeHtml(src.publisher)}${src.date ? ` · ${escapeHtml(src.date)}` : ""}</span>`)
+              .map((src) => {
+                const srcUrl = urlById.get(src.id) || "";
+                const label = `${escapeHtml(src.publisher)}${src.date ? ` · ${escapeHtml(src.date)}` : ""}`;
+                return srcUrl
+                  ? `<a class="ai-cite-chip is-link" href="${escapeHtml(srcUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(src.title)}">${label} &#8599;</a>`
+                  : `<span class="ai-cite-chip" title="${escapeHtml(src.title)}">${label}</span>`;
+              })
               .join("");
             return `<li><span>${escapeHtml(item.text)}</span>${cites ? `<div class="ai-cite-row">${cites}</div>` : ""}</li>`;
           })
@@ -4998,13 +5121,13 @@ function renderConnectionInspectorBody(dossier) {
 
   const dealParts = [
     { k: "Graph Path", v: hopTypeLabel },
-    { k: "Cala Relation", v: rawRelations.length ? `${rawRelations.join(", ")} (${fromName} ${arrowSymbol} ${toName})` : "Verified entity link" }
+    { k: "Cala Relation", v: formatCalaRelationDisplay(rawRelations, fromName, arrowSymbol, toName) }
   ];
   if (hasActualRound && roundSummary) dealParts.push({ k: "Round", v: roundSummary });
   else if (edge.date || edge.roundDate) dealParts.push({ k: "Observed Date", v: edge.date || edge.roundDate });
   if (roleDisplay) dealParts.push({ k: "Role", v: roleDisplay });
   if (edge.isSharedBridge && sharedBridgeNodeName && otherFocalNames.length) {
-    dealParts.push({ k: "Shared Bridge", v: `${sharedBridgeNodeName} links ${allHubNames.join(" <-> ")}` });
+    dealParts.push({ k: "Shared Bridge", v: `${sharedBridgeNodeName} links ${allHubNames.join(" \u2194 ")}` });
   }
   if (linkGaps.length) {
     dealParts.push({ k: "Unindexed in Cala", v: linkGaps.join(", ") });
@@ -5189,7 +5312,7 @@ function renderDossierTabContent(dossier) {
               const isRemote = Boolean(item.entityId || item.connectionType);
               if (isRemote) {
                 const pathSteps = asList(item.path).map((s) => formatReadableEntityLabel(nameOf(s))).filter(Boolean);
-                const title = pathSteps.length ? pathSteps.join(" -> ") : cleanText(item.entityName || item.name) || MISSING;
+                const title = pathSteps.length ? pathSteps.join(" \u2192 ") : cleanText(item.entityName || item.name) || MISSING;
                 const rel = cleanText(item.relation || item.relationship || item.connectionType);
                 const tier = tierOf(item);
                 return `
@@ -5204,7 +5327,7 @@ function renderDossierTabContent(dossier) {
               }
               const otherId = item.from === node.id ? item.to : item.from;
               const other = (state.bridgeMap?.nodes || []).find((n) => n.id === otherId);
-              const title = `${formatReadableEntityLabel(nameOf(node))} -> ${formatReadableEntityLabel(nameOf(other || { id: otherId }))}`;
+              const title = `${formatReadableEntityLabel(nameOf(node))} \u2192 ${formatReadableEntityLabel(nameOf(other || { id: otherId }))}`;
               const tier = tierOf(item);
               return `
                 <button type="button" class="group-entry" data-focus-edge="${escapeHtml(item.id)}" data-focus-node="${escapeHtml(otherId)}">
@@ -5370,7 +5493,7 @@ function renderDossierTabContent(dossier) {
         ...edgesInGrp.map((e) => cleanText(e.detail || e.label || "")),
         ...remoteInGrp.map((c) => {
           const steps = asList(c.path).map((s) => formatReadableEntityLabel(nameOf(s))).filter(Boolean);
-          return steps.length ? `${steps.join(" -> ")} (${cleanText(c.relation || c.connectionType)})` : cleanText(c.relation || c.relationship);
+          return steps.length ? `${steps.join(" \u2192 ")} (${cleanText(c.relation || c.connectionType)})` : cleanText(c.relation || c.relationship);
         })
       ].filter(Boolean);
       const uniqueItems = [...new Set(items)];
@@ -5394,7 +5517,7 @@ function renderDossierTabContent(dossier) {
       ? `<div class="group-entry-list">${remoteConns
           .map((c, idx) => {
             const pathSteps = asList(c.path).map((step) => formatReadableEntityLabel(nameOf(step))).filter(Boolean);
-            const title = pathSteps.length ? pathSteps.join(" -> ") : cleanText(c.entityName || c.name || c.label) || MISSING;
+            const title = pathSteps.length ? pathSteps.join(" \u2192 ") : cleanText(c.entityName || c.name || c.label) || MISSING;
             const rel = cleanText(c.relation || c.relationship || c.connectionType) || MISSING;
             const tier = tierOf(c);
             const badge = c.connectionType === "shared_bridge" ? "2-hop Shared Bridge" : "Direct 1-hop";
@@ -5414,7 +5537,7 @@ function renderDossierTabContent(dossier) {
             .map((e) => {
               const otherId = e.from === node.id ? e.to : e.from;
               const other = (state.bridgeMap?.nodes || []).find((n) => n.id === otherId);
-              const title = `${formatReadableEntityLabel(nameOf(node))} -> ${formatReadableEntityLabel(nameOf(other || { id: otherId }))}`;
+              const title = `${formatReadableEntityLabel(nameOf(node))} \u2192 ${formatReadableEntityLabel(nameOf(other || { id: otherId }))}`;
               const tier = tierOf(e);
               return `
                 <button type="button" class="group-entry" data-focus-edge="${escapeHtml(e.id)}" data-focus-node="${escapeHtml(otherId)}">
@@ -5784,9 +5907,21 @@ function bindFilterAndHudEvents() {
     hideMapTooltip();
   });
 
+  const closeDecisionPopover = () => {
+    state.decisionSummaryOpen = false;
+    const pop = $("#decisionSummaryPopover");
+    if (pop) pop.hidden = true;
+    setDecisionPanelExpanded(false);
+    $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", "false");
+    syncDecisionOverlayBodyClasses();
+  };
+
   // Top-left Explored Entities & Compare Drawer
   $("#toggleCompareBoxBtn")?.addEventListener("click", () => {
     state.compareBoxOpen = !state.compareBoxOpen;
+    if (state.compareBoxOpen && window.innerWidth <= 900 && state.decisionSummaryOpen) {
+      closeDecisionPopover();
+    }
     renderExploredEntitiesBox();
     if (state.compareBoxOpen) {
       $("#compareEntityInput")?.focus();
@@ -5854,6 +5989,9 @@ function bindFilterAndHudEvents() {
   // Bottom-left Legend Popover
   $("#mapLegendToggleBtn")?.addEventListener("click", () => {
     state.legendPopoverOpen = !state.legendPopoverOpen;
+    if (state.legendPopoverOpen && window.innerWidth <= 900 && state.decisionSummaryOpen) {
+      closeDecisionPopover();
+    }
     const pop = $("#mapLegendPopover");
     if (pop) pop.hidden = !state.legendPopoverOpen;
     $("#mapLegendToggleBtn")?.setAttribute("aria-expanded", String(state.legendPopoverOpen));
@@ -5867,20 +6005,33 @@ function bindFilterAndHudEvents() {
 
   // Bottom-right 4-Factor Decision Summary Popover
   $("#decisionSummaryToggleBtn")?.addEventListener("click", () => {
-    state.decisionSummaryOpen = !state.decisionSummaryOpen;
+    const nextOpen = !state.decisionSummaryOpen;
+    if (!nextOpen) {
+      closeDecisionPopover();
+      return;
+    }
+    state.decisionSummaryOpen = true;
+    if (state.compareBoxOpen) {
+      state.compareBoxOpen = false;
+      closeCompareSuggest();
+      renderExploredEntitiesBox();
+    }
+    if (window.innerWidth <= 900 && state.legendPopoverOpen) {
+      state.legendPopoverOpen = false;
+      const legendPop = $("#mapLegendPopover");
+      if (legendPop) legendPop.hidden = true;
+      $("#mapLegendToggleBtn")?.setAttribute("aria-expanded", "false");
+    }
+    if ($("#mapStatus")?.textContent?.includes("Focused signal on constellation map")) {
+      restoreDefaultMapStatus();
+    }
     const pop = $("#decisionSummaryPopover");
-    if (pop) pop.hidden = !state.decisionSummaryOpen;
-    if (!state.decisionSummaryOpen) setDecisionPanelExpanded(false);
-    $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", String(state.decisionSummaryOpen));
-    if (state.decisionSummaryOpen) renderDecisionSummaryWidget();
+    if (pop) pop.hidden = false;
+    $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", "true");
+    resetDecisionPopoverScroll();
+    renderDecisionSummaryWidget();
   });
-  $("#decisionSummaryCloseBtn")?.addEventListener("click", () => {
-    state.decisionSummaryOpen = false;
-    const pop = $("#decisionSummaryPopover");
-    if (pop) pop.hidden = true;
-    setDecisionPanelExpanded(false);
-    $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", "false");
-  });
+  $("#decisionSummaryCloseBtn")?.addEventListener("click", closeDecisionPopover);
   $("#decisionAiOutput")?.addEventListener("click", (e) => {
     const focusBtn = e.target.closest("[data-focus-edge-id], [data-focus-node-id]");
     if (focusBtn) {
@@ -5891,12 +6042,21 @@ function bindFilterAndHudEvents() {
       });
       return;
     }
+    const openSourcesBtn = e.target.closest("[data-open-sources-drawer]");
+    if (openSourcesBtn && state.decisionOpenDrawers) {
+      state.decisionOpenDrawers.sources = true;
+      renderDecisionFactorAnalysis();
+      requestAnimationFrame(() => {
+        const sec = $('[data-decision-drawer-section="sources"]');
+        sec?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+      return;
+    }
     const switchBtn = e.target.closest("[data-switch-factor]");
     if (switchBtn) {
       const grp = switchBtn.dataset.switchFactor;
       if (grp && grp !== state.decisionSelectedFactor) {
-        const pop = $("#decisionSummaryPopover");
-        if (pop) pop.scrollTop = 0;
+        resetDecisionPopoverScroll();
         runFourFactorClaudeInsight(grp);
       }
       return;
@@ -5919,8 +6079,7 @@ function bindFilterAndHudEvents() {
       state.decisionDetailView = false;
       state.decisionAnalysisStarted = false;
       state.decisionOpenDrawers = { reasoning: false, connections: false, sources: false };
-      const pop = $("#decisionSummaryPopover");
-      if (pop) pop.scrollTop = 0;
+      resetDecisionPopoverScroll();
       setDecisionPanelExpanded(false);
       renderDecisionSummaryWidget();
       $("#decisionFactorTab-" + CSS.escape(state.decisionSelectedFactor))?.focus();
@@ -5928,8 +6087,7 @@ function bindFilterAndHudEvents() {
     }
     if (e.target.closest("[data-decision-expand]")) {
       setDecisionPanelExpanded(!state.decisionPanelExpanded);
-      const pop = $("#decisionSummaryPopover");
-      if (pop) pop.scrollTop = 0;
+      resetDecisionPopoverScroll();
       renderDecisionSummaryWidget();
       $("[data-decision-expand]")?.focus();
     }
@@ -5953,20 +6111,29 @@ function bindFilterAndHudEvents() {
     } else if (state.decisionDetailView) {
       state.decisionDetailView = false;
       state.decisionAnalysisStarted = false;
+      resetDecisionPopoverScroll();
       renderDecisionSummaryWidget();
       $("#decisionFactorTab-" + CSS.escape(state.decisionSelectedFactor))?.focus();
     } else {
-      state.decisionSummaryOpen = false;
-      $("#decisionSummaryPopover").hidden = true;
-      $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", "false");
+      closeDecisionPopover();
     }
   });
   const decisionFactorList = $("#decisionFactorList");
   decisionFactorList?.addEventListener("click", (e) => {
     const row = e.target.closest("[data-factor-group]");
     if (!row) return;
-    const pop = $("#decisionSummaryPopover");
-    if (pop) pop.scrollTop = 0;
+    if (state.compareBoxOpen) {
+      state.compareBoxOpen = false;
+      closeCompareSuggest();
+      renderExploredEntitiesBox();
+    }
+    if (window.innerWidth <= 900 && state.legendPopoverOpen) {
+      state.legendPopoverOpen = false;
+      const legendPop = $("#mapLegendPopover");
+      if (legendPop) legendPop.hidden = true;
+      $("#mapLegendToggleBtn")?.setAttribute("aria-expanded", "false");
+    }
+    resetDecisionPopoverScroll();
     const grp = row.dataset.factorGroup;
     runFourFactorClaudeInsight(grp);
   });
