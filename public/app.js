@@ -28,12 +28,12 @@ const CONSTELLATION_CY = 700;
 const OVERVIEW_ENTITY_CAP = 12;
 
 const ANCHOR_PALETTE = [
-  { hex: "#38bdf8", glow: "rgba(56, 189, 248, 0.44)", edge: "#0284c7" },
-  { hex: "#a78bfa", glow: "rgba(167, 139, 250, 0.44)", edge: "#7c3aed" },
-  { hex: "#f59e0b", glow: "rgba(245, 158, 11, 0.44)", edge: "#d97706" },
-  { hex: "#fb7185", glow: "rgba(251, 113, 133, 0.44)", edge: "#e11d48" },
-  { hex: "#818cf8", glow: "rgba(129, 140, 248, 0.44)", edge: "#4f46e5" },
-  { hex: "#f472b6", glow: "rgba(244, 114, 182, 0.44)", edge: "#db2777" }
+  { hex: "#FF6B5B", glow: "rgba(255, 107, 91, 0.48)", edge: "#B83B2E" },
+  { hex: "#94B4D8", glow: "rgba(148, 180, 216, 0.44)", edge: "#1F365D" },
+  { hex: "#F2B880", glow: "rgba(242, 184, 128, 0.44)", edge: "#9C5221" },
+  { hex: "#F4EDE0", glow: "rgba(244, 237, 224, 0.42)", edge: "#35496E" },
+  { hex: "#FF8E82", glow: "rgba(255, 142, 130, 0.44)", edge: "#9E352B" },
+  { hex: "#C5D5EA", glow: "rgba(197, 213, 234, 0.44)", edge: "#28416B" }
 ];
 
 const ORBIT_QUADRANTS = [
@@ -50,10 +50,10 @@ const CONTRIBUTION_VISUAL_META = {
     headerLabel: "ACCESS",
     shortLabel: "Access",
     subtitle: "Investors, syndicates & partner access",
-    darkColor: "#38bdf8",
-    lightColor: "#0284c7",
-    darkGlow: "rgba(56, 189, 248, 0.46)",
-    darkEdge: "#0284c7"
+    darkColor: "#F4EDE0",
+    lightColor: "#14213D",
+    darkGlow: "rgba(244, 237, 224, 0.42)",
+    darkEdge: "#D5C7B0"
   },
   lineage: {
     group: "lineage",
@@ -61,10 +61,10 @@ const CONTRIBUTION_VISUAL_META = {
     headerLabel: "LINEAGE",
     shortLabel: "Lineage",
     subtitle: "Founders, leadership & org alumni",
-    darkColor: "#a78bfa",
-    lightColor: "#7c3aed",
-    darkGlow: "rgba(167, 139, 250, 0.46)",
-    darkEdge: "#7c3aed"
+    darkColor: "#94B4D8",
+    lightColor: "#2B4C7E",
+    darkGlow: "rgba(148, 180, 216, 0.46)",
+    darkEdge: "#4A6FA5"
   },
   timing: {
     group: "timing",
@@ -72,10 +72,10 @@ const CONTRIBUTION_VISUAL_META = {
     headerLabel: "TIMING",
     shortLabel: "Timing",
     subtitle: "Funding rounds, filings & dated events",
-    darkColor: "#f59e0b",
-    lightColor: "#d97706",
-    darkGlow: "rgba(245, 158, 11, 0.46)",
-    darkEdge: "#d97706"
+    darkColor: "#F2B880",
+    lightColor: "#C86D2D",
+    darkGlow: "rgba(242, 184, 128, 0.46)",
+    darkEdge: "#C87D42"
   },
   caution: {
     group: "caution",
@@ -83,10 +83,10 @@ const CONTRIBUTION_VISUAL_META = {
     headerLabel: "CAUTION",
     shortLabel: "Caution",
     subtitle: "Acquisitions, competitors & proof gaps",
-    darkColor: "#fb7185",
-    lightColor: "#e11d48",
-    darkGlow: "rgba(251, 113, 133, 0.46)",
-    darkEdge: "#e11d48"
+    darkColor: "#FF6B5B",
+    lightColor: "#D94838",
+    darkGlow: "rgba(255, 107, 91, 0.52)",
+    darkEdge: "#C94638"
   }
 };
 
@@ -136,6 +136,7 @@ const state = {
   decisionAnalysisPendingKey: null,
   decisionAnalysisRequestId: 0,
   decisionOpenDrawers: { reasoning: false, connections: false, sources: false },
+  decisionExpandedOpenDrawers: { icThesis: false, reasoning: false, sourcesList: false, hygiene: false },
   filtersPanelOpen: false,
   suggestItems: [],
   suggestTimer: null,
@@ -2238,8 +2239,9 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
     const isSel = state.selectedNodeId === ent.id;
     const cg = (!ent.isSharedOverlap && p.placedGroup) ? p.placedGroup : getNodeContributionGroup(ent);
     const cgMeta = CONTRIBUTION_VISUAL_META[cg] || CONTRIBUTION_VISUAL_META.access;
-    const colHex = ent.isSharedOverlap ? "#a78bfa" : getContributionColorHex(cg);
-    const colGlow = ent.isSharedOverlap ? "rgba(167, 139, 250, 0.52)" : getContributionGlowRgba(cg);
+    const isLight = getActiveTheme() === "light";
+    const colHex = ent.isSharedOverlap ? (isLight ? "#D94838" : "#FF6B5B") : getContributionColorHex(cg);
+    const colGlow = ent.isSharedOverlap ? "rgba(255, 107, 91, 0.50)" : getContributionGlowRgba(cg);
     const colEdge = cgMeta.darkEdge || colHex;
     const orbSize = p.bridgeSize || computeEntityOrbSize(ent, ent.isSharedOverlap);
     const readable = formatReadableEntityLabel(nameOf(ent), ent.date);
@@ -3047,6 +3049,14 @@ function renderProvenanceMixBar(mix = {}) {
   `;
 }
 
+function highlightSignalPhrases(rawText) {
+  const escaped = escapeHtml(rawText);
+  return escaped.replace(
+    /(\$[0-9]+(?:\.[0-9]+)?[BMK]?|\b\d{4}-\d{2}-\d{2}\b|\b(?:Series\s+[A-Z]|M&amp;A|[A-Z][a-z]+\s+risk\s+flags?|[A-Z][a-z]+\s+shared|[A-Z][a-z]+\s+dated\s+milestones?|\d+\s+(?:shared|risk|dated|cross-hub))\b)/g,
+    '<mark class="decision-key-token">$1</mark>'
+  );
+}
+
 const FACTOR_ROLE_SUBTITLES = {
   access: "Syndicate & Warm Introduction Routes",
   lineage: "Founder, Alumni & Executive Bridges",
@@ -3328,31 +3338,52 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
   `;
 
   const roleSubtitle = FACTOR_ROLE_SUBTITLES[factor.group] || `${factor.label} Signal Profile`;
-  const factorHeadHtml = `
-    <div class="decision-ai-factor-head">
-      <div class="decision-head-left">
-        <span class="fam-dot" style="background:${getContributionColorHex(factor.group)}"></span>
+  const factorColor = getContributionColorHex(factor.group);
+  const factorHeadHtml = state.decisionPanelExpanded
+    ? `
+      <div class="decision-ai-factor-head is-expanded-hero">
+        <div class="decision-hero-score-badge" style="--factor-accent:${factorColor}">
+          <strong>${factor.signalStrength}</strong>
+          <small>/100</small>
+        </div>
         <div class="decision-head-titles">
-          <strong id="decisionAiSelectedHeading">${escapeHtml(roleSubtitle)}</strong>
-          <div class="decision-head-meter">
+          <div class="decision-hero-title-row">
+            <strong id="decisionAiSelectedHeading">${escapeHtml(roleSubtitle)}</strong>
+            <span class="decision-effect-pill ${escapeHtml(factor.effectClass)}">${escapeHtml(factor.effect)}</span>
+            <span class="decision-mode-tag ${hasClaudeFactorEffect ? "is-claude" : ""}">${statusLabel}</span>
+          </div>
+          <div class="decision-head-meter is-wide">
             <span class="decision-score-track is-inline" aria-hidden="true">
-              <i style="width:${factor.signalStrength > 0 ? Math.max(6, factor.signalStrength) : 0}%;background:${getContributionColorHex(factor.group)}"></i>
+              <i style="width:${factor.signalStrength > 0 ? Math.max(6, factor.signalStrength) : 0}%;background:${factorColor}"></i>
             </span>
-            <span class="decision-score-chip">${factor.signalStrength}/100</span>
+            <span class="decision-hero-submeta">${factor.count} verified paths · ${factor.sharedCount ? `${factor.sharedCount} cross-hub shared` : "direct"} · ${factor.provenanceMix?.verifiedSharePct ?? 0}% FILING/PRIMARY</span>
           </div>
         </div>
       </div>
-      <div class="decision-head-right">
-        <span class="decision-effect-pill ${escapeHtml(factor.effectClass)}">${escapeHtml(factor.effect)}</span>
-        <span class="decision-mode-tag ${hasClaudeFactorEffect ? "is-claude" : ""}">${statusLabel}</span>
+    `
+    : `
+      <div class="decision-ai-factor-head">
+        <div class="decision-head-left">
+          <span class="fam-dot" style="background:${factorColor}"></span>
+          <div class="decision-head-titles">
+            <strong id="decisionAiSelectedHeading">${escapeHtml(roleSubtitle)}</strong>
+            <div class="decision-head-meter">
+              <span class="decision-score-track is-inline" aria-hidden="true">
+                <i style="width:${factor.signalStrength > 0 ? Math.max(6, factor.signalStrength) : 0}%;background:${factorColor}"></i>
+              </span>
+              <span class="decision-score-chip">${factor.signalStrength}/100</span>
+            </div>
+          </div>
+        </div>
+        <div class="decision-head-right">
+          <span class="decision-effect-pill ${escapeHtml(factor.effectClass)}">${escapeHtml(factor.effect)}</span>
+          <span class="decision-mode-tag ${hasClaudeFactorEffect ? "is-claude" : ""}">${statusLabel}</span>
+        </div>
       </div>
-    </div>
-  `;
+    `;
 
   const citeCountControlHtml = decisionEffectSourceIds.length
-    ? (state.decisionPanelExpanded
-        ? `<span class="decision-cite-count">${decisionEffectSourceIds.length} cited</span>`
-        : `<button type="button" class="decision-cite-count is-interactive" data-open-sources-drawer="true" title="View verified sources">${decisionEffectSourceIds.length} cited &#8595;</button>`)
+    ? `<button type="button" class="decision-cite-count is-interactive" data-open-sources-drawer="true" title="View verified sources">${decisionEffectSourceIds.length} cited &#8595;</button>`
     : "";
 
   const takeawayBlockHtml = `
@@ -3361,7 +3392,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
         <span class="decision-ai-section-label">${hasClaudeFactorEffect ? "Claude Takeaway" : "Map Takeaway"}</span>
         ${citeCountControlHtml}
       </div>
-      <p>${escapeHtml(decisionImpact)}</p>
+      <p>${highlightSignalPhrases(decisionImpact)}</p>
       ${decisionEffectSourceIds.length ? `<div class="decision-ai-citations">${renderCitations(decisionEffectSourceIds, state.decisionPanelExpanded ? 3 : 2)}</div>` : ""}
     </div>
     <div class="decision-ai-next-check">
@@ -3373,34 +3404,78 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
   if (state.decisionPanelExpanded) {
     const exec = summary.executive || {};
     const icTakeaway = cleanText((claudeAnalyzed && res?.summary) || summary.investmentEffect);
+    const expDrawers = state.decisionExpandedOpenDrawers || { icThesis: false, reasoning: false, sourcesList: false, hygiene: false };
+    const ptsCount = reasoningList.length || Math.min(2, submittedRecords.length);
+
+    const compactConnectionRowsHtml = submittedRecords.length
+      ? `<div class="decision-ai-evidence-list is-compact-table">${submittedRecords.slice(0, 6).map((rec) => {
+          const canFocus = Boolean(rec.edgeId || rec.nodeId);
+          return `
+            <article class="decision-ai-evidence-row is-compact-row" title="${escapeHtml(rec.detail || rec.relation)}">
+              <div class="decision-compact-row-main">
+                <strong class="decision-compact-path">${escapeHtml(rec.path)}</strong>
+                <span class="decision-compact-rel">${escapeHtml(rec.relation)}${rec.date ? ` · ${escapeHtml(rec.date)}` : ""}</span>
+              </div>
+              <div class="decision-compact-row-actions">
+                ${rec.isSharedBridge ? `<span class="decision-badge-shared">Shared</span>` : ""}
+                <span class="source-tier" data-tier="${escapeHtml(rec.sourceRank || "AGGREGATOR")}">${escapeHtml(rec.sourceRank || "AGG")}</span>
+                ${canFocus ? `<button type="button" class="decision-focus-btn" data-focus-edge-id="${escapeHtml(rec.edgeId || "")}" data-focus-node-id="${escapeHtml(rec.nodeId || "")}" data-focus-group="${escapeHtml(factor.group)}">Focus map</button>` : ""}
+              </div>
+            </article>
+          `;
+        }).join("")}</div>`
+      : `<div class="decision-ai-no-chart">No mapped relationship records for this factor.</div>`;
+
+    const expandedSourcesDrawerHtml = renderDecisionDrawer(
+      "exp-sources",
+      "Inspect Source Links & Hygiene",
+      `${submittedSourceIds.length} sources${quarantinedCount > 0 ? ` · ${quarantinedCount} filtered` : ""}`,
+      `<div class="decision-sources-wrap">${dataQualityHtml}<div class="decision-ai-sources-used">${sourceCardsHtml || `<span class="decision-ai-no-chart">No source cards linked.</span>`}</div></div>`,
+      Boolean(expDrawers.sourcesList)
+    );
+
+    const expandedReasoningDrawerHtml = renderDecisionDrawer(
+      "exp-reasoning",
+      "Reasoning & Scope Limitation",
+      `${ptsCount} ${ptsCount === 1 ? "point" : "points"}`,
+      reasoningDrawerBody,
+      Boolean(expDrawers.reasoning)
+    );
+
     outEl.innerHTML = `
       ${navHtml}
-      <div class="decision-exec-banner">
+      <div class="decision-exec-banner is-streamlined">
         <div class="decision-exec-top">
           <span class="decision-verdict-badge ${escapeHtml(summary.overall.cls)}">${escapeHtml(summary.overall.label)}</span>
-          <span class="decision-exec-score">Evidence Score ${exec.evidenceScore ?? factor.signalStrength}/100 · Grade ${escapeHtml(exec.reliabilityGrade || "B")} · ${exec.verifiedSharePct ?? 0}% Verified</span>
+          <div class="decision-exec-kpi-pills">
+            <span class="decision-exec-score">Score <b>${exec.evidenceScore ?? factor.signalStrength}/100</b></span>
+            <span class="decision-exec-pill">Grade <b>${escapeHtml(exec.reliabilityGrade || "B")}</b></span>
+            <span class="decision-exec-pill"><b>${exec.verifiedSharePct ?? 0}%</b> Verified</span>
+          </div>
           ${quarantinedCount > 0 ? `<span class="decision-exec-quarantine">${quarantinedCount} raw noise filtered</span>` : ""}
+          ${icTakeaway ? `<button type="button" class="decision-ic-toggle" data-decision-drawer="exp-ic" aria-expanded="${Boolean(expDrawers.icThesis)}">${expDrawers.icThesis ? "Hide IC Thesis −" : "Overall IC Thesis +"}</button>` : ""}
         </div>
-        ${icTakeaway ? `<p class="decision-exec-ic">${escapeHtml(icTakeaway)}</p>` : ""}
+        ${icTakeaway ? `<p class="decision-exec-ic" ${expDrawers.icThesis ? "" : "hidden"}>${escapeHtml(icTakeaway)}</p>` : ""}
       </div>
       <div class="decision-workspace-grid">
         <div class="decision-col-primary">
-          <section class="decision-ai-factor-panel" aria-label="${escapeHtml(factor.label)} analysis">
+          <section class="decision-ai-factor-panel is-hero-panel" aria-label="${escapeHtml(factor.label)} analysis">
             ${factorHeadHtml}
             ${takeawayBlockHtml}
-            ${reasoningDrawerBody}
+            ${expandedReasoningDrawerHtml}
             ${analysisMessage}
           </section>
         </div>
         <div class="decision-col-evidence">
           ${kpiStripHtml}
           <section class="decision-evidence-panel">
-            <div class="decision-panel-subhead"><strong>Supporting Connections</strong><span>${submittedRecords.length} ranked paths</span></div>
-            ${connectionRowsHtml}
+            <div class="decision-panel-subhead"><strong>Top Supporting Connections</strong><span>${submittedRecords.length} ranked paths</span></div>
+            ${compactConnectionRowsHtml}
           </section>
           <section class="decision-evidence-panel">
-            <div class="decision-panel-subhead"><strong>Verified Sources &amp; Quality</strong><span>${submittedSourceIds.length} sources</span></div>
-            ${sourcesDrawerBody}
+            <div class="decision-panel-subhead"><strong>Verified Provenance Mix</strong><span>${submittedSourceIds.length} sources</span></div>
+            ${provBarHtml}
+            ${expandedSourcesDrawerHtml}
           </section>
         </div>
       </div>
@@ -6043,13 +6118,22 @@ function bindFilterAndHudEvents() {
       return;
     }
     const openSourcesBtn = e.target.closest("[data-open-sources-drawer]");
-    if (openSourcesBtn && state.decisionOpenDrawers) {
-      state.decisionOpenDrawers.sources = true;
-      renderDecisionFactorAnalysis();
-      requestAnimationFrame(() => {
-        const sec = $('[data-decision-drawer-section="sources"]');
-        sec?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      });
+    if (openSourcesBtn) {
+      if (state.decisionPanelExpanded && state.decisionExpandedOpenDrawers) {
+        state.decisionExpandedOpenDrawers.sourcesList = true;
+        renderDecisionFactorAnalysis();
+        requestAnimationFrame(() => {
+          const sec = $('[data-decision-drawer-section="exp-sources"]');
+          sec?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        });
+      } else if (state.decisionOpenDrawers) {
+        state.decisionOpenDrawers.sources = true;
+        renderDecisionFactorAnalysis();
+        requestAnimationFrame(() => {
+          const sec = $('[data-decision-drawer-section="sources"]');
+          sec?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        });
+      }
       return;
     }
     const switchBtn = e.target.closest("[data-switch-factor]");
@@ -6064,7 +6148,19 @@ function bindFilterAndHudEvents() {
     const drawerBtn = e.target.closest("[data-decision-drawer]");
     if (drawerBtn) {
       const key = drawerBtn.dataset.decisionDrawer;
-      if (key && state.decisionOpenDrawers) {
+      if (key === "exp-ic" && state.decisionExpandedOpenDrawers) {
+        state.decisionExpandedOpenDrawers.icThesis = !state.decisionExpandedOpenDrawers.icThesis;
+        renderDecisionFactorAnalysis();
+        $(`[data-decision-drawer="exp-ic"]`)?.focus();
+      } else if (key === "exp-reasoning" && state.decisionExpandedOpenDrawers) {
+        state.decisionExpandedOpenDrawers.reasoning = !state.decisionExpandedOpenDrawers.reasoning;
+        renderDecisionFactorAnalysis();
+        $(`[data-decision-drawer="exp-reasoning"]`)?.focus();
+      } else if (key === "exp-sources" && state.decisionExpandedOpenDrawers) {
+        state.decisionExpandedOpenDrawers.sourcesList = !state.decisionExpandedOpenDrawers.sourcesList;
+        renderDecisionFactorAnalysis();
+        $(`[data-decision-drawer="exp-sources"]`)?.focus();
+      } else if (key && state.decisionOpenDrawers) {
         state.decisionOpenDrawers[key] = !state.decisionOpenDrawers[key];
         renderDecisionFactorAnalysis();
         $(`[data-decision-drawer="${CSS.escape(key)}"]`)?.focus();
