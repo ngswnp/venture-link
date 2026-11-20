@@ -2133,3 +2133,326 @@ export function organizeDossierSources(sources = []) {
     counts
   };
 }
+
+function escapeHtmlText(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+const KEYWORD_STOPWORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "been", "being", "both", "but", "by",
+  "can", "could", "did", "do", "does", "done", "each", "either", "for", "from",
+  "had", "has", "have", "having", "he", "her", "here", "hers", "him", "his", "how",
+  "if", "in", "into", "is", "it", "its", "may", "might", "more", "most", "much",
+  "must", "neither", "no", "nor", "not", "of", "off", "on", "once", "one", "only",
+  "or", "other", "our", "out", "over", "own", "same", "she", "should", "so", "some",
+  "such", "than", "that", "the", "their", "them", "then", "there", "these", "they",
+  "this", "those", "through", "to", "too", "two", "under", "until", "up", "very",
+  "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom",
+  "why", "will", "with", "within", "without", "would", "yet", "you", "your",
+  "entity", "entities", "company", "companies", "record", "records", "map", "mapped",
+  "cala", "hub", "hubs", "mark", "marks", "creates", "create", "confirm", "verify"
+]);
+
+const MONTH_NAME_RE = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+
+function isLowValueKeywordSpan(spanText) {
+  const clean = String(spanText || "").replace(/\s+/g, " ").trim();
+  if (!clean || clean.length < 3 || clean.length > 38) return true;
+  const words = clean.split(" ").filter(Boolean);
+  if (words.length > 4) return true;
+  if (/^\$?[0-9][0-9.,]*(?:\s*(?:[BMKbmk]|%|x|X|m|yr|yrs|months?))?$/.test(clean)) return true;
+  if (/^\d{4}(?:[-/–—]\d{2,4}){1,2}$/.test(clean)) return true;
+  if (new RegExp(`^${MONTH_NAME_RE}\\s+\\d{4}$`, "i").test(clean)) return true;
+  if (/^(?:post-)?(?:pre-)?seed$/i.test(clean)) return true;
+  if (/^(?:post-)?series\s+[a-z0-9](?:\/[a-z0-9])?$/i.test(clean)) return true;
+  if (/^m&a$/i.test(clean)) return true;
+  if (words.every((w) => KEYWORD_STOPWORDS.has(w.toLowerCase().replace(/^[^a-z]+|[^a-z]+$/g, "")))) return true;
+  return false;
+}
+
+function buildClauseIndexLookup(text) {
+  const starts = [0];
+  const sepRe = /(?:[.!?]\s+|;\s+)/g;
+  let m;
+  while ((m = sepRe.exec(text)) !== null) {
+    starts.push(m.index + m[0].length);
+  }
+  return (pos) => {
+    let idx = 0;
+    for (let i = 1; i < starts.length; i += 1) {
+      if (pos >= starts[i]) idx = i;
+      else break;
+    }
+    return idx;
+  };
+}
+
+function buildParenMask(text) {
+  const ranges = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "(") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === ")" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        ranges.push([start, i + 1]);
+        start = -1;
+      }
+    }
+  }
+  return (s, e) => ranges.some(([rs, re]) => s >= rs && e <= re);
+}
+
+function escapeRegExpStr(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function spansOverlap(a, b) {
+  return Math.max(a.start, b.start) < Math.min(a.end, b.end);
+}
+
+const DECISION_KEYWORD_RULES = [
+  // Cross-tab high-signal analytical phrases & conclusions
+  { group: "timing", score: 98, pattern: /\bsequence\s+(?:anomaly|anomalies|conflicts?|mismatch(?:es)?|flags?)\b/gi },
+  { group: "timing", score: 98, pattern: /\bout-of-sequence(?:\s+rounds?)?\b/gi },
+  { group: "timing", score: 97, pattern: /\b(?:recent|active|sustained|strong|stale)\s+(?:momentum|confidence|catalysts?|velocity|rounds?|trajectory)\b/gi },
+  { group: "timing", score: 96, pattern: /\b(?:active|recent|latest|operating|financing)\s+(?:financing|momentum|window|status)\b/gi },
+  { group: "timing", score: 95, pattern: /\bdecision\s+window\b/gi },
+  { group: "timing", score: 95, pattern: /\bstrategic\s+moves?\b/gi },
+  { group: "timing", score: 95, pattern: /\bmaterial\s+(?:events?|milestones?|catalysts?)\b/gi },
+  { group: "timing", score: 94, pattern: /\brecent\s+catalysts?\b/gi },
+  { group: "timing", score: 93, pattern: /\bflagged\s+sequence\s+conflicts?\b/gi },
+  { group: "timing", score: 93, pattern: /\b(?:warrants?|requires?|requiring)\s+(?:clarification|disclosure|confirmation|verification|review)\b/gi },
+  { group: "timing", score: 92, pattern: /\bstale\s+rounds?\b/gi },
+
+  { group: "caution", score: 99, pattern: /\b(?:material|explicit|direct|competitive|commercial)\s+(?:conflicts?\s+of\s+interest|conflict-of-interest|risks?|overlap|competition|barriers?)\b/gi },
+  { group: "caution", score: 98, pattern: /\b(?:dual-sided|shared)\s+(?:investor|backer|capital)\s+exposure\b/gi },
+  { group: "caution", score: 97, pattern: /\binformation\s+asymmetry(?:\s+risks?)?\b/gi },
+  { group: "caution", score: 97, pattern: /\bconflicts?\s+of\s+interest\b/gi },
+  { group: "caution", score: 97, pattern: /\bconflict-of-interest(?:\s+review)?\b/gi },
+  { group: "caution", score: 96, pattern: /\binformation[- ](?:barriers?|walls?|sharing\s+restrictions?)\b/gi },
+  { group: "caution", score: 95, pattern: /\bChinese\s+walls?\b/gi },
+  { group: "caution", score: 95, pattern: /\brecusal\s+protocols?\b/gi },
+  { group: "caution", score: 95, pattern: /\bside-letter\s+carve-outs?\b/gi },
+  { group: "caution", score: 94, pattern: /\bexplicit\s+disclosure\b/gi },
+  { group: "caution", score: 94, pattern: /\b(?:corporate\s+restructuring|concentration|competitive)\s+risks?\b/gi },
+  { group: "caution", score: 93, pattern: /\b(?:direct|product|backed)\s+(?:competition|rivalry|overlap)\b/gi },
+  { group: "caution", score: 93, pattern: /\bdata\s+quality\b/gi },
+
+  { group: "lineage", score: 98, pattern: /\b(?:shared|cross-hub|cross-founder)\s+talent\s+(?:spillover|overlap)\b/gi },
+  { group: "lineage", score: 97, pattern: /\bfounder\/executive\s+bridges?\b/gi },
+  { group: "lineage", score: 97, pattern: /\breduces\s+key-person\s+risk\b/gi },
+  { group: "lineage", score: 96, pattern: /\bfounder-led(?:\s+(?:structure|strategy|control))?\b/gi },
+  { group: "lineage", score: 95, pattern: /\bteam\s+stability\b/gi },
+  { group: "lineage", score: 95, pattern: /\b(?:clear|operating)\s+(?:governance\s+lineage|control|lineage)\b/gi },
+  { group: "lineage", score: 95, pattern: /\b(?:leadership|operating)\s+control\b/gi },
+  { group: "lineage", score: 94, pattern: /\b(?:shared\s+executives?|executive\s+bridges?|alumni\s+lineage)\b/gi },
+  { group: "lineage", score: 94, pattern: /\bcontinuity\s+risk\b/gi },
+  { group: "lineage", score: 93, pattern: /\bdocumented\s+(?:leadership|principals|roles)\b/gi },
+
+  { group: "access", score: 98, pattern: /\bwarm\s+(?:entry\s+vectors?|intro(?:duction)?\s+(?:paths?|routes?)|access)\b/gi },
+  { group: "access", score: 97, pattern: /\bwithout\s+cold\s+(?:outreach|contact)\b/gi },
+  { group: "access", score: 96, pattern: /\b(?:direct\s+cold\s+origination|cold\s+outreach)\b/gi },
+  { group: "access", score: 96, pattern: /\breference-check\s+opportunity\b/gi },
+  { group: "access", score: 95, pattern: /\b(?:direct\s+)?reference\s+(?:calls?|paths?|leverage)\b/gi },
+  { group: "access", score: 95, pattern: /\bdue\s+diligence\b/gi },
+  { group: "access", score: 95, pattern: /\bshared\s+(?:backers?|commercial\s+bottlenecks?)\b/gi },
+  { group: "access", score: 95, pattern: /\b(?:institutional\s+cap-table|ownership\s+links?|direct\s+capital\s+positions?)\b/gi },
+  { group: "access", score: 94, pattern: /\b(?:value-chain\s+leverage|mutual\s+dependency|multiple\s+hubs)\b/gi },
+
+  { group: "all", score: 93, pattern: /\bno\s+(?:mapped|shared|verified)\s+(?:conflicts?|paths?|evidence|signals?|routes?)\b/gi },
+
+  // Decisive standalone adjectives & status modifiers
+  { group: "all", score: 88, isAdjective: true, pattern: /\b(?:historical|unindexed|unverified|outdated|stale|overlapping|dual-sided|unconfirmed|conflicting|concentrated|scarce|exclusive|tenuous|fragmented|material|unclear|limited|critical)\b/gi },
+  // Moderate contextual adjectives (only surface when high-tier phrases don't fill budget)
+  { group: "all", score: 72, isAdjective: true, pattern: /\b(?:verified|direct|active|sustained|explicit|shared|older|cold|absent|missing)\b/gi },
+  // Analytical nouns & signal verbs
+  { group: "all", score: 82, pattern: /\b(?:bottlenecks?|spillover|anomaly|anomalies|competition|differentiation|concentration|restructuring|predate|carve-outs?|recusal|dependency|dependencies|leverage)\b/gi }
+];
+
+const GENERAL_FALLBACK_ADJ_NOUN_RE = /\b([A-Za-z][a-z]{3,}(?:al|ous|ive|ic|ed|ing|ble|less|ful|ant|ent)|scarce|stale|weak|strong|dense|thin|tight|broad|narrow|deep|high|low|key|major|minor|stale)(?:\s+[A-Za-z][a-z]{3,16})?\b/g;
+
+function findVerbatimMatches(text, phrase, clauseOf, inParens) {
+  const clean = String(phrase || "").replace(/\s+/g, " ").trim();
+  if (isLowValueKeywordSpan(clean)) return [];
+  const startBoundary = /^\w/.test(clean) ? "\\b" : "";
+  const endBoundary = /\w$/.test(clean) ? "\\b" : "";
+  const re = new RegExp(`${startBoundary}${escapeRegExpStr(clean)}${endBoundary}`, "gi");
+  const hits = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    hits.push({
+      start,
+      end,
+      text: m[0],
+      clause: clauseOf(start),
+      inParens: inParens(start, end),
+      score: inParens(start, end) ? 80 : 104
+    });
+  }
+  return hits;
+}
+
+function selectSalientSpans(candidates, textLength, maxHighlights, maxCharRatio = 0.43) {
+  const maxTotalChars = Math.max(36, Math.floor(textLength * maxCharRatio));
+  const selected = [];
+  const seenKeys = new Set();
+  const clauseCounts = new Map();
+  let usedChars = 0;
+
+  while (selected.length < maxHighlights) {
+    let best = null;
+    let bestAdjustedScore = -Infinity;
+
+    for (const cand of candidates) {
+      const normKey = cand.text.toLowerCase();
+      if (seenKeys.has(normKey)) continue;
+      if (selected.some((s) => spansOverlap(s, cand))) continue;
+      const len = cand.end - cand.start;
+      if (selected.length > 0 && usedChars + len > maxTotalChars) continue;
+
+      const cCount = clauseCounts.get(cand.clause) || 0;
+      const spreadAdj = cCount === 0 ? 10 : cCount >= 2 ? -8 : 0;
+      const adjusted = cand.score + spreadAdj;
+      if (adjusted > bestAdjustedScore || (adjusted === bestAdjustedScore && best && cand.start < best.start)) {
+        best = cand;
+        bestAdjustedScore = adjusted;
+      }
+    }
+
+    if (!best) break;
+    selected.push(best);
+    seenKeys.add(best.text.toLowerCase());
+    clauseCounts.set(best.clause, (clauseCounts.get(best.clause) || 0) + 1);
+    usedChars += best.end - best.start;
+  }
+
+  return selected
+    .sort((a, b) => a.start - b.start)
+    .map(({ start, end, text, score }) => ({ start, end, text, score }));
+}
+
+/**
+ * Extracts salient semantic keyword phrases and decisive adjectives from a
+ * 4-tab Decision Panel insight sentence while excluding random dates, round tags,
+ * currency tokens, and bare entity enumerations.
+ */
+export function extractDecisionKeywords(rawText, options = {}) {
+  const text = String(rawText || "");
+  if (!text.trim()) return [];
+  const group = String(options.group || "").toLowerCase();
+  const explicitKeywords = Array.isArray(options.explicitKeywords) ? options.explicitKeywords : [];
+  const maxHighlights = text.length <= 105 ? 2 : text.length <= 175 ? 3 : 4;
+  const clauseOf = buildClauseIndexLookup(text);
+  const inParens = buildParenMask(text);
+
+  // Priority 0: Claude explicit verbatim keywords (validated & noise-filtered)
+  if (explicitKeywords.length) {
+    const explicitCandidates = [];
+    for (const kw of explicitKeywords) {
+      const hits = findVerbatimMatches(text, kw, clauseOf, inParens);
+      if (hits.length) {
+        hits.sort((a, b) => Number(a.inParens) - Number(b.inParens) || b.score - a.score || a.start - b.start);
+        explicitCandidates.push(hits[0]);
+      }
+    }
+    const chosenExplicit = selectSalientSpans(explicitCandidates, text.length, maxHighlights);
+    const minExplicit = text.length <= 75 ? 1 : 2;
+    if (chosenExplicit.length >= minExplicit) {
+      return chosenExplicit;
+    }
+  }
+
+  // Priority 1: Domain-aware phrase & adjective extractor across Access / Lineage / Timing / Caution
+  const candidates = [];
+  for (const rule of DECISION_KEYWORD_RULES) {
+    const re = new RegExp(rule.pattern.source, rule.pattern.flags);
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const start = m.index;
+      const end = start + m[0].length;
+      const spanText = m[0];
+      if (isLowValueKeywordSpan(spanText)) continue;
+      let score = rule.score;
+      if (group && rule.group === group) score += 10;
+      if (rule.isAdjective) {
+        const prefix = text.slice(Math.max(0, start - 20), start);
+        if (/\b(?:is|are|was|were|remain|remains|appears?|seem|seems|look|looks)\s+$/i.test(prefix)) {
+          score += 6;
+        }
+      }
+      if (inParens(start, end)) score -= 22;
+      candidates.push({
+        start,
+        end,
+        text: spanText,
+        clause: clauseOf(start),
+        score
+      });
+    }
+  }
+
+  // Priority 2: Fallback descriptive adjectives & adj+noun pairs for unseen prose
+  if (candidates.length < 2) {
+    const fbRe = new RegExp(GENERAL_FALLBACK_ADJ_NOUN_RE.source, GENERAL_FALLBACK_ADJ_NOUN_RE.flags);
+    let m;
+    while ((m = fbRe.exec(text)) !== null) {
+      const start = m.index;
+      const end = start + m[0].length;
+      if (inParens(start, end)) continue;
+      const spanText = m[0];
+      if (isLowValueKeywordSpan(spanText)) continue;
+      // Avoid highlighting capitalized proper nouns unless at start of a clause
+      const firstChar = spanText[0];
+      const prefix = text.slice(Math.max(0, start - 2), start);
+      const atSentenceStart = start === 0 || /[.!;]\s*$/.test(prefix);
+      if (/[A-Z]/.test(firstChar) && !atSentenceStart) continue;
+      if (/^(?:these|those|their|about|which|while|where|there|could|would|should|other|after|under|between|across|before|during|through)\b/i.test(spanText)) continue;
+      candidates.push({
+        start,
+        end,
+        text: spanText,
+        clause: clauseOf(start),
+        score: spanText.includes(" ") ? 64 : 60
+      });
+    }
+  }
+
+  return selectSalientSpans(candidates, text.length, maxHighlights);
+}
+
+/**
+ * Safely HTML-escapes raw Decision Panel text and wraps selected salient keywords
+ * and decisive adjectives in <mark class="decision-key-token">.
+ */
+export function highlightDecisionKeywords(rawText, options = {}) {
+  const text = String(rawText ?? "");
+  if (!text) return "";
+  const spans = extractDecisionKeywords(text, options);
+  if (!spans.length) return escapeHtmlText(text);
+
+  let out = "";
+  let cursor = 0;
+  for (const span of spans) {
+    if (span.start > cursor) {
+      out += escapeHtmlText(text.slice(cursor, span.start));
+    }
+    out += `<mark class="decision-key-token">${escapeHtmlText(text.slice(span.start, span.end))}</mark>`;
+    cursor = span.end;
+  }
+  if (cursor < text.length) {
+    out += escapeHtmlText(text.slice(cursor));
+  }
+  return out;
+}

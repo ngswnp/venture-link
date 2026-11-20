@@ -36,6 +36,7 @@ import {
   findShortestVerifiedPaths,
   formatInstitutionalEntityName,
   formatInstitutionalPath,
+  highlightDecisionKeywords,
   humanizeCalaRelation,
   matchClaudeFindingToRecord,
   normalizeDiligenceState,
@@ -4035,12 +4036,8 @@ function renderProvenanceMixBar(mix = {}) {
   `;
 }
 
-function highlightSignalPhrases(rawText) {
-  const escaped = escapeHtml(rawText);
-  return escaped.replace(
-    /(\$[0-9]+(?:\.[0-9]+)?[BMK]?|\b\d{4}-\d{2}-\d{2}\b|\b(?:Series\s+[A-Z]|M&amp;A|[A-Z][a-z]+\s+risk\s+flags?|[A-Z][a-z]+\s+shared|[A-Z][a-z]+\s+dated\s+milestones?|\d+\s+(?:shared|risk|dated|cross-hub))\b)/g,
-    '<mark class="decision-key-token">$1</mark>'
-  );
+function highlightSignalPhrases(rawText, options = {}) {
+  return highlightDecisionKeywords(rawText, options);
 }
 
 const FACTOR_ROLE_SUBTITLES = {
@@ -5427,7 +5424,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
         <span class="decision-ai-section-label">${hasClaudeFactorEffect ? "Why This Matters To Your Decision" : "Map Takeaway"}</span>
         ${citeCountControlHtml}
       </div>
-      <p>${highlightSignalPhrases(decisionImpact)}</p>
+      <p>${highlightSignalPhrases(decisionImpact, { group: factor.group, explicitKeywords: factorAnalysis?.keywords })}</p>
       ${decisionEffectSourceIds.length ? `<div class="decision-ai-citations">${renderCitations(decisionEffectSourceIds, state.decisionPanelExpanded ? 3 : 2)}</div>` : ""}
     </div>
     <div class="decision-ai-next-check">

@@ -12647,15 +12647,19 @@ html[data-theme="light"] .decision-hero-score-badge strong {
 }
 
 .decision-key-token {
-  padding: 1px 6px;
-  border-radius: 5px;
-  background: rgba(255, 107, 91, 0.24);
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(255, 107, 91, 0.22);
+  border-bottom: 1.5px solid rgba(255, 107, 91, 0.56);
   color: #FAF6EE;
-  font-weight: 800;
+  font-weight: 750;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 html[data-theme="light"] .decision-key-token {
-  background: rgba(255, 107, 91, 0.22);
+  background: rgba(255, 107, 91, 0.20);
+  border-bottom: 1.5px solid rgba(255, 107, 91, 0.50);
   color: #14213D;
 }
 

@@ -108,6 +108,7 @@ const factorAnalysisOutputSchema = {
           verdict: { type: 'string', enum: FACTOR_VERDICTS },
           headline: { type: 'string' },
           decisionEffect: citedTextSchema,
+          keywords: { type: 'array', items: { type: 'string' } },
           findings: {
             type: 'array',
             items: {
@@ -124,7 +125,7 @@ const factorAnalysisOutputSchema = {
           limitation: { type: 'string' },
           nextCheck: { type: 'string' }
         },
-        required: ['group', 'verdict', 'headline', 'decisionEffect', 'findings', 'limitation', 'nextCheck'],
+        required: ['group', 'verdict', 'headline', 'decisionEffect', 'keywords', 'findings', 'limitation', 'nextCheck'],
         additionalProperties: false
       }
     },
@@ -836,6 +837,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
     group: factor.group,
     decisionEffect: fallbackFactorSummaries.find((item) => item.group === factor.group),
     decisionEffectSource: 'map-fallback',
+    keywords: [],
     reasoning: [],
     limitation: factor.records.length
       ? 'The map records show a relationship signal; they do not establish company quality or investment merit.'
@@ -937,6 +939,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
     '- verdict: one label. access/lineage/timing use Strong signal | Positive signal | Mixed signal | Weak signal | No evidence. caution uses Red flag | Watch item | No flags found | No evidence.',
     '- headline: 6-14 words, the single so-what for the analyst, naming the key entity. No jargon, no numbers unless verbatim.',
     '- decisionEffect: 14-26 words explaining what this signal changes in the analysis, citing sourceIds.',
+    '- keywords: 2-4 exact verbatim high-signal keyword phrases (1-4 words each, including decisive adjectives or conclusions like "recent momentum", "historical", "sequence anomaly", "conflict-of-interest") copied verbatim from decisionEffect.text; never standalone dates, round names, or bare entity lists.',
     '- findings: up to 3, ranked by analytical value. connection = the entity path verbatim from records (e.g. "Amazon → OpenAI & Anthropic"). meaning = 8-18 words on why an analyst cares about THAT connection. Cite its record sourceIds.',
     '- limitation: 8-16 words on what these records do not prove.',
     '- nextCheck: 8-18 words starting with "Verify whether", "Confirm whether" or "Ask whether", naming only entities verbatim in that factor.',
@@ -1091,12 +1094,28 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
         ? rawHeadline
         : headlineGate ? filterUnsupportedFactorClaims(rawHeadline, factor, groupSourceIdList, 140) : '';
       const verdict = FACTOR_VERDICTS.includes(rawFactor?.verdict) ? rawFactor.verdict : '';
+      const rawKeywords = Array.isArray(rawFactor?.keywords) ? rawFactor.keywords : [];
+      const effectTextLower = String(decisionEffect?.text || '').toLowerCase();
+      const keywords = [...new Set(
+        rawKeywords
+          .map((k) => (typeof k === 'string' ? k.replace(/\s+/g, ' ').trim() : ''))
+          .filter((k) => {
+            if (!k || k.length < 3 || k.length > 42) return false;
+            if (k.split(' ').length > 4) return false;
+            if (/^\$?[0-9][0-9.,]*(?:\s*(?:[BMKbmk]|%|x|X|m))?$/.test(k)) return false;
+            if (/^\d{4}(?:[-/–—]\d{2,4}){1,2}$/.test(k)) return false;
+            if (/^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{4}$/i.test(k)) return false;
+            if (/^(?:post-)?series\s+[a-z0-9](?:\/[a-z0-9])?$/i.test(k) || /^m&a$/i.test(k)) return false;
+            return effectTextLower.includes(k.toLowerCase());
+          })
+      )].slice(0, 4);
       return {
         group: factor.group,
         verdict,
         headline,
         decisionEffect,
         decisionEffectSource: groundedEffectText ? 'anthropic' : 'map-fallback',
+        keywords,
         findings: groundedFindings,
         reasoning: reasoningOut,
         limitation: filterUnsupportedFactorClaims(rawFactor?.limitation || '', factor, groupSourceIdList, 220, { isLimitation: true }) || fallbackFactorAnalyses.find((item) => item.group === factor.group)?.limitation || '',

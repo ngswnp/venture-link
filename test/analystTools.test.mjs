@@ -26,7 +26,9 @@ import {
   organizeDossierConnections,
   organizeDossierPeople,
   organizeDossierTimeline,
-  organizeDossierSources
+  organizeDossierSources,
+  extractDecisionKeywords,
+  highlightDecisionKeywords
 } from '../public/analystTools.js';
 
 test('formatInstitutionalEntityName normalizes raw 13F ALL-CAPS while preserving mixed-case & acronyms', () => {
@@ -536,4 +538,46 @@ test('organizeDossierSources ranks FILING > PRIMARY > PRESS > AGGREGATOR > CALA 
   assert.equal(res.items[0].tier, 'FILING');
   assert.equal(res.items[1].tier, 'PRIMARY');
   assert.equal(res.items[2].tier, 'AGGREGATOR');
+});
+
+test('extractDecisionKeywords & highlightDecisionKeywords highlight semantic keywords and adjectives across all 4 tabs while rejecting random dates/rounds', () => {
+  const screenshotText =
+    'OpenAI M&A (2026-03-19), Anthropic Series G (2026-02-12) and Series F (2025-09-02) mark recent momentum; Nvidia milestones (2024–2025) are historical. Sequence anomaly (Anthropic Series B post-Series G) warrants clarification on round labeling or timing.';
+  const spans = extractDecisionKeywords(screenshotText, { group: 'timing' });
+  const terms = spans.map((s) => s.text);
+  assert.ok(terms.includes('recent momentum'));
+  assert.ok(terms.includes('historical'));
+  assert.ok(terms.includes('Sequence anomaly'));
+  assert.ok(terms.includes('warrants clarification'));
+  for (const noise of ['2026-03-19', '2026-02-12', '2025-09-02', '2024–2025', 'Series G', 'Series F', 'Series B', 'M&A']) {
+    assert.equal(terms.some((t) => t.includes(noise)), false, `Must not highlight random token ${noise}`);
+  }
+
+  const samplesByGroup = {
+    access: 'Dual-sided capital exposure creates reference-check opportunity but requires explicit conflict-of-interest review before proceeding with either entity.',
+    lineage: 'Verified founder/executive bridges (Daniela Amodei, Pamela Vagata) reveal shared talent spillover across mapped hubs.',
+    timing: 'All mapped dated events predate the 18-month active window (latest 2024-01-01); verify current trajectory outside stale rounds.',
+    caution: 'Dual-sided investor exposure (Baillie Gifford, Sequoia, Cisco across Nvidia and Anthropic) creates material conflict-of-interest and information asymmetry risks. Require explicit disclosure of information barriers.'
+  };
+  for (const [group, text] of Object.entries(samplesByGroup)) {
+    const out = extractDecisionKeywords(text, { group }).map((s) => s.text);
+    assert.ok(out.length >= 2 && out.length <= 4, `Expected 2..4 highlights for ${group}, got ${JSON.stringify(out)}`);
+    assert.equal(out.some((t) => /\d{4}-\d{2}-\d{2}/.test(t)), false);
+  }
+
+  // Respects valid explicit keywords from Claude while stripping dates/round tags
+  const explicit = extractDecisionKeywords(screenshotText, {
+    group: 'timing',
+    explicitKeywords: ['2026-03-19', 'Series G', 'recent momentum', 'historical', 'Sequence anomaly']
+  }).map((s) => s.text);
+  assert.deepEqual(explicit, ['recent momentum', 'historical', 'Sequence anomaly']);
+
+  // HTML escaping safety & general unseen-prose fallback with adjectives
+  const xssHtml = highlightDecisionKeywords('<script>alert(1)</script> Supply appears scarce & fragmented.', { group: 'caution' });
+  assert.equal(xssHtml.includes('<script>'), false);
+  assert.ok(xssHtml.includes('&lt;script&gt;'));
+  assert.ok(xssHtml.includes('<mark class="decision-key-token">scarce</mark>'));
+
+  const unseen = extractDecisionKeywords('Distributor channel remains tenuous and brittle across European hospitals.', { group: 'caution' }).map((s) => s.text);
+  assert.ok(unseen.length >= 1, 'Fallback must still surface salient descriptive adjectives on novel prose');
 });
