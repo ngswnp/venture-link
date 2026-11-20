@@ -1717,6 +1717,16 @@ function layoutBridgeMapNodes(bridgeMap) {
       }
     }
 
+    const teardownRankScore = (node) => {
+      const edge = bestEdgeByNode.get(node.id);
+      const srcCount = Array.isArray(edge?.sourceIds) ? edge.sourceIds.length : 0;
+      return (
+        Number(node.rarityScore || edge?.rarityScore || 0) * 10 +
+        Math.min(30, srcCount * 6) +
+        (edge?.isLead ? 12 : 0) +
+        (edge?.isRoundExpanded ? 8 : 0)
+      );
+    };
     const satellites = rawConnected
       .filter((n) => activeSatIds.has(n.id))
       .map((n) => {
@@ -1728,7 +1738,15 @@ function layoutBridgeMapNodes(bridgeMap) {
           placedRole: sRole
         };
       })
-      .sort((a, b) => Number(b.rarityScore || 0) - Number(a.rarityScore || 0));
+      .sort((a, b) => {
+        const scoreDiff = teardownRankScore(b) - teardownRankScore(a);
+        if (scoreDiff !== 0) return scoreDiff;
+        const dateDiff = String(bestEdgeByNode.get(b.id)?.date || "").localeCompare(
+          String(bestEdgeByNode.get(a.id)?.date || "")
+        );
+        if (dateDiff !== 0) return dateDiff;
+        return String(a.label || "").localeCompare(String(b.label || ""));
+      });
 
     const expandAll = Boolean(state.expandAllEntities);
     const cappedSatellites = [];
@@ -1787,16 +1805,43 @@ function layoutBridgeMapNodes(bridgeMap) {
       const pad = Math.min(10, Math.max(4, Math.round((sec.endDeg - sec.startDeg) * 0.12)));
       const uMin = sec.startDeg + pad;
       const uMax = sec.endDeg - pad;
-      items.forEach((item, idx) => {
-        const deg = items.length === 1 ? sec.midDeg : uMin + (idx / Math.max(1, items.length - 1)) * (uMax - uMin);
-        const rings = items.length > 12
+      const topLabelCount = items.length <= 2 ? items.length : Math.min(expandAll ? 6 : 5, items.length);
+      const topRankById = new Map(items.slice(0, topLabelCount).map((it, i) => [it.id, i]));
+      let orderedItems = items;
+      if (expandAll && items.length > topLabelCount && topLabelCount > 0) {
+        orderedItems = new Array(items.length).fill(null);
+        items.slice(0, topLabelCount).forEach((topItem, k) => {
+          let slot = Math.min(
+            items.length - 1,
+            Math.max(0, Math.round(((k + 0.5) / topLabelCount) * (items.length - 1)))
+          );
+          while (orderedItems[slot]) slot = (slot + 1) % items.length;
+          orderedItems[slot] = topItem;
+        });
+        let restIdx = topLabelCount;
+        for (let slot = 0; slot < orderedItems.length; slot += 1) {
+          if (!orderedItems[slot]) {
+            orderedItems[slot] = items[restIdx];
+            restIdx += 1;
+          }
+        }
+      }
+      orderedItems.forEach((item, idx) => {
+        const deg =
+          orderedItems.length === 1
+            ? sec.midDeg
+            : uMin + (idx / Math.max(1, orderedItems.length - 1)) * (uMax - uMin);
+        const rings = orderedItems.length > 12
           ? [248, 358, 472, 592]
-          : items.length > 5
+          : orderedItems.length > 5
             ? [248, 350, 456]
-            : items.length >= 3
+            : orderedItems.length >= 3
               ? [254, 336]
               : [254];
-        const ringR = rings[idx % rings.length];
+        const isTop = topRankById.has(item.id);
+        const ringR = expandAll && orderedItems.length > 12 && isTop
+          ? (topRankById.get(item.id) % 2 === 0 ? 472 : 358)
+          : rings[idx % rings.length];
         const pt = polarToCartesian(CONSTELLATION_CX, CONSTELLATION_CY, ringR, deg);
         const sm = estimateNodeBoxMetrics(item, "entity", false, computeEntityOrbSize(item, false));
         posMap.set(item.id, {
@@ -1808,7 +1853,7 @@ function layoutBridgeMapNodes(bridgeMap) {
           minRingR: 214,
           maxRingR: expandAll ? 720 : 396,
           placedRole: role,
-          isTopUniqueLabel: idx < 5 || items.length <= 2,
+          isTopUniqueLabel: isTop,
           ...sm
         });
       });
@@ -1831,6 +1876,7 @@ function layoutBridgeMapNodes(bridgeMap) {
       mode: "teardown",
       analysisMode,
       treeMode: "teardown",
+      expandAll,
       focusedGroupKey: null,
       anchorCount: 1,
       anchorIds: new Set([anchorId]),
@@ -2625,11 +2671,11 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
             : "end";
         const labelStr = `${sec.label.toUpperCase()} (${sec.count})`;
         const labelW = labelStr.length * 7.2 + 24;
-        let labelR = maxR + 64;
+        let labelR = Math.max(maxR + 72, layout.expandAll && outerNodes.length > 24 ? 635 : maxR + 68);
         let pt = polarToCartesian(anchorPos.x, anchorPos.y, labelR, labelAngle);
-        for (let pass = 0; pass < 4; pass += 1) {
+        for (let pass = 0; pass < 8; pass += 1) {
           const x1 = anchorAlign === "start" ? pt.x : anchorAlign === "end" ? pt.x - labelW : pt.x - labelW / 2;
-          const box = { x1, x2: x1 + labelW, y1: pt.y - 16, y2: pt.y + 8 };
+          const box = { x1: x1 - 12, x2: x1 + labelW + 12, y1: pt.y - 24, y2: pt.y + 16 };
           if (!nodeObstacles.some((ob) => boxesOverlap(box, ob))) break;
           labelR += 36;
           pt = polarToCartesian(anchorPos.x, anchorPos.y, labelR, labelAngle);
