@@ -6,6 +6,9 @@
 
 import {
   DEFAULT_LINK_DISTANCE_FACTOR,
+  applyMapViewportPanImpulse,
+  applyMapViewportZoomImpulse,
+  computeEdgeDynamicBowOffset,
   countMapNodeOverlaps,
   createMapPhysics,
   expandMapLayout,
@@ -13,7 +16,8 @@ import {
   resolveMapNodeCollisions,
   setMapNodeHome,
   setMapNodeVelocity,
-  stepMapPhysics
+  stepMapPhysics,
+  stepViewportPanGlide
 } from "./mapPhysics.js";
 import {
   buildChronologicalCatalystTimeline,
@@ -183,6 +187,9 @@ const state = {
   mapPhysics: null,
   mapPhysicsRafId: null,
   mapPhysicsLastFrame: 0,
+  viewportGlide: null,
+  viewportGlideRafId: null,
+  viewportGlideLastFrame: 0,
   mapNodeDrag: null,
   mapNodeClickSuppressUntil: 0,
   pointerPan: null,
@@ -2113,7 +2120,7 @@ function buildConstellationSvgDefs() {
   return `<defs>${markers}${grads}</defs>`;
 }
 
-function buildMapEdgePathData(edge, posMap) {
+function buildMapEdgePathData(edge, posMap, physics = null) {
   const p1 = posMap.get(edge.from);
   const p2 = posMap.get(edge.to);
   if (!p1 || !p2) return null;
@@ -2146,7 +2153,8 @@ function buildMapEdgePathData(edge, posMap) {
     bowSign = awayX * nx + awayY * ny >= 0 ? 1 : -1;
   }
   const curveScale = edge.isOverviewSpoke ? 0.12 : edge.isSecondaryOverviewLink ? 0.22 : 0.16;
-  const curvature = Math.min(82, chord * curveScale) * bowSign;
+  const dynamicBow = physics ? computeEdgeDynamicBowOffset(edge, posMap, physics) : 0;
+  const curvature = Math.min(82, chord * curveScale) * bowSign + dynamicBow;
   const cx = (sx + ex) / 2 + nx * curvature;
   const cy = (sy + ey) / 2 + ny * curvature;
 
@@ -2439,6 +2447,75 @@ function fitConstellationToViewport() {
   applyMapViewportTransform();
 }
 
+function prefersReducedMotion() {
+  return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+}
+
+function cancelMapViewportGlide() {
+  if (state.viewportGlideRafId !== null) {
+    cancelAnimationFrame(state.viewportGlideRafId);
+    state.viewportGlideRafId = null;
+  }
+  state.viewportGlide = null;
+  state.viewportGlideLastFrame = 0;
+}
+
+function triggerMapPanPhysics(deltaScreenX, deltaScreenY, dtFrames = 1) {
+  if (!state.mapLayoutNodes || !state.mapPhysics || state.workspaceMode !== "map") return;
+  const triggered = applyMapViewportPanImpulse(
+    state.mapLayoutNodes,
+    state.mapPhysics,
+    deltaScreenX,
+    deltaScreenY,
+    { zoom: state.mapZoom, dt: dtFrames, reducedMotion: prefersReducedMotion() }
+  );
+  if (triggered) scheduleMapPhysicsFrame();
+}
+
+function triggerMapZoomPhysics(pivotWorldX, pivotWorldY, zoomFactorRatio) {
+  if (!state.mapLayoutNodes || !state.mapPhysics || state.workspaceMode !== "map") return;
+  const triggered = applyMapViewportZoomImpulse(
+    state.mapLayoutNodes,
+    state.mapPhysics,
+    pivotWorldX,
+    pivotWorldY,
+    zoomFactorRatio,
+    { reducedMotion: prefersReducedMotion() }
+  );
+  if (triggered) scheduleMapPhysicsFrame();
+}
+
+function startMapViewportGlide(vx, vy) {
+  cancelMapViewportGlide();
+  if (prefersReducedMotion()) return;
+  state.viewportGlide = { vx, vy };
+  state.viewportGlideLastFrame = performance.now();
+  const tick = (now) => {
+    state.viewportGlideRafId = null;
+    const glide = state.viewportGlide;
+    if (!glide || state.workspaceMode !== "map") {
+      cancelMapViewportGlide();
+      return;
+    }
+    const elapsed = state.viewportGlideLastFrame ? now - state.viewportGlideLastFrame : 1000 / 60;
+    state.viewportGlideLastFrame = now;
+    const dtFrames = Math.max(0.4, Math.min(2.2, elapsed / (1000 / 60)));
+    const { dx, dy, moving } = stepViewportPanGlide(glide, dtFrames);
+    if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+      state.mapPanX += dx;
+      state.mapPanY += dy;
+      applyMapViewportTransform();
+      triggerMapPanPhysics(dx, dy, dtFrames);
+    }
+    if (moving) {
+      state.viewportGlideRafId = requestAnimationFrame(tick);
+    } else {
+      cancelMapViewportGlide();
+    }
+  };
+  state.viewportGlideRafId = requestAnimationFrame(tick);
+}
+
 function centerConstellationView() {
   const canvasEl = $("#bridgeMapCanvas");
   if (!canvasEl) return;
@@ -2447,6 +2524,9 @@ function centerConstellationView() {
     fitConstellationToViewport();
     return;
   }
+  cancelMapViewportGlide();
+  const prevPanX = state.mapPanX;
+  const prevPanY = state.mapPanY;
   const layout = state.mapLayoutNodes;
   const cx = layout?.bounds ? (layout.bounds.minX + layout.bounds.maxX) / 2 : CONSTELLATION_CX;
   const cy = layout?.bounds ? (layout.bounds.minY + layout.bounds.maxY) / 2 : CONSTELLATION_CY;
@@ -2457,19 +2537,29 @@ function centerConstellationView() {
   state.mapPanX = Math.round((openLeft + openRight) / 2 - cx * state.mapZoom);
   state.mapPanY = Math.round((openTop + openBottom) / 2 - cy * state.mapZoom);
   applyMapViewportTransform();
+  const dx = Math.max(-140, Math.min(140, state.mapPanX - prevPanX));
+  const dy = Math.max(-140, Math.min(140, state.mapPanY - prevPanY));
+  if (Math.hypot(dx, dy) > 4) triggerMapPanPhysics(dx * 0.45, dy * 0.45, 1.5);
 }
 
 function focusNodeOnMap(nodeId) {
   const canvasEl = $("#bridgeMapCanvas");
   const pos = state.mapLayoutNodes?.posMap?.get(nodeId);
   if (!canvasEl || !pos) return;
+  cancelMapViewportGlide();
+  const prevPanX = state.mapPanX;
+  const prevPanY = state.mapPanY;
   const rect = canvasEl.getBoundingClientRect();
   state.mapPanX = Math.round(rect.width / 2 - pos.x * state.mapZoom);
   state.mapPanY = Math.round(rect.height / 2 - pos.y * state.mapZoom);
   applyMapViewportTransform();
+  const dx = Math.max(-140, Math.min(140, state.mapPanX - prevPanX));
+  const dy = Math.max(-140, Math.min(140, state.mapPanY - prevPanY));
+  if (Math.hypot(dx, dy) > 4) triggerMapPanPhysics(dx * 0.45, dy * 0.45, 1.5);
 }
 
 function stopMapPhysics() {
+  cancelMapViewportGlide();
   if (state.mapPhysicsRafId !== null) {
     cancelAnimationFrame(state.mapPhysicsRafId);
   }
@@ -2504,17 +2594,19 @@ function stabilizeMapLayoutForPhysics(layout, physics) {
   recomputeMapLayoutBounds(layout, 68);
 }
 
-function renderMapPhysicsVisuals(layout = state.mapLayoutNodes) {
+function renderMapPhysicsVisuals(layout = state.mapLayoutNodes, physics = state.mapPhysics) {
   if (!layout?.posMap) return;
   for (const [id, pos] of layout.posMap) {
     const element = layout.nodeElements?.get(id);
     const origin = layout.renderPositions?.get(id);
     if (!element || !origin) continue;
+    const nodeState = physics?.nodes?.get(id);
     element.style.setProperty("--physics-dx", `${(pos.x - origin.x).toFixed(2)}px`);
     element.style.setProperty("--physics-dy", `${(pos.y - origin.y).toFixed(2)}px`);
+    element.style.setProperty("--physics-tilt", `${(nodeState?.tiltDeg || 0).toFixed(2)}deg`);
   }
   for (const edge of layout.displayEdges || []) {
-    const d = buildMapEdgePathData(edge, layout.posMap);
+    const d = buildMapEdgePathData(edge, layout.posMap, physics);
     if (!d) continue;
     for (const path of layout.edgePathElements?.get(edge.id) || []) path.setAttribute("d", d);
   }
@@ -2533,12 +2625,15 @@ function scheduleMapPhysicsFrame() {
     const elapsed = state.mapPhysicsLastFrame ? now - state.mapPhysicsLastFrame : 1000 / 60;
     state.mapPhysicsLastFrame = now;
     const stillMoving = stepMapPhysics(layout, physics, elapsed / (1000 / 60));
-    renderMapPhysicsVisuals(layout);
-    recomputeMapLayoutBounds(layout, 68);
+    renderMapPhysicsVisuals(layout, physics);
+    if (physics.draggedNodeId !== null) {
+      recomputeMapLayoutBounds(layout, 68);
+    }
     if (stillMoving) {
       scheduleMapPhysicsFrame();
     } else {
       state.mapPhysicsLastFrame = 0;
+      renderMapPhysicsVisuals(layout, physics);
       for (const element of layout.nodeElements?.values?.() || []) {
         element.classList.remove("is-physics-running");
       }
@@ -9318,15 +9413,32 @@ function bindFilterAndHudEvents() {
   });
 
   // Top-right Zoom Controls
-  $("#mapZoomInBtn")?.addEventListener("click", () => {
-    state.mapZoom = clampZoom(state.mapZoom * 1.15);
+  const applyButtonZoomFactor = (factor) => {
+    cancelMapViewportGlide();
+    const prevZoom = state.mapZoom;
+    const nextZoom = clampZoom(prevZoom * factor);
+    const canvasEl = $("#bridgeMapCanvas");
+    const rect = canvasEl?.getBoundingClientRect?.();
+    const pivotScreenX = rect ? rect.width / 2 : 0;
+    const pivotScreenY = rect ? rect.height / 2 : 0;
+    const beforeX = rect ? (pivotScreenX - state.mapPanX) / prevZoom : CONSTELLATION_CX;
+    const beforeY = rect ? (pivotScreenY - state.mapPanY) / prevZoom : CONSTELLATION_CY;
+    if (rect) {
+      state.mapPanX = Math.round(pivotScreenX - beforeX * nextZoom);
+      state.mapPanY = Math.round(pivotScreenY - beforeY * nextZoom);
+    }
+    state.mapZoom = nextZoom;
     applyMapViewportTransform();
+    if (prevZoom > 0 && nextZoom !== prevZoom) {
+      triggerMapZoomPhysics(beforeX, beforeY, (nextZoom - prevZoom) / prevZoom);
+    }
+  };
+  $("#mapZoomInBtn")?.addEventListener("click", () => applyButtonZoomFactor(1.15));
+  $("#mapZoomOutBtn")?.addEventListener("click", () => applyButtonZoomFactor(0.86));
+  $("#mapFitViewBtn")?.addEventListener("click", () => {
+    cancelMapViewportGlide();
+    fitConstellationToViewport();
   });
-  $("#mapZoomOutBtn")?.addEventListener("click", () => {
-    state.mapZoom = clampZoom(state.mapZoom * 0.86);
-    applyMapViewportTransform();
-  });
-  $("#mapFitViewBtn")?.addEventListener("click", fitConstellationToViewport);
   $("#mapCenterBtn")?.addEventListener("click", centerConstellationView);
 
   // Header Theme + Brand
@@ -9636,20 +9748,34 @@ function bindCanvasAndMapInteractions() {
     (e) => {
       if (e.target.closest?.(".decision-summary-popover, .map-legend-popover")) return;
       e.preventDefault();
+      cancelMapViewportGlide();
+      const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? 16
+        : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? canvas.clientHeight
+          : 1;
       if (e.ctrlKey || e.metaKey) {
         const rect = canvas.getBoundingClientRect();
-        const beforeX = (e.clientX - rect.left - state.mapPanX) / state.mapZoom;
-        const beforeY = (e.clientY - rect.top - state.mapPanY) / state.mapZoom;
+        const prevZoom = state.mapZoom;
+        const beforeX = (e.clientX - rect.left - state.mapPanX) / prevZoom;
+        const beforeY = (e.clientY - rect.top - state.mapPanY) / prevZoom;
         const factor = e.deltaY < 0 ? 1.09 : 0.91;
-        const nextZoom = clampZoom(state.mapZoom * factor);
+        const nextZoom = clampZoom(prevZoom * factor);
         state.mapPanX = Math.round(e.clientX - rect.left - beforeX * nextZoom);
         state.mapPanY = Math.round(e.clientY - rect.top - beforeY * nextZoom);
         state.mapZoom = nextZoom;
+        applyMapViewportTransform();
+        if (prevZoom > 0 && nextZoom !== prevZoom) {
+          triggerMapZoomPhysics(beforeX, beforeY, (nextZoom - prevZoom) / prevZoom);
+        }
       } else {
-        state.mapPanX -= e.deltaX;
-        state.mapPanY -= e.deltaY;
+        const dx = -(e.deltaX || 0) * unit;
+        const dy = -(e.deltaY || 0) * unit;
+        state.mapPanX += dx;
+        state.mapPanY += dy;
+        applyMapViewportTransform();
+        triggerMapPanPhysics(dx, dy, 1);
       }
-      applyMapViewportTransform();
     },
     { passive: false }
   );
@@ -9658,7 +9784,19 @@ function bindCanvasAndMapInteractions() {
     if (e.target.closest(".map-node, [data-edge-id], .edge-hit-target, button, input, aside, .map-zoom-controls, .map-minimal-hud, .map-top-center-bar, .decision-summary-popover, .map-legend-popover, .map-bottom-left-overlay, .map-bottom-right-overlay")) {
       return;
     }
-    state.pointerPan = { x: e.clientX, y: e.clientY, panX: state.mapPanX, panY: state.mapPanY };
+    cancelMapViewportGlide();
+    const now = performance.now();
+    state.pointerPan = {
+      x: e.clientX,
+      y: e.clientY,
+      panX: state.mapPanX,
+      panY: state.mapPanY,
+      lastClientX: e.clientX,
+      lastClientY: e.clientY,
+      lastTime: now,
+      vx: 0,
+      vy: 0
+    };
     canvas.classList.add("is-panning");
     try {
       canvas.setPointerCapture(e.pointerId);
@@ -9666,28 +9804,46 @@ function bindCanvasAndMapInteractions() {
   });
 
   canvas.addEventListener("pointermove", (e) => {
-    if (!state.pointerPan) return;
-    state.mapPanX = state.pointerPan.panX + (e.clientX - state.pointerPan.x);
-    state.mapPanY = state.pointerPan.panY + (e.clientY - state.pointerPan.y);
+    const pan = state.pointerPan;
+    if (!pan) return;
+    const now = performance.now();
+    const dx = e.clientX - pan.lastClientX;
+    const dy = e.clientY - pan.lastClientY;
+    const dtFrames = Math.max(0.4, Math.min(3, (now - pan.lastTime) / (1000 / 60)));
+    if (Math.hypot(e.clientX - pan.x, e.clientY - pan.y) > 3) {
+      hideMapTooltip();
+    }
+    const instVx = dx / dtFrames;
+    const instVy = dy / dtFrames;
+    pan.vx = pan.vx * 0.35 + instVx * 0.65;
+    pan.vy = pan.vy * 0.35 + instVy * 0.65;
+    pan.lastClientX = e.clientX;
+    pan.lastClientY = e.clientY;
+    pan.lastTime = now;
+    state.mapPanX = pan.panX + (e.clientX - pan.x);
+    state.mapPanY = pan.panY + (e.clientY - pan.y);
     applyMapViewportTransform();
+    triggerMapPanPhysics(dx, dy, dtFrames);
   });
 
   const finishPan = (e, allowClickClear) => {
     const pan = state.pointerPan;
     state.pointerPan = null;
     canvas.classList.remove("is-panning");
-    if (
-      allowClickClear &&
-      pan &&
-      e &&
-      Math.hypot(e.clientX - pan.x, e.clientY - pan.y) <= 5
-    ) {
+    if (!pan) return;
+    const distMoved = e ? Math.hypot(e.clientX - pan.x, e.clientY - pan.y) : 0;
+    if (allowClickClear && e && distMoved <= 5) {
       if (state.dossier && !state.dossierExpanded) {
         closeEntityDossier();
       } else {
         clearMapIsolation();
       }
       hideMapTooltip();
+      return;
+    }
+    const ageMs = performance.now() - (pan.lastTime || 0);
+    if (distMoved > 5 && ageMs < 160 && Math.hypot(pan.vx || 0, pan.vy || 0) > 1.2) {
+      startMapViewportGlide(pan.vx, pan.vy);
     }
   };
   canvas.addEventListener("pointerup", (e) => finishPan(e, true));

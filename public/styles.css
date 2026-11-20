@@ -5959,10 +5959,16 @@ html[data-theme="light"] .ribbon-count-pill {
 }
 
 .map-node.is-physics-enabled {
-  transform: translate3d(var(--physics-dx, 0px), var(--physics-dy, 0px), 0) translate(-50%, -50%);
+  transform: translate3d(var(--physics-dx, 0px), var(--physics-dy, 0px), 0) translate(-50%, -50%) rotate(var(--physics-tilt, 0deg));
   transition: opacity 0.18s ease, filter 0.18s ease;
   touch-action: none;
   cursor: grab;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-node.is-physics-enabled {
+    --physics-tilt: 0deg !important;
+  }
 }
 
 .map-node.is-physics-running {
