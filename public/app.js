@@ -32,8 +32,13 @@ import {
   findShortestVerifiedPaths,
   formatInstitutionalEntityName,
   formatInstitutionalPath,
+  humanizeCalaRelation,
   matchClaudeFindingToRecord,
   normalizeDiligenceState,
+  organizeDossierConnections,
+  organizeDossierPeople,
+  organizeDossierSources,
+  organizeDossierTimeline,
   parseShareableWorkspaceParams,
   searchMappedGraphNodes
 } from "./analystTools.js";
@@ -782,36 +787,7 @@ function connectionTierBadge(record = {}) {
 function formatDossierRelationLabel(rawRel = "", direction = "") {
   const clean = cleanText(rawRel);
   if (!clean) return "Verified Cala link";
-  const upper = clean.toUpperCase().replace(/\s+/g, " ").trim();
-  const dir = String(direction || "").toLowerCase();
-  if (upper === "INVESTED_IN / INVESTED_IN") return "Shared investment link";
-  if (upper === "WORKED_AT / WORKED_AT" || upper === "WORKS_AT / WORKS_AT") {
-    return "Leadership / alumni link";
-  }
-  if (upper === "INVESTED_IN") return dir === "incoming" ? "Backed by" : "Invested in";
-  if (upper === "WORKED_AT" || upper === "WORKS_AT") return "Leadership / alumni link";
-  if (upper === "FOUNDED") return dir === "incoming" ? "Founded by" : "Founded";
-  if (upper === "ACQUIRED") return dir === "incoming" ? "Acquired by" : "Acquired";
-  if (upper === "PARTNERED_WITH") return "Partnered with";
-  const humanizePart = (part) => {
-    const words = String(part || "")
-      .replace(/[_-]+/g, " ")
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
-    return words
-      .map((w) => {
-        const up = w.toUpperCase();
-        if (["AI", "CEO", "CTO", "CFO", "COO", "VP", "IP", "LP", "GP", "VC"].includes(up)) return up;
-        return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
-      })
-      .join(" ");
-  };
-  const parts = clean
-    .split("/")
-    .map(humanizePart)
-    .filter(Boolean);
-  return parts.join(" · ") || clean;
+  return humanizeCalaRelation(clean, direction);
 }
 
 function formatOperationalStatus(value = "") {
@@ -6966,6 +6942,24 @@ function syncDossierLayoutState() {
   }
 }
 
+function defaultDossierFilters() {
+  return {
+    connectionsFilter: "all",
+    connectionsQuery: "",
+    showContextualConnections: false,
+    peopleFilter: "all",
+    peopleQuery: "",
+    fundingSection: "all",
+    fundingQuery: "",
+    fundingTier: "all",
+    timelineCategory: "all",
+    timelineLimit: 20,
+    sourcesTier: "all",
+    sourcesQuery: "",
+    sourcesLimit: 20
+  };
+}
+
 async function openEntityDossier(node, options = {}) {
   const id = idOf(node);
   if (!id) return;
@@ -6991,6 +6985,7 @@ async function openEntityDossier(node, options = {}) {
     node: { ...node, id },
     data: cached || initial,
     tab: options.tab || "overview",
+    filters: defaultDossierFilters(),
     history,
     loading: !cached,
     returnFocus: options.returnFocus || state.dossier?.returnFocus || currentFocus
@@ -7121,15 +7116,36 @@ function sourcesFor(data) {
   return [...unique.values()];
 }
 
-function gapListForDossier(profile, node, edges = []) {
+function gapListForDossier(profile, node, edges = [], archetype = "company") {
   const gapText = (g) => (typeof g === "string" ? cleanText(g) : cleanText(g?.field || g?.label || g?.name || g?.status));
   const explicit = [...asList(profile?.missingFromCala), ...asList(profile?.gaps), ...edges.flatMap((e) => asList(e?.gaps))]
     .map(gapText)
     .filter(Boolean);
   const fallback = [];
-  if (!cleanText(profile.category || profile.sector || node.sector)) fallback.push("Category / Sector");
-  if (!cleanText(profile.headquarters || profile.hq || profile.hqCity || profile.address || node.hqCity)) fallback.push("Headquarters");
-  if (!cleanText(profile.operationalStatus || profile.status)) fallback.push("Operational status");
+  if (archetype === "person") {
+    if (!populatedValue(profile.role || profile.title || profile.jobTitle)) fallback.push("Role / Title");
+    if (!populatedValue(profile.headquarters || profile.hq || profile.hqCity || profile.country || node.hqCity)) fallback.push("Location");
+    if (!connectionRows(profile).length && !edges.length) fallback.push("Affiliations");
+    const filteredExplicit = explicit.filter(
+      (g) => !/^(headquarters|operational status|leadership|funding|employee|employees|headcount|category)/i.test(g)
+    );
+    return [...new Set([...filteredExplicit, ...fallback])];
+  }
+  if (archetype === "investor") {
+    if (!populatedValue(profile.headquarters || profile.hq || profile.hqCity || profile.address || node.hqCity)) fallback.push("Headquarters");
+    if (!peopleFor(profile).length) fallback.push("Team / Partners");
+    if (!asList(profile.portfolio).length) fallback.push("Portfolio holdings");
+    const filteredExplicit = explicit.filter((g) => !/^funding rounds$/i.test(g));
+    return [...new Set([...filteredExplicit, ...fallback])];
+  }
+  if (archetype === "event") {
+    if (!populatedValue(profile.date || profile.eventDate || profile.founded)) fallback.push("Date");
+    if (!asList(profile.investors).length && !roundsFor(profile).length && !edges.length) fallback.push("Participants");
+    return [...new Set([...explicit, ...fallback])];
+  }
+  if (!populatedValue(profile.category || profile.sector || node.sector)) fallback.push("Category / Sector");
+  if (!populatedValue(profile.headquarters || profile.hq || profile.hqCity || profile.address || node.hqCity)) fallback.push("Headquarters");
+  if (!populatedValue(profile.operationalStatus || profile.status)) fallback.push("Operational status");
   if (!peopleFor(profile).length) fallback.push("Leadership & people");
   if (!roundsFor(profile).length) fallback.push("Funding rounds");
   return [...new Set([...explicit, ...fallback])];
@@ -7242,7 +7258,7 @@ function buildDossierAiInsightPacket(dossier) {
     whyMatters: cleanText(data.description || data.summary).slice(0, 220),
     facts: facts.slice(0, 8),
     syndicatePeers: deduplicateEntityList(data.investors).map(nameOf).slice(0, 8),
-    gaps: gapListForDossier(data, node, mapEdges).slice(0, 6),
+    gaps: gapListForDossier(data, node, mapEdges, buildDossierEntityConfig(typeBadge(data)).archetype).slice(0, 6),
     sources
   };
 }
@@ -7502,18 +7518,35 @@ function renderConnectionInspectorBody(dossier) {
   `;
 }
 
-function deduplicateEntityList(items = []) {
-  const seen = new Set();
-  const out = [];
+const ENTITY_TIER_RANK = { FILING: 4, PRIMARY: 3, PRESS: 2, AGGREGATOR: 1 };
+
+function deduplicateEntityList(items = [], exclude = null) {
+  const exId = cleanText(exclude?.id).toLowerCase();
+  const exName = formatReadableEntityLabel(exclude?.name || "").toLowerCase();
+  const byName = new Map();
+  const idToName = new Map();
   for (const item of asList(items)) {
     const id = idOf(item);
-    const label = cleanText(nameOf(item));
-    const key = id ? `id:${id}` : `name:${normalizedName(label)}`;
-    if (!label || seen.has(key)) continue;
-    seen.add(key);
-    out.push(item);
+    const idLow = id.toLowerCase();
+    const rawLabel = cleanText(nameOf(item));
+    if (!rawLabel || rawLabel === "Unnamed entity") continue;
+    const readableLow = formatReadableEntityLabel(rawLabel).toLowerCase();
+    if ((exId && idLow === exId) || (exName && readableLow === exName)) continue;
+
+    const mergedKey = idToName.get(idLow) || readableLow;
+    if (!byName.has(mergedKey)) {
+      byName.set(mergedKey, item);
+      if (idLow) idToName.set(idLow, mergedKey);
+    } else {
+      const prev = byName.get(mergedKey);
+      const prevRank = ENTITY_TIER_RANK[tierOf(prev)] || 0;
+      const curRank = ENTITY_TIER_RANK[tierOf(item)] || 0;
+      if (curRank > prevRank || (!idOf(prev) && id)) {
+        byName.set(mergedKey, item);
+      }
+    }
   }
-  return out;
+  return [...byName.values()];
 }
 
 function formatTotalFundingDisplay(data) {
@@ -7531,30 +7564,147 @@ function formatTotalFundingDisplay(data) {
   return [cleanText(amt), units].filter(Boolean).join(" ");
 }
 
-function renderDossierTabContent(dossier) {
+function computeDossierViewModel(data, node) {
+  const entityKind = typeBadge(data);
+  const rawPeople = peopleFor(data);
+  const organizedPeople = organizeDossierPeople(rawPeople);
+  const rounds = roundsFor(data);
+  const selfExclude = { id: idOf(data) || idOf(node), name: nameOf(data) || nameOf(node) };
+  const portfolio = deduplicateEntityList(data.portfolio, selfExclude);
+  const prelimInvestorCfg = buildDossierEntityConfig(entityKind, { portfolioCount: portfolio.length });
+  const rawInvestors = deduplicateEntityList(data.investors, selfExclude);
+  const portfolioKeySet = new Set(
+    portfolio.map((item) => formatReadableEntityLabel(nameOf(item)).toLowerCase())
+  );
+  const investors =
+    prelimInvestorCfg.archetype === "person"
+      ? rawInvestors.filter((inv) => !portfolioKeySet.has(formatReadableEntityLabel(nameOf(inv)).toLowerCase()))
+      : rawInvestors;
+  const remoteConns = connectionRows(data);
+  const mapEdges = mapEdgesForNode(node);
+  const organizedConns = organizeDossierConnections(remoteConns, mapEdges, {
+    selfId: idOf(data) || idOf(node),
+    selfName: nameOf(data) || nameOf(node),
+    mapNodes: asList(state.bridgeMap?.nodes)
+  });
+  const organizedSources = organizeDossierSources(sourcesFor(data));
+
+  const prelimCfg = buildDossierEntityConfig(entityKind, {
+    peopleCount: organizedPeople.stats.total,
+    portfolioCount: portfolio.length,
+    roundsCount: rounds.length,
+    investorsCount: investors.length
+  });
+  const organizedTimeline = organizeDossierTimeline(
+    data,
+    prelimCfg.archetype,
+    state.bridgeMap?.referenceDate || null
+  );
+
+  const empCount =
+    prelimCfg.archetype === "company" || prelimCfg.archetype === "investor"
+      ? asList(data.employeeCountSeries).length
+      : 0;
+  const peopleCount = organizedPeople.stats.total;
+  const connCount = organizedConns.stats.totalSubstantive || organizedConns.stats.total;
+  const timelineCount = organizedTimeline.stats.total + empCount;
+  const sourcesCount = organizedSources.counts.all;
+
+  const cfg = buildDossierEntityConfig(entityKind, {
+    peopleCount,
+    portfolioCount: portfolio.length,
+    roundsCount: rounds.length,
+    investorsCount: investors.length,
+    connCount,
+    timelineCount,
+    sourcesCount
+  });
+
+  return {
+    entityKind,
+    cfg,
+    organizedPeople,
+    rounds,
+    investors,
+    portfolio,
+    remoteConns,
+    mapEdges,
+    organizedConns,
+    organizedTimeline,
+    organizedSources,
+    peopleCount,
+    connCount,
+    timelineCount,
+    sourcesCount
+  };
+}
+
+function renderDossierConnectionCardsHtml(items = []) {
+  return `<div class="dossier-card-grid">${items
+    .map((it) => {
+      const titleMarkup = it.targetId
+        ? `<button type="button" class="dossier-card-title-btn" data-inspect-entity-id="${escapeHtml(it.targetId)}">${escapeHtml(it.targetName)}</button>`
+        : `<span class="dossier-card-title-text">${escapeHtml(it.targetName)}</span>`;
+      const hopMarkup =
+        it.hopType === "bridge" && it.bridgeName
+          ? `<span class="dossier-hop-pill is-bridge">via ${escapeHtml(it.bridgeName)}</span>`
+          : `<span class="dossier-hop-pill">Direct</span>`;
+      const rolesMarkup = it.roles
+        .slice(0, 4)
+        .map((r) => `<span class="dossier-role-pill">${escapeHtml(r)}</span>`)
+        .join("");
+      const extraRoles = it.roles.length > 4 ? `<span class="dossier-role-more">+${it.roles.length - 4}</span>` : "";
+      const dateMarkup = it.latestDate ? `<span class="dossier-card-date">${escapeHtml(it.latestDate)}</span>` : "";
+      const locateTarget = it.targetId || it.bridgeId || "";
+      const locateBtn =
+        it.onMap && (locateTarget || it.focusEdgeId)
+          ? `<div class="dossier-card-foot"><button type="button" class="dossier-card-locate-btn" data-focus-map-node="${escapeHtml(locateTarget)}"${it.focusEdgeId ? ` data-focus-edge="${escapeHtml(it.focusEdgeId)}"` : ""}>Locate on map &rarr;</button></div>`
+          : "";
+      return `
+        <article class="dossier-entity-card">
+          <div class="dossier-card-head">
+            ${titleMarkup}
+            <span class="source-tier" data-tier="${escapeHtml(it.bestTier)}">${escapeHtml(it.bestTier)}</span>
+          </div>
+          <div class="dossier-card-meta-row">
+            ${hopMarkup}${rolesMarkup}${extraRoles}${dateMarkup}
+          </div>
+          ${locateBtn}
+        </article>
+      `;
+    })
+    .join("")}</div>`;
+}
+
+function renderDossierTabContent(dossier, vm = null) {
   const data = dossier.data;
   const node = dossier.node;
   const loading = dossier.loading
     ? `<div class="dossier-section"><div class="dossier-skeleton" aria-label="Loading verified Cala record"></div></div>`
     : "";
 
-  const people = peopleFor(data);
-  const rounds = roundsFor(data);
-  const investors = deduplicateEntityList(data.investors);
-  const remoteConns = connectionRows(data);
-  const mapEdges = mapEdgesForNode(node);
-  const sources = sourcesFor(data);
+  const view = vm || computeDossierViewModel(data, node);
+  const filters = dossier.filters || defaultDossierFilters();
+  const {
+    entityKind,
+    cfg,
+    organizedPeople,
+    rounds,
+    investors,
+    portfolio,
+    remoteConns,
+    mapEdges,
+    organizedConns,
+    organizedTimeline,
+    organizedSources,
+    peopleCount,
+    connCount,
+    timelineCount,
+    sourcesCount
+  } = view;
 
   if (dossier.tab === "overview") {
     const aliasList = [...new Set(asList(data.aliases).map(recordText).filter((v) => v && v !== MISSING))];
-    const entityKind = typeBadge(data);
-    const portfolio = deduplicateEntityList(data.portfolio);
-    const timelineCount =
-      asList(data.employeeCountSeries).length +
-      asList(data.corporateEvents).length +
-      asList(data.financialMetrics).length +
-      relationshipRows(data.relationships).length;
-    const connCount = Math.max(remoteConns.length, mapEdges.length);
     const fundingCount = rounds.length + investors.length;
     const relRows = relationshipRows(data.relationships);
     const orgLikeRelRows = relRows.filter((r) => {
@@ -7568,35 +7718,21 @@ function renderDossierTabContent(dossier) {
     const affiliatedOrgsList = [
       ...new Set(
         [
-          ...mapEdges.map((e) => {
-            const otherId = e.from === node.id ? e.to : e.from;
-            const other = (state.bridgeMap?.nodes || []).find((n) => n.id === otherId);
-            return other ? nameOf(other) : "";
-          }),
+          ...organizedConns.substantiveItems.map((it) => it.targetName),
           ...nonEventRemote.map((c) => c.entityName || c.name),
           ...orgLikeRelRows,
-          ...people,
-          ...relRows
+          ...peopleFor(data)
         ]
           .map((r) => (typeof r === "string" ? formatReadableEntityLabel(r) : formatReadableEntityLabel(nameOf(r))))
           .filter((nm) => nm && nm !== MISSING && nm !== formatReadableEntityLabel(nameOf(data)))
       )
     ];
-    const dossierCfg = buildDossierEntityConfig(entityKind, {
-      peopleCount: people.length,
-      portfolioCount: portfolio.length,
-      roundsCount: rounds.length,
-      investorsCount: investors.length,
-      connCount,
-      timelineCount,
-      sourcesCount: sources.length
-    });
     const affiliatedOrgs = affiliatedOrgsList.slice(0, 3).join(", ");
     const personRole = cleanText(data.role || data.title || data.jobTitle);
     const totalFundingLabel = formatTotalFundingDisplay(data);
 
     let schemaFields;
-    if (dossierCfg.archetype === "person") {
+    if (cfg.archetype === "person") {
       schemaFields = [
         { label: "Category", value: populatedValue(data.category || data.sector || entityKind) },
         { label: "Role / Title", value: populatedValue(personRole) },
@@ -7604,7 +7740,7 @@ function renderDossierTabContent(dossier) {
         { label: "Location", value: populatedValue(data.headquarters || data.hq || data.hqCity || data.country) },
         { label: "Website", value: populatedValue(data.website || data.domain || data.url) }
       ];
-    } else if (dossierCfg.archetype === "investor") {
+    } else if (cfg.archetype === "investor") {
       schemaFields = [
         { label: "Category", value: populatedValue(data.category || data.sector || entityKind) },
         { label: "Headquarters", value: populatedValue(data.headquarters || data.hq || data.hqCity || data.address) },
@@ -7612,7 +7748,7 @@ function renderDossierTabContent(dossier) {
         { label: "Status", value: formatOperationalStatus(populatedValue(data.operationalStatus || data.status || data.ownershipStatus)) },
         { label: "Website", value: populatedValue(data.website || data.domain || data.url) }
       ];
-    } else if (dossierCfg.archetype === "event") {
+    } else if (cfg.archetype === "event") {
       schemaFields = [
         { label: "Category", value: populatedValue(data.category || data.sector || entityKind) },
         { label: "Date", value: populatedValue(data.date || data.eventDate || data.founded) },
@@ -7644,13 +7780,13 @@ function renderDossierTabContent(dossier) {
       affiliatedOrgs: affiliatedOrgsList.length || connCount,
       portfolio: portfolio.length,
       timeline: timelineCount,
-      people: people.length,
-      funding: dossierCfg.archetype === "investor" ? Math.max(portfolio.length, fundingCount) : fundingCount,
-      sources: sources.length
+      people: peopleCount,
+      funding: cfg.archetype === "investor" ? Math.max(portfolio.length, fundingCount) : fundingCount,
+      sources: sourcesCount
     };
     const kpiHtml = `
-      <div class="dossier-kpi-strip${dossierCfg.kpis.length === 3 ? " is-3-col" : ""}">
-        ${dossierCfg.kpis.map((k) => `
+      <div class="dossier-kpi-strip${cfg.kpis.length === 3 ? " is-3-col" : ""}">
+        ${cfg.kpis.map((k) => `
           <button type="button" class="dossier-kpi-card" data-switch-dossier-tab="${escapeHtml(k.targetTab)}">
             <span class="kpi-num">${Number(kpiCountLookup[k.countKey] || 0)}</span>
             <span class="kpi-lbl">${escapeHtml(k.label)}</span>
@@ -7674,45 +7810,44 @@ function renderDossierTabContent(dossier) {
     `
       : "";
 
-    const topConnPreview = (remoteConns.length ? remoteConns : mapEdges).slice(0, state.dossierExpanded ? 3 : 4);
-    const previewHtml = topConnPreview.length
+    const previewItems = (
+      organizedConns.substantiveItems.length ? organizedConns.substantiveItems : organizedConns.items
+    ).slice(0, state.dossierExpanded ? 3 : 4);
+    const previewHtml = previewItems.length
       ? `
       <section class="dossier-section">
         <div class="dossier-section-head-row">
-          <h3>${escapeHtml(dossierCfg.previewTitle)}</h3>
+          <h3>${escapeHtml(cfg.previewTitle)}</h3>
           <button type="button" class="dossier-link-btn" data-switch-dossier-tab="connections">View all (${connCount}) &rarr;</button>
         </div>
         <div class="group-entry-list">
-          ${topConnPreview
-            .map((item, idx) => {
-              const isRemote = Boolean(item.entityId || item.connectionType);
-              if (isRemote) {
-                const pathSteps = asList(item.path).map((s) => formatReadableEntityLabel(nameOf(s))).filter(Boolean);
-                const title = pathSteps.length ? pathSteps.join(" \u2192 ") : cleanText(item.entityName || item.name) || MISSING;
-                const rawRel = cleanText(item.relation || item.relationship || item.connectionType);
-                const rel = formatDossierRelationLabel(rawRel, item.direction);
-                const tier = connectionTierBadge(item);
+          ${previewItems
+            .map((it) => {
+              const roleLine = [
+                it.hopType === "bridge" && it.bridgeName ? `via ${it.bridgeName}` : "Direct",
+                ...it.roles.slice(0, 3),
+                it.latestDate
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              if (it.targetId) {
                 return `
-                  <button type="button" class="group-entry" data-focus-connection="${idx}">
+                  <button type="button" class="group-entry" data-inspect-entity-id="${escapeHtml(it.targetId)}">
                     <div class="group-entry-top">
-                      <strong>${escapeHtml(title)}</strong>
-                      <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
+                      <strong>${escapeHtml(it.targetName)}</strong>
+                      <span class="source-tier" data-tier="${escapeHtml(it.bestTier)}">${escapeHtml(it.bestTier)}</span>
                     </div>
-                    <span>${escapeHtml(rel)}${item.eventDate ? ` · ${escapeHtml(item.eventDate)}` : ""}</span>
+                    <span>${escapeHtml(roleLine)}</span>
                   </button>
                 `;
               }
-              const otherId = item.from === node.id ? item.to : item.from;
-              const other = (state.bridgeMap?.nodes || []).find((n) => n.id === otherId);
-              const title = `${formatReadableEntityLabel(nameOf(node))} \u2192 ${formatReadableEntityLabel(nameOf(other || { id: otherId }))}`;
-              const tier = connectionTierBadge(item);
               return `
-                <button type="button" class="group-entry" data-focus-edge="${escapeHtml(item.id)}" data-focus-node="${escapeHtml(otherId)}">
+                <button type="button" class="group-entry" data-focus-map-node="${escapeHtml(it.bridgeId || "")}"${it.focusEdgeId ? ` data-focus-edge="${escapeHtml(it.focusEdgeId)}"` : ""}>
                   <div class="group-entry-top">
-                    <strong>${escapeHtml(title)}</strong>
-                    <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
+                    <strong>${escapeHtml(it.targetName)}</strong>
+                    <span class="source-tier" data-tier="${escapeHtml(it.bestTier)}">${escapeHtml(it.bestTier)}</span>
                   </div>
-                  <span>${escapeHtml(cleanText(item.detail || formatDossierRelationLabel(item.label || "")))}</span>
+                  <span>${escapeHtml(roleLine)}</span>
                 </button>
               `;
             })
@@ -7732,7 +7867,7 @@ function renderDossierTabContent(dossier) {
       ${aboutHtml}
       <section class="dossier-section">
         <div class="dossier-section-head-row">
-          <h3>${escapeHtml(dossierCfg.profileCardTitle)}</h3>
+          <h3>${escapeHtml(cfg.profileCardTitle)}</h3>
           <span class="source-tier" data-tier="${escapeHtml(aboutTier)}">${escapeHtml(aboutTier)}</span>
         </div>
         <div class="fact-grid">
@@ -7747,292 +7882,552 @@ function renderDossierTabContent(dossier) {
   }
 
   if (dossier.tab === "people") {
-    if (!people.length) {
-      return `${loading}<section class="dossier-section"><h3>People</h3><p class="dossier-empty">No people records verified in Cala for this entity.</p></section>`;
+    const { items: allPeople, stats } = organizedPeople;
+    const secHeading = cfg.archetype === "investor" ? "Team &amp; Partners" : "Leadership &amp; Team";
+    if (!stats.total) {
+      return `${loading}<section class="dossier-section"><h3>${secHeading}</h3><p class="dossier-empty">No people records verified in Cala for this entity.</p></section>`;
     }
-    let hasMissingDates = false;
-    let hasMissingPrior = false;
+
+    const activeFilter = filters.peopleFilter || "all";
+    const query = cleanText(filters.peopleQuery || "").toLowerCase();
+    const showBuckets = stats.executiveCount > 0 && stats.teamCount > 0;
+    const filteredPeople = allPeople.filter((p) => {
+      if (showBuckets && activeFilter !== "all" && p.tierBucket !== activeFilter) return false;
+      if (query) {
+        const hay = `${p.name} ${p.roles.join(" ")} ${p.priorCompany}`.toLowerCase();
+        if (!hay.includes(query)) return false;
+      }
+      return true;
+    });
+
+    const filterPills = showBuckets
+      ? `<div class="dossier-filter-row">
+          <button type="button" class="dossier-filter-pill${activeFilter === "all" ? " is-active" : ""}" data-dossier-filter="peopleFilter:all">All (${stats.total})</button>
+          <button type="button" class="dossier-filter-pill${activeFilter === "executive" ? " is-active" : ""}" data-dossier-filter="peopleFilter:executive">Founders &amp; C-Suite (${stats.executiveCount})</button>
+          <button type="button" class="dossier-filter-pill${activeFilter === "team" ? " is-active" : ""}" data-dossier-filter="peopleFilter:team">Team &amp; Advisors (${stats.teamCount})</button>
+        </div>`
+      : "";
+    const searchHtml =
+      stats.total > 5
+        ? `<input type="search" class="dossier-search-input" data-dossier-search="peopleQuery" value="${escapeHtml(filters.peopleQuery || "")}" placeholder="Filter people or roles..." aria-label="Filter people">`
+        : "";
+    const summaryText = showBuckets
+      ? `${stats.total} verified people · ${stats.executiveCount} leadership · ${stats.teamCount} team`
+      : `${stats.total} verified ${stats.total === 1 ? "person" : "people"}`;
+
+    const cardsHtml = filteredPeople.length
+      ? `<div class="dossier-card-grid">${filteredPeople
+          .map((p) => {
+            const titleEl = p.id
+              ? `<button type="button" class="dossier-card-title-btn" data-open-person="${escapeHtml(p.id)}">${escapeHtml(p.name)}</button>`
+              : `<span class="dossier-card-title-text">${escapeHtml(p.name)}</span>`;
+            const span = p.since || p.until ? `${p.since || "—"} – ${p.until || "present"}` : "";
+            const subParts = [span ? `Tenure: ${span}` : "", p.priorCompany ? `Prior: ${p.priorCompany}` : ""].filter(Boolean);
+            return `
+              <article class="dossier-entity-card">
+                <div class="dossier-card-head">
+                  ${titleEl}
+                  <span class="source-tier" data-tier="${escapeHtml(p.bestTier)}">${escapeHtml(p.bestTier)}</span>
+                </div>
+                <div class="dossier-card-meta-row">
+                  ${p.roles.slice(0, 4).map((r) => `<span class="dossier-role-pill">${escapeHtml(r)}</span>`).join("")}
+                </div>
+                ${subParts.length ? `<div class="dossier-card-subline">${escapeHtml(subParts.join(" · "))}</div>` : ""}
+              </article>
+            `;
+          })
+          .join("")}</div>`
+      : `<p class="dossier-empty">No people match "${escapeHtml(filters.peopleQuery || activeFilter)}".</p>`;
+
     return `
       ${loading}
       <section class="dossier-section">
-        <h3>Leadership &amp; Verified People (${people.length})</h3>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Relation</th>
-                <th>Title</th>
-                <th>Dates</th>
-                <th>Prior Org</th>
-                <th>Source</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${people
-                .map((p) => {
-                  const pid = idOf(p);
-                  const pName = nameOf(p);
-                  const tier = tierOf(p);
-                  const nameCell = pid
-                    ? `<button type="button" class="inline-chip" data-open-person="${escapeHtml(pid)}">${escapeHtml(pName)}</button>`
-                    : escapeHtml(pName);
-                  const relText = cleanText(p.relation || p.relationship);
-                  const roleText = cleanText(p.role || p.title);
-                  const span = [cleanText(p.validSince || p.since), cleanText(p.validUntil || p.until)].filter(Boolean).join(" to ");
-                  const priorText = cleanText(p.priorCompany || p.prior_company);
-                  if (!span) hasMissingDates = true;
-                  if (!priorText) hasMissingPrior = true;
-                  return `
-                    <tr>
-                      <td>${nameCell}</td>
-                      <td>${relText ? escapeHtml(relText) : `<span class="cell-muted">-</span>`}</td>
-                      <td>${roleText ? escapeHtml(roleText) : `<span class="cell-muted">-</span>`}</td>
-                      <td>${span ? escapeHtml(span) : `<span class="cell-muted">-</span>`}</td>
-                      <td>${priorText ? escapeHtml(priorText) : `<span class="cell-muted">-</span>`}</td>
-                      <td><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></td>
-                    </tr>
-                  `;
-                })
-                .join("")}
-            </tbody>
-          </table>
+        <div class="dossier-section-head-row">
+          <h3>${secHeading} (${stats.total})</h3>
         </div>
-        ${(hasMissingDates || hasMissingPrior) ? `<p class="dossier-missing-line"><span>Unindexed cells (-):</span> ${escapeHtml([hasMissingDates ? "Employment dates" : "", hasMissingPrior ? "Prior employer" : ""].filter(Boolean).join(" · "))} not found in Cala.</p>` : ""}
+        <div class="dossier-toolbar">
+          <div class="dossier-summary-line">${escapeHtml(summaryText)}</div>
+          ${filterPills}
+          ${searchHtml}
+        </div>
+        ${cardsHtml}
       </section>
     `;
   }
 
   if (dossier.tab === "funding") {
-    const portfolio = deduplicateEntityList(data.portfolio);
     const fallback = [data.listing, data.parentCompany || data.parent, data.acquiredBy].filter(Boolean);
-
-    const roundsHtml = rounds.length
-      ? `<div class="timeline">${rounds
-          .map((round) => {
-            const names = [...asList(round.investors), ...asList(round.investorNames), round.leadInvestor]
-              .filter(Boolean)
-              .map((inv) =>
-                typeof inv === "string"
-                  ? `<span class="inline-chip">${escapeHtml(inv)}</span>`
-                  : clickableChipHtml(nameOf(inv), inv, "data-open-investor")
-              )
-              .join(" ");
-            const rawAmt = cleanText(round.amount ?? round.amountEurM ?? round.transactionValue);
-            const rawUnit = cleanText(round.currency || round.transactionValueUnits || (round.amountEurM != null ? "EUR M" : ""));
-            const amount = [rawAmt, rawUnit].filter(Boolean).join(" ");
-            const dateStr = cleanText(round.date || round.eventDate);
-            const tier = tierOf(round);
-            return `
-              <div class="timeline-item">
-                <time>${escapeHtml(dateStr || "Undated")}</time>
-                <strong>${escapeHtml(formatReadableEntityLabel(cleanText(round.type || round.roundType) || "Funding Round"))}</strong>
-                <div>${amount ? escapeHtml(amount) : `<span class="cell-muted">Amount unindexed</span>`}</div>
-                ${names ? `<div class="inline-chip-list">${names}</div>` : ""}
-                <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
-              </div>
-            `;
-          })
-          .join("")}</div>`
-      : `<p class="dossier-empty">No dedicated FundingRound nodes recorded in Cala${investors.length ? `; ${investors.length} investor links appear below.` : "."}</p>`;
-
-    const portfolioSectionHtml = `
-      <section class="dossier-section">
-        <h3>Portfolio &amp; Investments (${portfolio.length + fallback.length})</h3>
-        ${portfolio.length || fallback.length
-          ? `<ul class="data-list">${portfolio.map((item) => `<li>${clickableChipHtml(nameOf(item), item, "data-open-investor")}<span class="source-tier" data-tier="${escapeHtml(connectionTierBadge(item))}">${escapeHtml(connectionTierBadge(item))}</span></li>`).join("")}${fallback.map((item) => `<li><span>${escapeHtml(recordText(item))}</span></li>`).join("")}</ul>`
-          : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`}
-      </section>
-    `;
-
-    const roundsSectionHtml = `<section class="dossier-section"><h3>Funding Rounds (${rounds.length})</h3>${roundsHtml}</section>`;
-    const investorsSectionHtml = `
-      <section class="dossier-section">
-        <h3>Investors (${investors.length})</h3>
-        ${investors.length
-          ? `<ul class="data-list">${investors
-              .map((inv) => {
-                const tier = connectionTierBadge(inv);
-                const roleMeta = [cleanText(inv.role), cleanText(inv.eventDate || inv.date)].filter(Boolean).join(" · ");
-                return `<li><div>${clickableChipHtml(nameOf(inv), inv, "data-open-investor")}${roleMeta ? ` <span class="cell-muted" style="font-size:12px;margin-left:6px;">${escapeHtml(roleMeta)}</span>` : ""}</div><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></li>`;
-              })
-              .join("")}</ul>`
-          : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`}
-      </section>
-    `;
-
-    const cfgForFunding = buildDossierEntityConfig(typeBadge(data), {
-      peopleCount: people.length,
-      portfolioCount: portfolio.length,
-      roundsCount: rounds.length,
-      investorsCount: investors.length
-    });
-    if (cfgForFunding.archetype === "investor") {
-      return `${loading}${portfolioSectionHtml}${roundsSectionHtml}${investorsSectionHtml}`;
+    const totalFinancingCount = rounds.length + investors.length + portfolio.length + fallback.length;
+    if (!totalFinancingCount) {
+      return `${loading}<section class="dossier-section"><h3>Capital &amp; Portfolio</h3><p class="dossier-empty">No funding rounds, backers, or portfolio holdings indexed in Cala yet.</p></section>`;
     }
-    return `${loading}${roundsSectionHtml}${investorsSectionHtml}${portfolioSectionHtml}`;
-  }
 
-  if (dossier.tab === "connections") {
-    const groupedRows = ORBIT_QUADRANTS.map((q) => {
-      const edgesInGrp = mapEdges.filter((e) => getNodeContributionGroup(e) === q.group);
-      const remoteInGrp = remoteConns.filter((c) => deriveContributionGroupFrontend(c) === q.group);
-      const items = [
-        ...edgesInGrp.map((e) => cleanText(e.detail || formatDossierRelationLabel(e.label || ""))),
-        ...remoteInGrp.map((c) => {
-          const steps = asList(c.path).map((s) => formatReadableEntityLabel(nameOf(s))).filter(Boolean);
-          const niceRel = formatDossierRelationLabel(c.relation || c.connectionType, c.direction);
-          return steps.length ? `${steps.join(" \u2192 ")} (${niceRel})` : niceRel;
-        })
-      ].filter(Boolean);
-      const uniqueItems = [...new Set(items)];
-      const tier = strongestTier([...edgesInGrp, ...remoteInGrp]);
-      const extraCount = Math.max(0, uniqueItems.length - 4);
-      const listHtml = uniqueItems.length
-        ? `<ul class="dossier-group-bullets">${uniqueItems.slice(0, 4).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>${extraCount ? `<div class="cell-muted" style="font-size:11.5px;margin-top:4px;">+${extraCount} more verified ${extraCount === 1 ? "signal" : "signals"}</div>` : ""}`
-        : `<div class="cell-muted" style="font-size:12px;">No signals recorded in this category.</div>`;
-      return `
-        <div class="dossier-group-card">
-          <div class="dossier-group-head">
-            <span class="tip-lens-badge" data-group="${escapeHtml(q.group)}">${escapeHtml(q.label)}</span>
-            ${uniqueItems.length ? `<span class="source-tier" data-tier="${escapeHtml(tier !== MISSING ? tier : "CALA GRAPH")}">${escapeHtml(tier !== MISSING ? tier : "CALA GRAPH")}</span>` : ""}
-          </div>
-          ${listHtml}
-        </div>
-      `;
-    }).join("");
+    const totalFundingStr = formatTotalFundingDisplay(data);
+    const stageStr = populatedValue(data.fundingStage);
+    const capitalPills = [
+      totalFundingStr ? `Total Funding: ${totalFundingStr}` : "",
+      stageStr ? `Stage: ${stageStr}` : "",
+      rounds.length ? `${rounds.length} ${rounds.length === 1 ? "Round" : "Rounds"}` : "",
+      investors.length ? `${investors.length} ${investors.length === 1 ? "Backer" : "Backers"}` : "",
+      portfolio.length
+        ? `${portfolio.length} ${cfg.archetype === "person" ? (portfolio.length === 1 ? "Investment" : "Investments") : "Portfolio"}`
+        : ""
+    ].filter(Boolean);
+    const capitalStripHtml = capitalPills.length
+      ? `<div class="dossier-capital-strip">${capitalPills.map((p) => `<span class="dossier-capital-pill">${escapeHtml(p)}</span>`).join("")}</div>`
+      : "";
 
-    const verifiedList = remoteConns.length
-      ? `<div class="group-entry-list">${remoteConns
-          .map((c, idx) => {
-            const pathSteps = asList(c.path).map((step) => formatReadableEntityLabel(nameOf(step))).filter(Boolean);
-            const title = pathSteps.length ? pathSteps.join(" \u2192 ") : cleanText(c.entityName || c.name || c.label) || MISSING;
-            const rel = formatDossierRelationLabel(c.relation || c.relationship || c.connectionType, c.direction);
-            const tier = connectionTierBadge(c);
-            const badge = c.connectionType === "shared_bridge" ? "2-hop Shared Bridge" : "Direct 1-hop";
-            return `
-              <button type="button" class="group-entry" data-focus-connection="${idx}">
-                <div class="group-entry-top">
-                  <strong>${escapeHtml(title)}</strong>
-                  <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
-                </div>
-                <span>${escapeHtml(badge)} · ${escapeHtml(rel)}${c.eventDate ? ` · ${escapeHtml(c.eventDate)}` : ""}</span>
-              </button>
-            `;
-          })
-          .join("")}</div>`
-      : mapEdges.length
-        ? `<div class="group-entry-list">${mapEdges
-            .map((e) => {
-              const otherId = e.from === node.id ? e.to : e.from;
-              const other = (state.bridgeMap?.nodes || []).find((n) => n.id === otherId);
-              const title = `${formatReadableEntityLabel(nameOf(node))} \u2192 ${formatReadableEntityLabel(nameOf(other || { id: otherId }))}`;
-              const tier = connectionTierBadge(e);
+    const activeSection = filters.fundingSection || "all";
+    const fundingQueryRaw = cleanText(filters.fundingQuery || "");
+    const fundingQuery = fundingQueryRaw.toLowerCase();
+    const fundingTier = filters.fundingTier || "all";
+
+    const matchesQuery = (text) => !fundingQuery || String(text || "").toLowerCase().includes(fundingQuery);
+    const hasHighTierInvestors = investors.some((inv) => {
+      const t = connectionTierBadge(inv);
+      return t === "FILING" || t === "PRIMARY";
+    });
+
+    const filteredPortfolio = portfolio.filter((item) => matchesQuery(formatReadableEntityLabel(nameOf(item))));
+    const filteredFallback = fallback.filter((item) => matchesQuery(recordText(item)));
+    const sortedRounds = [...rounds].sort((a, b) =>
+      cleanText(b.date || b.eventDate).localeCompare(cleanText(a.date || a.eventDate))
+    );
+    const filteredRounds = sortedRounds.filter((r) => {
+      const hay = [
+        r.type,
+        r.roundType,
+        r.date,
+        r.eventDate,
+        ...asList(r.investors).map(nameOf),
+        ...asList(r.investorNames),
+        r.leadInvestor ? nameOf(r.leadInvestor) : ""
+      ].join(" ");
+      return matchesQuery(hay);
+    });
+    const filteredInvestors = investors.filter((inv) => {
+      const tier = connectionTierBadge(inv);
+      if (fundingTier === "high_tier" && tier !== "FILING" && tier !== "PRIMARY") return false;
+      return matchesQuery(`${formatReadableEntityLabel(nameOf(inv))} ${cleanText(inv.role)} ${cleanText(inv.eventDate || inv.date)}`);
+    });
+
+    const populatedSections = [];
+    if (portfolio.length || fallback.length) populatedSections.push({ key: "portfolio", label: `Portfolio (${portfolio.length + fallback.length})` });
+    if (rounds.length) populatedSections.push({ key: "rounds", label: `Rounds (${rounds.length})` });
+    if (investors.length) populatedSections.push({ key: "investors", label: `Backers (${investors.length})` });
+
+    const showSectionPills = cfg.archetype === "investor" && populatedSections.length >= 2;
+    const showTierPill = hasHighTierInvestors && investors.length > 3 && (activeSection === "all" || activeSection === "investors");
+    const showFundingSearch = totalFinancingCount > 6;
+
+    const toolbarHtml =
+      showSectionPills || showTierPill || showFundingSearch
+        ? `<div class="dossier-toolbar">
+            ${
+              showSectionPills || showTierPill
+                ? `<div class="dossier-filter-row">
+                    ${
+                      showSectionPills
+                        ? `<button type="button" class="dossier-filter-pill${activeSection === "all" ? " is-active" : ""}" data-dossier-filter="fundingSection:all">All (${totalFinancingCount})</button>` +
+                          populatedSections
+                            .map(
+                              (s) =>
+                                `<button type="button" class="dossier-filter-pill${activeSection === s.key ? " is-active" : ""}" data-dossier-filter="fundingSection:${escapeHtml(s.key)}">${escapeHtml(s.label)}</button>`
+                            )
+                            .join("")
+                        : ""
+                    }
+                    ${
+                      showTierPill
+                        ? `<button type="button" class="dossier-filter-pill is-subtle${fundingTier === "high_tier" ? " is-active" : ""}" data-dossier-filter="fundingTier:${fundingTier === "high_tier" ? "all" : "high_tier"}">Filing / Primary Only</button>`
+                        : ""
+                    }
+                  </div>`
+                : ""
+            }
+            ${
+              showFundingSearch
+                ? `<input type="search" class="dossier-search-input" data-dossier-search="fundingQuery" value="${escapeHtml(fundingQueryRaw)}" placeholder="Filter rounds, backers, or holdings..." aria-label="Filter financing records">`
+                : ""
+            }
+          </div>`
+        : "";
+
+    const renderPortfolioSection = () => {
+      if (!portfolio.length && !fallback.length) return "";
+      if (showSectionPills && activeSection !== "all" && activeSection !== "portfolio") return "";
+      const secTitle = cfg.archetype === "person" ? "Investments &amp; Backed Companies" : "Portfolio &amp; Investments";
+      const totalMatched = filteredPortfolio.length + filteredFallback.length;
+      const bodyMarkup = totalMatched
+        ? `<div class="dossier-card-grid">${filteredPortfolio
+            .map((item) => {
+              const tier = connectionTierBadge(item);
+              const meta = [cleanText(item.role) ? humanizeCalaRelation(item.role) : "", cleanText(item.eventDate || item.date)].filter(Boolean).join(" · ");
+              const itemId = idOf(item);
+              const itemName = formatReadableEntityLabel(nameOf(item));
               return `
-                <button type="button" class="group-entry" data-focus-edge="${escapeHtml(e.id)}" data-focus-node="${escapeHtml(otherId)}">
-                  <div class="group-entry-top">
-                    <strong>${escapeHtml(title)}</strong>
+                <article class="dossier-entity-card">
+                  <div class="dossier-card-head">
+                    ${itemId ? `<button type="button" class="dossier-card-title-btn" data-open-investor="${escapeHtml(itemId)}">${escapeHtml(itemName)}</button>` : `<span class="dossier-card-title-text">${escapeHtml(itemName)}</span>`}
                     <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
                   </div>
-                  <span>${escapeHtml(cleanText(e.detail || formatDossierRelationLabel(e.label || "")))}</span>
-                </button>
+                  ${meta ? `<div class="dossier-card-meta-row"><span class="dossier-role-pill">${escapeHtml(meta)}</span></div>` : ""}
+                </article>
+              `;
+            })
+            .join("")}${filteredFallback
+            .map((item) => `<article class="dossier-entity-card"><div class="dossier-card-head"><span class="dossier-card-title-text">${escapeHtml(recordText(item))}</span></div></article>`)
+            .join("")}</div>`
+        : `<p class="dossier-empty">No holdings match the active filter.</p>`;
+      return `<section class="dossier-section"><h3>${secTitle} (${filteredPortfolio.length + filteredFallback.length})</h3>${bodyMarkup}</section>`;
+    };
+
+    const renderRoundsSection = () => {
+      if (!rounds.length) return "";
+      if (showSectionPills && activeSection !== "all" && activeSection !== "rounds") return "";
+      const bodyMarkup = filteredRounds.length
+        ? `<div class="dossier-timeline-list">${filteredRounds
+            .map((round) => {
+              const names = [...asList(round.investors), ...asList(round.investorNames), round.leadInvestor]
+                .filter(Boolean)
+                .map((inv) =>
+                  typeof inv === "string"
+                    ? `<span class="inline-chip">${escapeHtml(formatReadableEntityLabel(inv))}</span>`
+                    : clickableChipHtml(nameOf(inv), inv, "data-open-investor")
+                )
+                .join(" ");
+              const rawAmt = cleanText(round.amount ?? round.amountEurM ?? round.transactionValue);
+              const rawUnit = cleanText(round.currency || round.transactionValueUnits || (round.amountEurM != null ? "EUR M" : ""));
+              const amount = [rawAmt, rawUnit].filter(Boolean).join(" ");
+              const dateStr = cleanText(round.date || round.eventDate);
+              const tier = connectionTierBadge(round);
+              return `
+                <div class="dossier-timeline-row">
+                  <div class="dossier-date-pill ${dateStr ? "" : "is-undated"}">${escapeHtml(dateStr || "Undated")}</div>
+                  <div class="dossier-timeline-content">
+                    <strong>${escapeHtml(formatReadableEntityLabel(cleanText(round.type || round.roundType) || "Funding Round"))}</strong>
+                    <div class="dossier-timeline-sub">${amount ? escapeHtml(amount) : "Amount unindexed in Cala"}</div>
+                    ${names ? `<div class="inline-chip-row" style="margin-top:6px;">${names}</div>` : ""}
+                  </div>
+                  <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
+                </div>
               `;
             })
             .join("")}</div>`
-        : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`;
+        : `<p class="dossier-empty">No rounds match the active filter.</p>`;
+      return `<section class="dossier-section"><h3>Funding Rounds (${filteredRounds.length})</h3>${bodyMarkup}</section>`;
+    };
+
+    const renderInvestorsSection = () => {
+      if (!investors.length) return "";
+      if (showSectionPills && activeSection !== "all" && activeSection !== "investors") return "";
+      const secTitle = cfg.archetype === "investor" ? "Backers &amp; Co-Investors" : "Verified Backers &amp; Investors";
+      const bodyMarkup = filteredInvestors.length
+        ? `<div class="dossier-card-grid">${filteredInvestors
+            .map((inv) => {
+              const tier = connectionTierBadge(inv);
+              const invId = idOf(inv);
+              const invName = formatReadableEntityLabel(nameOf(inv));
+              const roleLabel = cleanText(inv.role) ? humanizeCalaRelation(inv.role, inv.direction) : "";
+              const dt = cleanText(inv.eventDate || inv.date);
+              return `
+                <article class="dossier-entity-card">
+                  <div class="dossier-card-head">
+                    ${invId ? `<button type="button" class="dossier-card-title-btn" data-open-investor="${escapeHtml(invId)}">${escapeHtml(invName)}</button>` : `<span class="dossier-card-title-text">${escapeHtml(invName)}</span>`}
+                    <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
+                  </div>
+                  ${
+                    roleLabel || dt
+                      ? `<div class="dossier-card-meta-row">${roleLabel ? `<span class="dossier-role-pill">${escapeHtml(roleLabel)}</span>` : ""}${dt ? `<span class="dossier-card-date">${escapeHtml(dt)}</span>` : ""}</div>`
+                      : ""
+                  }
+                </article>
+              `;
+            })
+            .join("")}</div>`
+        : `<p class="dossier-empty">No backers match the active filter.</p>`;
+      return `<section class="dossier-section"><h3>${secTitle} (${filteredInvestors.length})</h3>${bodyMarkup}</section>`;
+    };
+
+    const sectionsOrder =
+      cfg.archetype === "investor" || cfg.archetype === "person"
+        ? `${renderPortfolioSection()}${renderRoundsSection()}${renderInvestorsSection()}`
+        : `${renderRoundsSection()}${renderInvestorsSection()}${renderPortfolioSection()}`;
+
+    return `
+      ${loading}
+      ${capitalStripHtml ? `<section class="dossier-section">${capitalStripHtml}${toolbarHtml}</section>` : toolbarHtml ? `<section class="dossier-section">${toolbarHtml}</section>` : ""}
+      ${sectionsOrder}
+    `;
+  }
+
+  if (dossier.tab === "connections") {
+    const { items, substantiveItems, stats } = organizedConns;
+    const baseItems = filters.showContextualConnections
+      ? items
+      : substantiveItems.length
+        ? substantiveItems
+        : items;
+
+    if (!items.length) {
+      return `${loading}<section class="dossier-section"><h3>Network</h3><p class="dossier-empty">No connected entities indexed in Cala for this record.</p></section>`;
+    }
+
+    const activeFilter = filters.connectionsFilter || "all";
+    const queryRaw = cleanText(filters.connectionsQuery || "");
+    const query = queryRaw.toLowerCase();
+
+    const filtered = baseItems.filter((it) => {
+      if (activeFilter === "direct" && it.hopType !== "direct") return false;
+      if (activeFilter === "bridge" && it.hopType !== "bridge") return false;
+      if (activeFilter === "high_tier" && !it.isHighTier) return false;
+      if (query) {
+        const hay = `${it.targetName} ${it.bridgeName} ${it.roles.join(" ")} ${it.latestDate} ${it.bestTier}`.toLowerCase();
+        if (!hay.includes(query)) return false;
+      }
+      return true;
+    });
+
+    const summaryParts = [
+      `${stats.totalSubstantive || stats.total} connected ${(stats.totalSubstantive || stats.total) === 1 ? "entity" : "entities"}`,
+      stats.directCount ? `${stats.directCount} direct` : "",
+      stats.bridgeCount ? `${stats.bridgeCount} shared ${stats.bridgeCount === 1 ? "bridge" : "bridges"}` : ""
+    ].filter(Boolean);
+
+    const pillHtml = `
+      <div class="dossier-filter-row">
+        <button type="button" class="dossier-filter-pill${activeFilter === "all" ? " is-active" : ""}" data-dossier-filter="connectionsFilter:all">All (${stats.totalSubstantive || stats.total})</button>
+        ${stats.directCount > 0 && stats.bridgeCount > 0 ? `<button type="button" class="dossier-filter-pill${activeFilter === "direct" ? " is-active" : ""}" data-dossier-filter="connectionsFilter:direct">Direct (${stats.directCount})</button>` : ""}
+        ${stats.bridgeCount > 0 ? `<button type="button" class="dossier-filter-pill${activeFilter === "bridge" ? " is-active" : ""}" data-dossier-filter="connectionsFilter:bridge">Shared Bridges (${stats.bridgeCount})</button>` : ""}
+        ${stats.highTierCount > 0 ? `<button type="button" class="dossier-filter-pill${activeFilter === "high_tier" ? " is-active" : ""}" data-dossier-filter="connectionsFilter:high_tier">Filing / Primary (${stats.highTierCount})</button>` : ""}
+        ${stats.contextualCount > 0 && substantiveItems.length > 0 ? `<button type="button" class="dossier-filter-pill is-subtle${filters.showContextualConnections ? " is-active" : ""}" data-dossier-toggle="showContextualConnections">${filters.showContextualConnections ? `Hide Sector / HQ (${stats.contextualCount})` : `+ Sector / HQ Overlap (${stats.contextualCount})`}</button>` : ""}
+      </div>
+    `;
+    const searchHtml =
+      stats.totalSubstantive > 4 || stats.contextualCount > 4
+        ? `<input type="search" class="dossier-search-input" data-dossier-search="connectionsQuery" value="${escapeHtml(queryRaw)}" placeholder="Filter entities, bridges, or roles..." aria-label="Filter connected entities">`
+        : "";
+
+    const bodyHtml = filtered.length
+      ? renderDossierConnectionCardsHtml(filtered)
+      : `<p class="dossier-empty">No connections match the active filter.</p>`;
 
     return `
       ${loading}
       <section class="dossier-section">
-        <h3>Contribution by Decision Group</h3>
-        <div class="dossier-group-grid">${groupedRows}</div>
-      </section>
-      <section class="dossier-section">
-        <h3>Verified Cala Paths (${remoteConns.length || mapEdges.length})</h3>
-        ${verifiedList}
+        <div class="dossier-section-head-row">
+          <h3>Connected Entities (${filtered.length})</h3>
+        </div>
+        <div class="dossier-toolbar">
+          <div class="dossier-summary-line">${escapeHtml(summaryParts.join(" · "))}</div>
+          ${pillHtml}
+          ${searchHtml}
+        </div>
+        ${bodyHtml}
       </section>
     `;
   }
 
   if (dossier.tab === "timeline") {
-    const observations = asList(data.employeeCountSeries);
-    const allEvents = [
-      ...asList(data.corporateEvents),
-      ...asList(data.financialMetrics),
-      ...relationshipRows(data.relationships)
-    ];
-    const datedEvents = [];
-    const undatedEvents = [];
-    for (const item of allEvents) {
-      const dStr = cleanText(item.date || item.eventDate);
-      if (dStr && /\d{4}/.test(dStr)) datedEvents.push({ item, date: dStr });
-      else undatedEvents.push(item);
+    const { items, categories, stats } = organizedTimeline;
+    const empSeries =
+      cfg.archetype === "company" || cfg.archetype === "investor" ? asList(data.employeeCountSeries) : [];
+    const headingLabel =
+      cfg.archetype === "person" ? "Career &amp; Affiliations" : cfg.archetype === "investor" ? "Firm Activity &amp; Milestones" : "Timeline &amp; Milestones";
+
+    if (!stats.total && !empSeries.length) {
+      return `${loading}<section class="dossier-section"><h3>${headingLabel}</h3><p class="dossier-empty">No timeline milestones or activity indexed in Cala yet.</p></section>`;
     }
-    datedEvents.sort((a, b) => b.date.localeCompare(a.date));
 
-    const obsHtml = observations.length
-      ? `<div class="table-wrap"><table><thead><tr><th>Date</th><th>Observed Value</th><th>Source</th></tr></thead><tbody>${observations
-          .map((item) => {
-            const tier = tierOf(item);
-            return `<tr><td>${escapeHtml(cleanText(item.date) || "-")}</td><td>${escapeHtml(cleanText(item.value ?? item.count ?? item.employeeCount) || "-")}</td><td><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></td></tr>`;
-          })
-          .join("")}</tbody></table></div>`
-      : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`;
+    const validCats = new Set(["all", "recent", ...categories.map((c) => c.key)]);
+    const activeCat = validCats.has(filters.timelineCategory) ? filters.timelineCategory : "all";
+    const filtered = items.filter((it) => {
+      if (activeCat === "all") return true;
+      if (activeCat === "recent") return it.isRecent;
+      return it.category === activeCat;
+    });
+    const limit = Number(filters.timelineLimit || 20);
+    const visible = filtered.slice(0, limit);
+    const remaining = Math.max(0, filtered.length - visible.length);
 
-    const datedHtml = datedEvents.length
-      ? `<div class="timeline">${datedEvents
-          .map(({ item, date }) => {
-            const tier = tierOf(item);
-            return `<div class="timeline-item"><time>${escapeHtml(date)}</time><strong>${escapeHtml(formatReadableEntityLabel(recordText(item)))}</strong><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></div>`;
+    const summaryParts = [
+      stats.total ? `${stats.total} verified ${stats.total === 1 ? "record" : "records"}` : "",
+      stats.datedCount ? `${stats.datedCount} dated` : "",
+      stats.recentCount ? `${stats.recentCount} recent \u226418m` : ""
+    ].filter(Boolean);
+
+    const filterPills =
+      stats.recentCount > 0 || categories.length > 1
+        ? `<div class="dossier-filter-row">
+            <button type="button" class="dossier-filter-pill${activeCat === "all" ? " is-active" : ""}" data-dossier-filter="timelineCategory:all">All (${stats.total})</button>
+            ${stats.recentCount > 0 ? `<button type="button" class="dossier-filter-pill${activeCat === "recent" ? " is-active" : ""}" data-dossier-filter="timelineCategory:recent">Recent &le;18m (${stats.recentCount})</button>` : ""}
+            ${categories
+              .map(
+                (c) =>
+                  `<button type="button" class="dossier-filter-pill${activeCat === c.key ? " is-active" : ""}" data-dossier-filter="timelineCategory:${escapeHtml(c.key)}">${escapeHtml(c.label)} (${c.count})</button>`
+              )
+              .join("")}
+          </div>`
+        : "";
+
+    const rowsHtml = visible.length
+      ? `<div class="dossier-timeline-list">${visible
+          .map((it) => {
+            const titleEl = it.entityId
+              ? `<button type="button" class="dossier-card-title-btn" data-inspect-entity-id="${escapeHtml(it.entityId)}">${escapeHtml(it.title)}</button>`
+              : `<strong>${escapeHtml(it.title)}</strong>`;
+            return `
+              <div class="dossier-timeline-row">
+                <div class="dossier-date-pill ${it.date ? (it.isRecent ? "is-recent" : "") : "is-undated"}">${escapeHtml(it.date || "Undated")}</div>
+                <div class="dossier-timeline-content">
+                  ${titleEl}
+                  ${it.subtitle ? `<div class="dossier-timeline-sub">${escapeHtml(it.subtitle)}</div>` : ""}
+                </div>
+                <span class="source-tier" data-tier="${escapeHtml(it.tier)}">${escapeHtml(it.tier)}</span>
+              </div>
+            `;
           })
           .join("")}</div>`
-      : `<p class="dossier-empty">No dated corporate events verified in Cala.</p>`;
+      : `<p class="dossier-empty">No events in this category.</p>`;
 
-    const undatedHtml = undatedEvents.length
-      ? `<section class="dossier-section"><h3>Undated Cala Relationships (${undatedEvents.length})</h3><div class="timeline is-undated">${undatedEvents
-          .slice(0, 20)
-          .map((item) => {
-            const tier = tierOf(item);
-            return `<div class="timeline-item"><time class="cell-muted">Undated</time><strong>${escapeHtml(formatReadableEntityLabel(recordText(item)))}</strong><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></div>`;
-          })
-          .join("")}</div>${undatedEvents.length > 20 ? `<p class="dossier-missing-line">Showing top 20 of ${undatedEvents.length} undated relationships.</p>` : ""}</section>`
+    const loadMoreBtn = remaining
+      ? `<button type="button" class="dossier-load-more-btn" data-dossier-load-more="timeline">Show ${Math.min(20, remaining)} more (${remaining} remaining)</button>`
+      : "";
+
+    const empSectionHtml = empSeries.length
+      ? `<section class="dossier-section">
+          <h3>Headcount Observations (${empSeries.length})</h3>
+          <div class="table-wrap"><table><thead><tr><th>Date</th><th>Observed Headcount</th><th>Source</th></tr></thead><tbody>${empSeries
+            .map((item) => {
+              const tier = connectionTierBadge(item);
+              return `<tr><td>${escapeHtml(cleanText(item.date) || "Undated")}</td><td>${escapeHtml(cleanText(item.value ?? item.count ?? item.employeeCount) || "—")}</td><td><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></td></tr>`;
+            })
+            .join("")}</tbody></table></div>
+        </section>`
       : "";
 
     return `
       ${loading}
-      <section class="dossier-section"><h3>Dated Milestones &amp; Events (${datedEvents.length})</h3>${datedHtml}</section>
-      <section class="dossier-section"><h3>Headcount &amp; Metrics</h3>${obsHtml}</section>
-      ${undatedHtml}
+      <section class="dossier-section">
+        <div class="dossier-section-head-row">
+          <h3>${headingLabel} (${filtered.length})</h3>
+        </div>
+        ${
+          summaryParts.length || filterPills
+            ? `<div class="dossier-toolbar">${summaryParts.length ? `<div class="dossier-summary-line">${escapeHtml(summaryParts.join(" · "))}</div>` : ""}${filterPills}</div>`
+            : ""
+        }
+        ${rowsHtml}
+        ${loadMoreBtn}
+      </section>
+      ${empSectionHtml}
     `;
   }
 
   // Sources & Gaps tab
-  const gaps = gapListForDossier(data, node, mapEdges);
-  const sourcesHtml = sources.length
-    ? `<ul class="data-list">${sources
+  const gaps = gapListForDossier(data, node, mapEdges, cfg.archetype);
+  const { items: allSources, counts } = organizedSources;
+  const activeTier = filters.sourcesTier || "all";
+  const srcQueryRaw = cleanText(filters.sourcesQuery || "");
+  const srcQuery = srcQueryRaw.toLowerCase();
+
+  const tierButtons = [
+    { key: "all", label: `All (${counts.all})` },
+    ...(counts.FILING ? [{ key: "FILING", label: `Filing (${counts.FILING})` }] : []),
+    ...(counts.PRIMARY ? [{ key: "PRIMARY", label: `Primary (${counts.PRIMARY})` }] : []),
+    ...(counts.PRESS ? [{ key: "PRESS", label: `Press (${counts.PRESS})` }] : []),
+    ...(counts.AGGREGATOR ? [{ key: "AGGREGATOR", label: `Aggregator (${counts.AGGREGATOR})` }] : []),
+    { key: "gaps", label: `Coverage Gaps (${gaps.length})` }
+  ];
+
+  const srcPillsHtml = `<div class="dossier-filter-row">${tierButtons
+    .map(
+      (b) =>
+        `<button type="button" class="dossier-filter-pill${activeTier === b.key ? " is-active" : ""}${b.key === "gaps" ? " is-subtle" : ""}" data-dossier-filter="sourcesTier:${escapeHtml(b.key)}">${escapeHtml(b.label)}</button>`
+    )
+    .join("")}</div>`;
+
+  const srcSearchHtml =
+    counts.all > 8 && activeTier !== "gaps"
+      ? `<input type="search" class="dossier-search-input" data-dossier-search="sourcesQuery" value="${escapeHtml(srcQueryRaw)}" placeholder="Filter sources by title, publisher, or year..." aria-label="Filter verified sources">`
+      : "";
+
+  if (activeTier === "gaps") {
+    const gapsContent = gaps.length
+      ? `<div class="dossier-card-grid">${gaps
+          .map(
+            (g) => `
+              <article class="dossier-entity-card">
+                <div class="dossier-card-head">
+                  <span class="dossier-card-title-text">${escapeHtml(g)}</span>
+                  <span class="source-tier">NOT FOUND IN CALA</span>
+                </div>
+                <div class="dossier-card-subline">Field not yet indexed for this ${escapeHtml(cfg.archetype)} record in Cala.</div>
+              </article>
+            `
+          )
+          .join("")}</div>`
+      : `<p class="dossier-empty">All core fields populated from Cala for this ${escapeHtml(cfg.archetype)} record.</p>`;
+
+    return `
+      ${loading}
+      <section class="dossier-section">
+        <div class="dossier-section-head-row">
+          <h3>Data Coverage Gaps (${gaps.length})</h3>
+        </div>
+        <div class="dossier-toolbar">${srcPillsHtml}</div>
+        ${gapsContent}
+      </section>
+    `;
+  }
+
+  const gapBannerHtml = gaps.length
+    ? `<div class="dossier-gap-banner">
+        <span><strong>${gaps.length} ${gaps.length === 1 ? "field" : "fields"} unindexed:</strong> ${escapeHtml(gaps.slice(0, 3).join(" · "))}${gaps.length > 3 ? ` +${gaps.length - 3}` : ""}</span>
+        <button type="button" class="dossier-link-btn" data-dossier-filter="sourcesTier:gaps">Inspect gaps &rarr;</button>
+      </div>`
+    : "";
+
+  const filteredSources = allSources.filter((s) => {
+    if (activeTier !== "all" && s.tier !== activeTier) return false;
+    if (srcQuery) {
+      const hay = `${s.title} ${s.publisher} ${s.date} ${s.tier}`.toLowerCase();
+      if (!hay.includes(srcQuery)) return false;
+    }
+    return true;
+  });
+  const srcLimit = Number(filters.sourcesLimit || 20);
+  const visibleSources = filteredSources.slice(0, srcLimit);
+  const srcRemaining = Math.max(0, filteredSources.length - visibleSources.length);
+
+  const sourcesHtml = visibleSources.length
+    ? `<ul class="data-list">${visibleSources
         .map((src) => {
-          const prettyTitle = formatCleanCitationTitle(src.title || src.name, src.publisher, src.url || src.document || src.link);
-          const label = prettyTitle || cleanText(src.publisher || src.title || src.name || src.id || src.url) || MISSING;
-          const url = cleanText(src.url || src.document || src.link);
-          const tier = tierOf(src);
+          const prettyTitle = formatCleanCitationTitle(src.title, src.publisher, src.url);
+          const label = prettyTitle || src.publisher || src.title;
           return `
             <li>
-              <div>${url && /^https?:\/\//i.test(url) ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>` : escapeHtml(label)}<div style="color:var(--muted);font-size:12px;">${escapeHtml([cleanText(src.publisher), cleanText(src.date) || "Undated"].filter(Boolean).join(" · "))}</div></div>
-              <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
+              <div>${src.url ? `<a href="${escapeHtml(src.url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>` : `<strong>${escapeHtml(label)}</strong>`}<div style="color:var(--muted);font-size:12px;">${escapeHtml([src.publisher, src.date || "Undated"].filter(Boolean).join(" · "))}</div></div>
+              <span class="source-tier" data-tier="${escapeHtml(src.tier)}">${escapeHtml(src.tier)}</span>
             </li>
           `;
         })
-        .join("")}</ul>`
-    : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`;
-
-  const gapsHtml = gaps.length
-    ? `<ul class="data-list">${gaps.map((g) => `<li><strong>${escapeHtml(g)}</strong><span class="source-tier">${escapeHtml(MISSING)}</span></li>`).join("")}</ul>`
-    : `<p class="dossier-empty">All core fields populated from Cala.</p>`;
+        .join("")}</ul>${srcRemaining ? `<button type="button" class="dossier-load-more-btn" data-dossier-load-more="sources">Show ${Math.min(20, srcRemaining)} more (${srcRemaining} remaining)</button>` : ""}`
+    : `<p class="dossier-empty">${counts.all ? "No sources match the active filter." : "No external source citations recorded yet; relationships are anchored to Cala Graph IDs."}</p>`;
 
   return `
     ${loading}
-    <section class="dossier-section"><h3>Verified Cala Sources (${sources.length})</h3>${sourcesHtml}</section>
-    <section class="dossier-section"><h3>Not Found in Cala (Gaps)</h3>${gapsHtml}</section>
+    <section class="dossier-section">
+      <div class="dossier-section-head-row">
+        <h3>Verified Cala Sources (${filteredSources.length})</h3>
+      </div>
+      <div class="dossier-toolbar">
+        ${srcPillsHtml}
+        ${srcSearchHtml}
+      </div>
+      ${gapBannerHtml}
+      ${sourcesHtml}
+    </section>
   `;
 }
 
@@ -8110,36 +8505,17 @@ function renderDossier(options = {}) {
   if (tabsEl) tabsEl.hidden = false;
   if (backBtn) backBtn.hidden = !d.history.length;
 
-  const peopleCount = peopleFor(data).length;
-  const portfolioCount = deduplicateEntityList(data.portfolio).length;
-  const roundsCount = roundsFor(data).length;
-  const investorsCount = deduplicateEntityList(data.investors).length;
-  const connCount = Math.max(connectionRows(data).length, mapEdgesForNode(node).length);
-  const timelineCount =
-    asList(data.employeeCountSeries).length +
-    asList(data.corporateEvents).length +
-    asList(data.financialMetrics).length +
-    relationshipRows(data.relationships).length;
-  const sourcesCount = sourcesFor(data).length;
-
-  const cfg = buildDossierEntityConfig(entityKind, {
-    peopleCount,
-    portfolioCount,
-    roundsCount,
-    investorsCount,
-    connCount,
-    timelineCount,
-    sourcesCount
-  });
+  const vm = computeDossierViewModel(data, node);
+  const { cfg, peopleCount, connCount, timelineCount, sourcesCount, portfolio, rounds, investors } = vm;
   if (!cfg.visibleTabs.some((t) => t.key === d.tab)) {
     d.tab = "overview";
   }
 
   const fundingTabCount = cfg.archetype === "person"
-    ? portfolioCount
+    ? portfolio.length
     : cfg.archetype === "investor"
-      ? Math.max(portfolioCount, roundsCount + investorsCount)
-      : (roundsCount + investorsCount);
+      ? Math.max(portfolio.length, rounds.length + investors.length)
+      : (rounds.length + investors.length);
   const tabCounts = {
     people: peopleCount,
     funding: fundingTabCount,
@@ -8170,7 +8546,7 @@ function renderDossier(options = {}) {
   });
 
   if (body) {
-    body.innerHTML = renderDossierTabContent(d);
+    body.innerHTML = renderDossierTabContent(d, vm);
     if (options.resetScroll) body.scrollTop = 0;
   }
 }
@@ -9400,6 +9776,60 @@ function bindDossierEvents() {
       return;
     }
 
+    const filterBtn = e.target.closest("[data-dossier-filter]");
+    if (filterBtn && state.dossier) {
+      const rawSpec = String(filterBtn.dataset.dossierFilter || "");
+      const sep = rawSpec.indexOf(":");
+      if (sep > 0) {
+        const fKey = rawSpec.slice(0, sep);
+        const fVal = rawSpec.slice(sep + 1);
+        if (!state.dossier.filters) state.dossier.filters = defaultDossierFilters();
+        state.dossier.filters[fKey] = fVal;
+        if (fKey === "timelineCategory") state.dossier.filters.timelineLimit = 20;
+        if (fKey === "sourcesTier") state.dossier.filters.sourcesLimit = 20;
+        renderDossier({ resetScroll: false });
+      }
+      return;
+    }
+
+    const toggleBtn = e.target.closest("[data-dossier-toggle]");
+    if (toggleBtn && state.dossier) {
+      const tKey = String(toggleBtn.dataset.dossierToggle || "");
+      if (tKey) {
+        if (!state.dossier.filters) state.dossier.filters = defaultDossierFilters();
+        state.dossier.filters[tKey] = !state.dossier.filters[tKey];
+        renderDossier({ resetScroll: false });
+      }
+      return;
+    }
+
+    const moreBtn = e.target.closest("[data-dossier-load-more]");
+    if (moreBtn && state.dossier) {
+      const which = moreBtn.dataset.dossierLoadMore;
+      if (!state.dossier.filters) state.dossier.filters = defaultDossierFilters();
+      if (which === "timeline") {
+        state.dossier.filters.timelineLimit = Number(state.dossier.filters.timelineLimit || 20) + 20;
+      } else if (which === "sources") {
+        state.dossier.filters.sourcesLimit = Number(state.dossier.filters.sourcesLimit || 20) + 20;
+      }
+      renderDossier({ resetScroll: false });
+      return;
+    }
+
+    const focusMapNodeBtn = e.target.closest("[data-focus-map-node]");
+    if (focusMapNodeBtn) {
+      const targetNodeId = cleanText(focusMapNodeBtn.dataset.focusMapNode);
+      const targetEdgeId = cleanText(focusMapNodeBtn.dataset.focusEdge);
+      closeEntityDossier({ preserveSelection: true });
+      state.selectedEdgeId = targetEdgeId || null;
+      state.selectedNodeId = targetNodeId || null;
+      state.hoveredNodeId = null;
+      state.hoveredEdgeId = null;
+      applyPathLaserIsolation();
+      if (targetNodeId) focusNodeOnMap(targetNodeId);
+      return;
+    }
+
     const switchTabBtn = e.target.closest("[data-switch-dossier-tab]");
     if (switchTabBtn && state.dossier) {
       state.dossier.tab = switchTabBtn.dataset.switchDossierTab;
@@ -9473,6 +9903,26 @@ function bindDossierEvents() {
         state.hoveredEdgeId = null;
         applyPathLaserIsolation();
         focusNodeOnMap(counterpartId);
+      }
+    }
+  });
+
+  $("#dossierBody")?.addEventListener("input", (e) => {
+    const searchInput = e.target.closest("[data-dossier-search]");
+    if (!searchInput || !state.dossier) return;
+    const field = searchInput.dataset.dossierSearch;
+    const selStart = searchInput.selectionStart;
+    const selEnd = searchInput.selectionEnd;
+    if (!state.dossier.filters) state.dossier.filters = defaultDossierFilters();
+    state.dossier.filters[field] = searchInput.value;
+    renderDossier({ resetScroll: false });
+    const freshInput = $("#dossierBody")?.querySelector(`[data-dossier-search="${field}"]`);
+    if (freshInput) {
+      freshInput.focus({ preventScroll: true });
+      if (typeof selStart === "number" && typeof selEnd === "number") {
+        try {
+          freshInput.setSelectionRange(selStart, selEnd);
+        } catch {}
       }
     }
   });

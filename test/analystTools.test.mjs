@@ -21,7 +21,12 @@ import {
   buildDiligenceScopeKey,
   normalizeDiligenceState,
   computeDiligenceProgress,
-  buildDossierEntityConfig
+  buildDossierEntityConfig,
+  humanizeCalaRelation,
+  organizeDossierConnections,
+  organizeDossierPeople,
+  organizeDossierTimeline,
+  organizeDossierSources
 } from '../public/analystTools.js';
 
 test('formatInstitutionalEntityName normalizes raw 13F ALL-CAPS while preserving mixed-case & acronyms', () => {
@@ -430,4 +435,105 @@ test('buildDossierEntityConfig adapts tabs, KPIs, and profile headings per entit
   assert.equal(company.archetype, 'company');
   assert.equal(company.profileCardTitle, 'Company Profile');
   assert.deepEqual(company.visibleTabs.map((t) => t.key), ['overview', 'people', 'funding', 'connections', 'timeline', 'sources']);
+});
+
+test('humanizeCalaRelation translates single and compound 2-hop Cala enums cleanly', () => {
+  assert.equal(humanizeCalaRelation('IS_CEO_OF'), 'Chief Executive Officer');
+  assert.equal(humanizeCalaRelation('FOUNDED', 'outgoing'), 'Founder');
+  assert.equal(humanizeCalaRelation('FOUNDED', 'incoming'), 'Founded by');
+  assert.equal(humanizeCalaRelation('INVESTED_IN', 'incoming'), 'Backed by');
+  assert.equal(humanizeCalaRelation('INVESTED_IN', 'outgoing'), 'Invested in');
+  assert.equal(humanizeCalaRelation('WORKS_AT / WORKS_AT'), 'Shared Leadership / Alumni');
+  assert.equal(humanizeCalaRelation('OPERATES_IN_INDUSTRY / OPERATES_IN_INDUSTRY'), 'Shared Sector');
+  assert.equal(humanizeCalaRelation('IS_CEO_OF / INVESTED_IN', 'outgoing / incoming'), 'Chief Executive Officer · Backed by');
+});
+
+test('organizeDossierConnections consolidates duplicates, isolates contextual overlaps, and orders direct before bridge', () => {
+  const remoteConns = [
+    { entityId: 'e-us', entityName: 'United States', connectionType: 'shared_bridge', relation: 'HAS_HEADQUARTERS_IN / HAS_HEADQUARTERS_IN', direction: 'outgoing / outgoing', bridge: { id: 'b-us', name: 'United States' }, sourceTier: 'PRIMARY' },
+    { entityId: 'e-anth', entityName: 'Anthropic', connectionType: 'direct', relation: 'IS_CMO_OF', direction: 'outgoing', sourceTier: 'PRIMARY' },
+    { entityId: 'e-anth', entityName: 'Anthropic', connectionType: 'direct', relation: 'IS_CEO_OF', direction: 'outgoing', eventDate: '2025-02-10', sourceTier: 'FILING' },
+    { entityId: 'e-xai', entityName: 'xAI', connectionType: 'shared_bridge', relation: 'INVESTED_IN / INVESTED_IN', bridge: { id: 'b-seq', name: 'SEQUOIA CAPITAL' }, sourceTier: 'PRESS' }
+  ];
+  const mapEdges = [
+    { id: 'edge-anth', from: 'self-da', to: 'e-anth', relation: 'WORKS_AT', topSourceRank: 'PRESS' },
+    { id: 'tree-spoke-x', from: 'self-da', to: 'group-hub:lineage', relation: 'IS_MEMBER_OF' }
+  ];
+  const mapNodes = [
+    { id: 'self-da', label: 'Daniela Amodei' },
+    { id: 'e-anth', label: 'Anthropic' },
+    { id: 'group-hub:lineage', kind: 'group-hub', label: 'Lineage' }
+  ];
+
+  const org = organizeDossierConnections(remoteConns, mapEdges, { selfId: 'self-da', selfName: 'Daniela Amodei', mapNodes });
+  assert.equal(org.stats.contextualCount, 1);
+  assert.equal(org.stats.totalSubstantive, 2);
+  assert.equal(org.stats.directCount, 1);
+  assert.equal(org.stats.bridgeCount, 1);
+  assert.equal(org.substantiveItems[0].targetName, 'Anthropic');
+  assert.equal(org.substantiveItems[0].bestTier, 'FILING');
+  assert.equal(org.substantiveItems[0].onMap, true);
+  assert.equal(org.substantiveItems[0].focusEdgeId, 'edge-anth');
+  assert.ok(org.substantiveItems[0].roles.includes('Chief Executive Officer'));
+  assert.ok(org.substantiveItems[0].roles.includes('Chief Marketing Officer'));
+  assert.equal(org.substantiveItems[1].bridgeName, 'Sequoia Capital');
+  assert.equal(org.contextualItems[0].isContextual, true);
+});
+
+test('organizeDossierPeople deduplicates multi-role executives and sorts leadership first', () => {
+  const people = [
+    { id: 'p-ez', name: 'Eric Zelikman', relation: 'WORKS_AT', role: 'AI researcher' },
+    { id: 'p-em', name: 'Elon Musk', relation: 'FOUNDED', role: 'Founder', sourceTier: 'PRIMARY' },
+    { id: 'p-em', name: 'Elon Musk', relation: 'IS_CEO_OF', role: 'Chief Executive Officer', validSince: '2023-07-12', sourceTier: 'FILING' },
+    { id: 'p-kf', name: 'Kieran Flanagan', relation: 'IS_MEMBER_OF', role: 'Executive / Operator', validSince: '2021-09-01' }
+  ];
+  const res = organizeDossierPeople(people);
+  assert.equal(res.stats.total, 3);
+  assert.equal(res.stats.executiveCount, 2);
+  assert.equal(res.stats.teamCount, 1);
+  assert.equal(res.items[0].name, 'Elon Musk');
+  assert.equal(res.items[0].bestTier, 'FILING');
+  assert.deepEqual(res.items[0].roles, ['Founder', 'Chief Executive Officer']);
+  assert.equal(res.items[1].name, 'Kieran Flanagan');
+  assert.deepEqual(res.items[1].roles, ['Board / Member']);
+});
+
+test('organizeDossierTimeline sorts newest first, assigns archetype categories, and avoids empty MISSING badges', () => {
+  const data = {
+    corporateEvents: [{ id: 'ev1', name: 'Series G Announced', type: 'FUNDING', eventDate: '2026-07-01', sourceTier: 'FILING' }],
+    relationships: {
+      outgoing: {
+        IS_CEO_OF: [{ id: 'c1', name: 'Anthropic', role: 'Chief Executive Officer', eventDate: '2021-01-01' }],
+        SPOKE_AT: [{ id: 's1', name: 'AI Summit', eventDate: '2026-09-10', sourceTier: 'PRESS' }],
+        SPOKE_AT_DUP: []
+      },
+      incoming: {
+        CREATED_BY: [{ id: 'p1', name: 'Grok 3', entityType: 'Product' }]
+      }
+    }
+  };
+  const personTl = organizeDossierTimeline(data, 'person', '2026-11-20');
+  assert.equal(personTl.items[0].title, 'AI Summit');
+  assert.equal(personTl.items[0].isRecent, true);
+  assert.equal(personTl.items.every((it) => it.tier !== 'Not found in Cala'), true);
+  assert.ok(personTl.categories.some((c) => c.key === 'roles'));
+  assert.ok(personTl.categories.some((c) => c.key === 'press'));
+
+  const companyTl = organizeDossierTimeline(data, 'company', '2026-11-20');
+  assert.equal(companyTl.items[companyTl.items.length - 1].category, 'products');
+});
+
+test('organizeDossierSources ranks FILING > PRIMARY > PRESS > AGGREGATOR > CALA GRAPH', () => {
+  const res = organizeDossierSources([
+    { id: 's1', title: 'Wiki summary', sourceRank: 'AGGREGATOR', date: '2025-01-01' },
+    { id: 's2', title: 'SEC Form D', sourceTier: 'FILING', date: '2026-02-01' },
+    { id: 's2', title: 'SEC Form D dup', sourceTier: 'FILING', date: '2026-02-01' },
+    { id: 's3', title: 'Company Blog', sourceRank: 'PRIMARY', date: '2026-05-01' }
+  ]);
+  assert.equal(res.counts.all, 3);
+  assert.equal(res.counts.FILING, 1);
+  assert.equal(res.counts.PRIMARY, 1);
+  assert.equal(res.items[0].tier, 'FILING');
+  assert.equal(res.items[1].tier, 'PRIMARY');
+  assert.equal(res.items[2].tier, 'AGGREGATOR');
 });

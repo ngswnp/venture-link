@@ -1393,3 +1393,743 @@ export function buildDossierEntityConfig(entityKind = "Company", counts = {}) {
     ]
   };
 }
+
+const DOSSIER_RELATION_LABELS = {
+  IS_CEO_OF: "Chief Executive Officer",
+  IS_CTO_OF: "Chief Technology Officer",
+  IS_CFO_OF: "Chief Financial Officer",
+  IS_COO_OF: "Chief Operating Officer",
+  IS_CMO_OF: "Chief Marketing Officer",
+  IS_CSO_OF: "CSO",
+  IS_CCO_OF: "CCO",
+  IS_CRO_OF: "CRO",
+  IS_CIO_OF: "CIO",
+  IS_VICEPRESIDENT_OF: "Vice President",
+  IS_VICE_PRESIDENT_OF: "Vice President",
+  IS_PRESIDENT_OF: "President",
+  IS_CHAIRMAN_OF: "Chairman",
+  IS_DIRECTOR_OF: "Board Director",
+  IS_BOARD_MEMBER_OF: "Board Member",
+  IS_MEMBER_OF: "Board / Member",
+  PARTNERED_WITH: "Partnered with",
+  COMPETES_WITH: "Competitor",
+  WORKS_AT: "Team / Leadership",
+  WORKED_AT: "Team / Leadership",
+  SPOKE_AT: "Speaker",
+  FEATURED_IN: "Featured in",
+  STUDIED_AT: "Alumni",
+  RECEIVED_AWARD: "Award",
+  PARTICIPATES_IN_CORPORATE_EVENT: "Corporate Event",
+  PARTICIPATES_IN_FUNDING_ROUND: "Funding Round",
+  OPERATES_IN_INDUSTRY: "Shared Sector",
+  HAS_HEADQUARTERS_IN: "Shared HQ Region",
+  HAS_PRESENCE_IN: "Shared Presence",
+  HAS_NATIONALITY: "Nationality",
+  CREATED_BY: "Product / Model",
+  DESIGNED_BY: "Product / Model",
+  MANUFACTURED_BY: "Product / Model",
+  OPERATED_BY: "Product / Model",
+  PUBLISHED_BY: "Publication",
+  DIRECT_1_HOP: "Direct link",
+  SHARED_BRIDGE: "Shared Bridge",
+  DATED_MILESTONE: "Dated Milestone"
+};
+
+const RELATION_ACRONYM_TOKENS = new Set([
+  "AI", "CEO", "CTO", "CFO", "COO", "CMO", "CSO", "CCO", "CRO", "CIO",
+  "VP", "IP", "LP", "GP", "VC", "HQ", "US", "UK", "EU", "R&D", "M&A"
+]);
+
+const CONTEXTUAL_RELATION_RE = /(?:OPERATES_IN_INDUSTRY|HAS_HEADQUARTERS_IN|HAS_PRESENCE_IN|HAS_NATIONALITY)/i;
+
+function extractDossierTier(record = {}) {
+  const candidates = [
+    record?.topSourceRank,
+    record?.sourceTier,
+    record?.source_tier,
+    record?.sourceRank,
+    record?.source_rank,
+    record?.tier,
+    record?.rank,
+    ...(Array.isArray(record?.sources)
+      ? record.sources.map((s) => s?.sourceRank || s?.source_rank || s?.sourceTier || s?.source_tier || s?.tier || s?.rank)
+      : [])
+  ]
+    .map((v) => String(v || "").trim().toUpperCase())
+    .filter(Boolean);
+  if (candidates.includes("FILING")) return "FILING";
+  if (candidates.includes("PRIMARY")) return "PRIMARY";
+  if (candidates.includes("PRESS")) return "PRESS";
+  if (candidates.includes("AGGREGATOR")) return "AGGREGATOR";
+  return "CALA GRAPH";
+}
+
+function tierRankValue(tier = "") {
+  return LEDGER_TIER_RANK[String(tier || "").toUpperCase()] || 0;
+}
+
+function humanizeCodeToken(code = "") {
+  const words = String(code || "")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!words.length) return "";
+  return words
+    .map((w, idx) => {
+      const up = w.toUpperCase();
+      if (RELATION_ACRONYM_TOKENS.has(up)) return up;
+      const low = w.toLowerCase();
+      if (idx > 0 && idx < words.length - 1 && MINOR_LOWERCASE_WORDS.has(low)) return low;
+      return low.charAt(0).toUpperCase() + low.slice(1);
+    })
+    .join(" ");
+}
+
+function formatDossierEntityName(rawName = "") {
+  const s = String(rawName || "").replace(/\s+/g, " ").trim();
+  if (!s) return "";
+  if (/^[A-Z0-9_]{6,}$/.test(s) && s.includes("_")) {
+    return humanizeCodeToken(s);
+  }
+  return formatInstitutionalEntityName(s) || s;
+}
+
+/**
+ * Translates raw Cala relation enums (including compound 2-hop "A / B" labels)
+ * into clean, readable institutional English strings.
+ */
+export function humanizeCalaRelation(rawRel = "", direction = "") {
+  const clean = String(rawRel || "").replace(/\s+/g, " ").trim();
+  if (!clean) return "Verified Cala link";
+
+  const dirs = String(direction || "")
+    .split("/")
+    .map((d) => d.trim().toLowerCase());
+
+  const mapSingle = (part, dir = "") => {
+    const token = String(part || "").trim();
+    if (!token) return "";
+    const code = token.toUpperCase().replace(/[\s-]+/g, "_");
+    if (code === "FOUNDED") return dir === "incoming" ? "Founded by" : "Founder";
+    if (code === "CO_FOUNDED") return dir === "incoming" ? "Co-founded by" : "Co-Founder";
+    if (code === "INVESTED_IN") return dir === "incoming" ? "Backed by" : "Invested in";
+    if (code === "ACQUIRED") return dir === "incoming" ? "Acquired by" : "Acquired";
+    if (DOSSIER_RELATION_LABELS[code]) return DOSSIER_RELATION_LABELS[code];
+    if (/^[A-Z0-9_]+$/.test(code) && token.includes("_")) {
+      return humanizeCodeToken(token);
+    }
+    if (token === token.toUpperCase() && token.length >= 3) {
+      return humanizeCodeToken(token);
+    }
+    return token;
+  };
+
+  if (clean.includes("/")) {
+    const rawParts = clean.split("/").map((p) => p.trim()).filter(Boolean);
+    const upperJoin = rawParts.map((p) => p.toUpperCase().replace(/[\s-]+/g, "_")).join(" / ");
+    if (upperJoin === "INVESTED_IN / INVESTED_IN") return "Shared Investor";
+    if (upperJoin === "WORKED_AT / WORKED_AT" || upperJoin === "WORKS_AT / WORKS_AT") {
+      return "Shared Leadership / Alumni";
+    }
+    const mapped = rawParts.map((p, idx) => mapSingle(p, dirs[idx] ?? dirs[0] ?? "")).filter(Boolean);
+    const deduped = [];
+    for (const label of mapped) {
+      if (!deduped.some((x) => x.toLowerCase() === label.toLowerCase())) {
+        deduped.push(label);
+      }
+    }
+    return deduped.join(" · ") || clean;
+  }
+
+  return mapSingle(clean, dirs[0] || "") || clean;
+}
+
+/**
+ * Consolidates & deduplicates verified dossier connections + map edges by (hopType, target, bridge),
+ * separates contextual sector/HQ/nationality taxonomy overlap from substantive relationships,
+ * and annotates live map presence for one-click navigation.
+ */
+export function organizeDossierConnections(remoteConns = [], mapEdges = [], options = {}) {
+  const selfId = String(options.selfId || "").trim();
+  const selfNameLow = formatDossierEntityName(options.selfName || "").toLowerCase();
+  const mapNodes = Array.isArray(options.mapNodes) ? options.mapNodes : [];
+  const mapNodeById = new Map();
+  const mapNodeByName = new Map();
+  for (const n of mapNodes) {
+    if (!n || !n.id || String(n.id).startsWith("group-hub:") || n.kind === "group-hub") continue;
+    mapNodeById.set(String(n.id), n);
+    const nm = formatDossierEntityName(n.name || n.label || "").toLowerCase();
+    if (nm) mapNodeByName.set(nm, n);
+  }
+
+  const edgeLookupByTarget = new Map();
+  for (const e of Array.isArray(mapEdges) ? mapEdges : []) {
+    if (!e || !e.id || String(e.id).startsWith("tree-spoke-")) continue;
+    const otherId = String(e.from) === selfId ? String(e.to || "") : String(e.from || "");
+    if (otherId && otherId !== selfId && !edgeLookupByTarget.has(otherId)) {
+      edgeLookupByTarget.set(otherId, String(e.id));
+    }
+  }
+
+  const isSelfEntity = (id, name) => {
+    if (id && selfId && id === selfId) return true;
+    const nmLow = String(name || "").toLowerCase();
+    return Boolean(nmLow && selfNameLow && nmLow === selfNameLow);
+  };
+
+  const merged = new Map();
+  const nameKeyToMergedKey = new Map();
+
+  const upsertRow = (entry) => {
+    if (!entry || !entry.targetName || isSelfEntity(entry.targetId, entry.targetName)) return;
+    const normTarget = entry.targetName.toLowerCase();
+    const normBridge = entry.bridgeName ? entry.bridgeName.toLowerCase() : "";
+    let key = entry.targetId
+      ? `${entry.hopType}:id:${entry.targetId.toLowerCase()}:${normBridge}`
+      : `${entry.hopType}:nm:${normTarget}:${normBridge}`;
+    const aliasKey = `${entry.hopType}:nm:${normTarget}:${normBridge}`;
+    if (!merged.has(key) && nameKeyToMergedKey.has(aliasKey)) {
+      key = nameKeyToMergedKey.get(aliasKey);
+    }
+
+    if (!merged.has(key)) {
+      const mapMatch =
+        (entry.targetId && mapNodeById.get(entry.targetId)) ||
+        mapNodeByName.get(normTarget) ||
+        null;
+      const bridgeMapMatch =
+        (entry.bridgeId && mapNodeById.get(entry.bridgeId)) ||
+        (normBridge && mapNodeByName.get(normBridge)) ||
+        null;
+      const resolvedTargetId = entry.targetId || (mapMatch ? String(mapMatch.id) : "");
+      const resolvedEdgeId =
+        entry.focusEdgeId ||
+        (resolvedTargetId ? edgeLookupByTarget.get(resolvedTargetId) || "" : "") ||
+        (entry.bridgeId ? edgeLookupByTarget.get(entry.bridgeId) || "" : "");
+
+      merged.set(key, {
+        key,
+        targetId: resolvedTargetId,
+        targetName: entry.targetName,
+        hopType: entry.hopType,
+        bridgeId: entry.bridgeId || (bridgeMapMatch ? String(bridgeMapMatch.id) : ""),
+        bridgeName: entry.bridgeName || "",
+        roles: [],
+        roleSet: new Set(),
+        latestDate: "",
+        latestIsoSort: "",
+        bestTier: entry.tier || "CALA GRAPH",
+        isHighTier: entry.tier === "FILING" || entry.tier === "PRIMARY",
+        isContextual: Boolean(entry.isContextual),
+        onMap: Boolean(mapMatch || bridgeMapMatch || resolvedEdgeId),
+        focusEdgeId: resolvedEdgeId,
+        focusConnIdx: typeof entry.focusConnIdx === "number" ? entry.focusConnIdx : null,
+        sourceCount: 0,
+        sourceIds: new Set()
+      });
+      nameKeyToMergedKey.set(aliasKey, key);
+    }
+
+    const bucket = merged.get(key);
+    if (!bucket.targetId && entry.targetId) {
+      bucket.targetId = entry.targetId;
+      if (!bucket.focusEdgeId && edgeLookupByTarget.has(entry.targetId)) {
+        bucket.focusEdgeId = edgeLookupByTarget.get(entry.targetId);
+      }
+      if (mapNodeById.has(entry.targetId) || bucket.focusEdgeId) bucket.onMap = true;
+    }
+    if (!bucket.focusEdgeId && entry.focusEdgeId) {
+      bucket.focusEdgeId = entry.focusEdgeId;
+      bucket.onMap = true;
+    }
+    if (bucket.focusConnIdx === null && typeof entry.focusConnIdx === "number") {
+      bucket.focusConnIdx = entry.focusConnIdx;
+    }
+    if (!entry.isContextual) {
+      bucket.isContextual = false;
+    }
+
+    const roleLabel = String(entry.roleLabel || "").trim();
+    if (roleLabel && !bucket.roleSet.has(roleLabel.toLowerCase())) {
+      bucket.roleSet.add(roleLabel.toLowerCase());
+      bucket.roles.push(roleLabel);
+    }
+
+    if (entry.date) {
+      const isoSort = normalizeIsoDateForSort(entry.date);
+      if (!bucket.latestDate || isoSort > bucket.latestIsoSort) {
+        bucket.latestDate = entry.date;
+        bucket.latestIsoSort = isoSort;
+      }
+    }
+
+    if (tierRankValue(entry.tier) > tierRankValue(bucket.bestTier)) {
+      bucket.bestTier = entry.tier;
+      bucket.isHighTier = entry.tier === "FILING" || entry.tier === "PRIMARY";
+    }
+
+    for (const sid of entry.sourceIds || []) {
+      const s = String(sid || "").trim();
+      if (s) bucket.sourceIds.add(s);
+    }
+    bucket.sourceCount = Math.max(bucket.sourceCount + (entry.sourceCountDelta || 0), bucket.sourceIds.size || 1);
+  };
+
+  (Array.isArray(remoteConns) ? remoteConns : []).forEach((conn, idx) => {
+    if (!conn) return;
+    const rawRel = String(conn.relation || conn.relationship || conn.connectionType || "").trim();
+    const isBridge =
+      conn.connectionType === "shared_bridge" ||
+      (Array.isArray(conn.path) && conn.path.length >= 3) ||
+      Boolean(conn.bridge?.name || conn.bridge?.id);
+    const bridgeObj = conn.bridge || (Array.isArray(conn.path) && conn.path.length >= 3 ? conn.path[1] : null);
+    const bridgeId = String(bridgeObj?.id || bridgeObj?.entityId || "").trim();
+    const bridgeName = formatDossierEntityName(bridgeObj?.name || bridgeObj?.label || "");
+    const targetId = String(conn.entityId || conn.id || "").trim();
+    const lastStep = Array.isArray(conn.path) && conn.path.length ? conn.path[conn.path.length - 1] : null;
+    const targetName = formatDossierEntityName(conn.entityName || conn.name || conn.label || lastStep?.name || "");
+    const isCtx = CONTEXTUAL_RELATION_RE.test(rawRel);
+    const sIds = [
+      ...(Array.isArray(conn.sourceIds) ? conn.sourceIds : []),
+      ...(Array.isArray(conn.sources) ? conn.sources.map((s) => s?.id || s?.sourceId || s?.url) : []),
+      conn.sourceId
+    ].filter(Boolean);
+
+    upsertRow({
+      targetId,
+      targetName,
+      hopType: isBridge && bridgeName ? "bridge" : "direct",
+      bridgeId,
+      bridgeName: isBridge ? bridgeName : "",
+      roleLabel: humanizeCalaRelation(rawRel, conn.direction),
+      date: String(conn.eventDate || conn.date || "").trim(),
+      tier: extractDossierTier(conn),
+      isContextual: isCtx,
+      focusConnIdx: idx,
+      sourceIds: sIds,
+      sourceCountDelta: sIds.length ? 0 : 1
+    });
+  });
+
+  for (const edge of Array.isArray(mapEdges) ? mapEdges : []) {
+    if (!edge || String(edge.id || "").startsWith("tree-spoke-")) continue;
+    const fromId = String(edge.from || "").trim();
+    const toId = String(edge.to || "").trim();
+    if (!fromId || !toId || fromId.startsWith("group-hub:") || toId.startsWith("group-hub:")) continue;
+    const otherId = fromId === selfId ? toId : toId === selfId ? fromId : "";
+    if (!otherId) continue;
+    const nodeObj = mapNodeById.get(otherId);
+    const targetName = formatDossierEntityName(nodeObj?.name || nodeObj?.label || edge.targetName || otherId);
+    const rawRel = String(edge.relation || edge.label || "").trim();
+    const dir = fromId === selfId ? "outgoing" : "incoming";
+    const sIds = [
+      ...(Array.isArray(edge.sourceIds) ? edge.sourceIds : []),
+      ...(Array.isArray(edge.evidenceSources) ? edge.evidenceSources.map((s) => s?.id || s?.sourceId) : [])
+    ].filter(Boolean);
+
+    upsertRow({
+      targetId: otherId,
+      targetName,
+      hopType: "direct",
+      bridgeId: "",
+      bridgeName: "",
+      roleLabel: rawRel ? humanizeCalaRelation(rawRel, dir) : String(edge.detail || "Verified Cala link"),
+      date: String(edge.date || edge.roundDate || "").trim(),
+      tier: extractDossierTier(edge),
+      isContextual: CONTEXTUAL_RELATION_RE.test(rawRel),
+      focusEdgeId: String(edge.id),
+      sourceIds: sIds,
+      sourceCountDelta: sIds.length ? 0 : 1
+    });
+  }
+
+  const sortBucket = (a, b) => {
+    if (a.hopType !== b.hopType) return a.hopType === "direct" ? -1 : 1;
+    if (a.isHighTier !== b.isHighTier) return a.isHighTier ? -1 : 1;
+    const tierDiff = tierRankValue(b.bestTier) - tierRankValue(a.bestTier);
+    if (tierDiff !== 0) return tierDiff;
+    if (b.roles.length !== a.roles.length) return b.roles.length - a.roles.length;
+    if (b.latestIsoSort !== a.latestIsoSort) return b.latestIsoSort.localeCompare(a.latestIsoSort);
+    return a.targetName.localeCompare(b.targetName);
+  };
+
+  const items = [...merged.values()]
+    .map(({ roleSet, latestIsoSort, sourceIds, ...rest }) => rest)
+    .sort(sortBucket);
+  const substantiveItems = items.filter((it) => !it.isContextual);
+  const contextualItems = items.filter((it) => it.isContextual);
+
+  return {
+    items,
+    substantiveItems,
+    contextualItems,
+    stats: {
+      total: items.length,
+      totalSubstantive: substantiveItems.length,
+      directCount: substantiveItems.filter((it) => it.hopType === "direct").length,
+      bridgeCount: substantiveItems.filter((it) => it.hopType === "bridge").length,
+      highTierCount: substantiveItems.filter((it) => it.isHighTier).length,
+      contextualCount: contextualItems.length
+    }
+  };
+}
+
+const EXEC_ROLE_RE = /\b(founder|co-founder|ceo|cto|cfo|coo|cmo|cso|cco|cro|cio|president|chair|chairman|partner|director|board|chief)\b/i;
+
+/**
+ * Deduplicates People/Leadership records by ID/name, merges multiple roles (e.g. Founder + CEO)
+ * into clean role badges, and sorts executives ahead of team members.
+ */
+export function organizeDossierPeople(people = []) {
+  const byKey = new Map();
+  const nameToKey = new Map();
+
+  for (const p of Array.isArray(people) ? people : []) {
+    if (!p) continue;
+    const id = String(p.id || p.entityId || p.entity_id || "").trim();
+    const rawName = String(p.name || p.label || p.entityName || "").trim();
+    const name = formatDossierEntityName(rawName);
+    if (!name) continue;
+    const normName = name.toLowerCase();
+    let key = id ? `id:${id.toLowerCase()}` : `nm:${normName}`;
+    if (!byKey.has(key) && nameToKey.has(normName)) {
+      key = nameToKey.get(normName);
+    }
+
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        id,
+        name,
+        roles: [],
+        roleSet: new Set(),
+        since: "",
+        until: "",
+        priorCompany: "",
+        bestTier: "CALA GRAPH",
+        isExecutive: false
+      });
+      nameToKey.set(normName, key);
+    }
+
+    const row = byKey.get(key);
+    if (!row.id && id) row.id = id;
+
+    const rawRole = String(p.role || p.title || p.jobTitle || "").trim();
+    const rawRel = String(p.relation || p.relationship || "").trim();
+    const relLabel = rawRel ? humanizeCalaRelation(rawRel, p.direction) : "";
+    const candidates = [];
+    if (rawRole && !/^executive\s*\/\s*operator$/i.test(rawRole)) {
+      candidates.push(rawRole);
+    } else if (relLabel) {
+      candidates.push(relLabel);
+    } else if (rawRole) {
+      candidates.push(rawRole);
+    }
+    if (relLabel && rawRole && relLabel.toLowerCase() !== rawRole.toLowerCase()) {
+      if (!/team\s*\/\s*leadership/i.test(relLabel)) {
+        candidates.push(relLabel);
+      }
+    }
+
+    for (const c of candidates) {
+      const cleanC = String(c || "").trim();
+      if (!cleanC || row.roleSet.has(cleanC.toLowerCase())) continue;
+      row.roleSet.add(cleanC.toLowerCase());
+      row.roles.push(cleanC);
+    }
+    if (EXEC_ROLE_RE.test(`${rawRole} ${relLabel} ${rawRel}`)) {
+      row.isExecutive = true;
+    }
+
+    const since = String(p.validSince || p.since || "").trim();
+    const until = String(p.validUntil || p.until || "").trim();
+    const prior = formatDossierEntityName(String(p.priorCompany || p.prior_company || "").trim());
+    if (since && (!row.since || since < row.since)) row.since = since;
+    if (until && (!row.until || until > row.until)) row.until = until;
+    if (prior && !row.priorCompany) row.priorCompany = prior;
+
+    const tier = extractDossierTier(p);
+    if (tierRankValue(tier) > tierRankValue(row.bestTier)) {
+      row.bestTier = tier;
+    }
+  }
+
+  const items = [...byKey.values()]
+    .map(({ roleSet, isExecutive, ...rest }) => ({
+      ...rest,
+      roles: rest.roles.length ? rest.roles : ["Team Member"],
+      tierBucket: isExecutive ? "executive" : "team"
+    }))
+    .sort((a, b) => {
+      if (a.tierBucket !== b.tierBucket) return a.tierBucket === "executive" ? -1 : 1;
+      const tierDiff = tierRankValue(b.bestTier) - tierRankValue(a.bestTier);
+      if (tierDiff !== 0) return tierDiff;
+      if (b.roles.length !== a.roles.length) return b.roles.length - a.roles.length;
+      return a.name.localeCompare(b.name);
+    });
+
+  return {
+    items,
+    stats: {
+      total: items.length,
+      executiveCount: items.filter((it) => it.tierBucket === "executive").length,
+      teamCount: items.filter((it) => it.tierBucket === "team").length
+    }
+  };
+}
+
+const PRODUCT_ARTIFACT_RE = /(?:CREATED_BY|DESIGNED_BY|MANUFACTURED_BY|OPERATED_BY|PUBLISHED_BY)/i;
+
+const TIMELINE_CATEGORY_META = {
+  roles: { label: "Roles & Board", order: 1 },
+  investments: { label: "Investments", order: 2 },
+  press: { label: "Speaking & Press", order: 3 },
+  deals: { label: "Deals & Rounds", order: 1 },
+  corporate: { label: "Corporate & Milestones", order: 2 },
+  team: { label: "Team & Leadership", order: 3 },
+  funding: { label: "Funding & Deals", order: 2 },
+  leadership: { label: "Leadership & Team", order: 3 },
+  products: { label: "Products & Output", order: 4 }
+};
+
+function monthsBetweenIso(isoA = "", isoB = "") {
+  if (!isoA || !isoB) return Infinity;
+  const a = new Date(isoA);
+  const b = new Date(isoB);
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return Infinity;
+  return (b.getTime() - a.getTime()) / (1000 * 60 * 60 * 24 * 30.4375);
+}
+
+/**
+ * Organizes corporate events, financial metrics, and Cala relationships into
+ * deduplicated chronological entries with archetype-aware category tabs.
+ */
+export function organizeDossierTimeline(data = {}, archetype = "company", referenceDate = null) {
+  const refIso = normalizeIsoDateForSort(referenceDate || "") || new Date().toISOString().slice(0, 10);
+  const corpEvents = Array.isArray(data?.corporateEvents) ? data.corporateEvents : [];
+  const finMetrics = Array.isArray(data?.financialMetrics) ? data.financialMetrics : [];
+  const empSeries = Array.isArray(data?.employeeCountSeries) ? data.employeeCountSeries : [];
+
+  const relList = [];
+  const rawRels = data?.relationships;
+  if (Array.isArray(rawRels)) {
+    for (const r of rawRels) if (r) relList.push(r);
+  } else if (rawRels && typeof rawRels === "object") {
+    for (const [direction, relations] of Object.entries(rawRels)) {
+      if (Array.isArray(relations)) {
+        for (const r of relations) if (r) relList.push({ ...r, direction });
+      } else if (relations && typeof relations === "object") {
+        for (const [relation, records] of Object.entries(relations)) {
+          for (const r of Array.isArray(records) ? records : []) {
+            if (r) relList.push({ ...r, relation, direction });
+          }
+        }
+      }
+    }
+  }
+
+  const classifyCategory = (sourceKind, rawRel = "") => {
+    const up = String(rawRel || "").toUpperCase();
+    if (archetype === "person") {
+      if (/(?:INVESTED|FUNDING|ROUND)/.test(up)) return "investments";
+      if (/(?:SPOKE|FEATURED|AWARD|EVENT|PRESS|NATIONALITY)/.test(up) || sourceKind === "event") return "press";
+      return "roles";
+    }
+    if (archetype === "investor") {
+      if (/(?:INVESTED|FUNDING|ROUND)/.test(up) || sourceKind === "metric") return "deals";
+      if (/(?:WORK|MEMBER|CEO|CTO|CFO|COO|CMO|VP|PRESIDENT|CHAIR|FOUND|DIRECTOR|BOARD)/.test(up)) return "team";
+      return "corporate";
+    }
+    if (PRODUCT_ARTIFACT_RE.test(up)) return "products";
+    if (/(?:INVESTED|FUNDING|ROUND)/.test(up) || sourceKind === "metric") return "funding";
+    if (/(?:WORK|MEMBER|CEO|CTO|CFO|COO|CMO|CSO|CCO|CRO|CIO|VP|PRESIDENT|CHAIR|FOUND|DIRECTOR|BOARD|STUDIED)/.test(up)) {
+      return "leadership";
+    }
+    return "corporate";
+  };
+
+  const dedup = new Map();
+  const pushItem = ({ title, subtitle, date, category, tier, entityId, isProductArtifact }) => {
+    const cleanTitle = String(title || "").trim();
+    if (!cleanTitle) return;
+    const cleanSub = String(subtitle || "").trim();
+    const cleanDate = String(date || "").trim();
+    const sortDate = normalizeIsoDateForSort(cleanDate);
+    const monthsOld = sortDate ? monthsBetweenIso(sortDate, refIso) : Infinity;
+    const isRecent = Boolean(sortDate && monthsOld <= 18 && monthsOld >= -6);
+    const key = `${cleanTitle.toLowerCase()}::${cleanSub.toLowerCase()}::${cleanDate}`;
+
+    if (!dedup.has(key)) {
+      dedup.set(key, {
+        title: cleanTitle,
+        subtitle: cleanSub,
+        date: cleanDate,
+        sortDate,
+        category,
+        tier: tier || "CALA GRAPH",
+        entityId: String(entityId || "").trim(),
+        isRecent,
+        isProductArtifact: Boolean(isProductArtifact)
+      });
+      return;
+    }
+    const existing = dedup.get(key);
+    if (tierRankValue(tier) > tierRankValue(existing.tier)) existing.tier = tier;
+    if (!existing.entityId && entityId) existing.entityId = String(entityId).trim();
+  };
+
+  for (const ev of corpEvents) {
+    if (!ev) continue;
+    const title = formatDossierEntityName(ev.name || ev.label || ev.title || ev.type || ev.eventType || "Corporate Event");
+    const subParts = [
+      ev.type || ev.eventType ? humanizeCalaRelation(ev.type || ev.eventType) : "",
+      ev.description && ev.description !== ev.title ? String(ev.description).trim() : ""
+    ].filter((v) => v && v.toLowerCase() !== title.toLowerCase());
+    pushItem({
+      title,
+      subtitle: subParts.join(" · "),
+      date: ev.date || ev.eventDate || "",
+      category: classifyCategory("event", ev.type || ev.eventType || ""),
+      tier: extractDossierTier(ev),
+      entityId: ev.id || ev.entityId || "",
+      isProductArtifact: false
+    });
+  }
+
+  for (const fm of finMetrics) {
+    if (!fm) continue;
+    const title = formatDossierEntityName(fm.name || fm.label || fm.metric || fm.type || "Financial Metric");
+    const valStr = [fm.value ?? fm.amount, fm.units || fm.currency].filter((v) => v !== null && v !== undefined && v !== "").join(" ");
+    pushItem({
+      title,
+      subtitle: String(valStr || fm.description || "").trim(),
+      date: fm.date || fm.eventDate || "",
+      category: classifyCategory("metric", "FUNDING"),
+      tier: extractDossierTier(fm),
+      entityId: "",
+      isProductArtifact: false
+    });
+  }
+
+  for (const rel of relList) {
+    if (!rel) continue;
+    const rawRel = String(rel.relation || rel.relationship || "").trim();
+    const title = formatDossierEntityName(rel.name || rel.label || rel.entityName || rel.title || rel.description || "");
+    const relLabel = rawRel ? humanizeCalaRelation(rawRel, rel.direction) : "";
+    const roleLabel = String(rel.role || rel.title || "").trim();
+    const cleanRole =
+      roleLabel &&
+      roleLabel.toLowerCase() !== title.toLowerCase() &&
+      roleLabel.toLowerCase() !== relLabel.toLowerCase() &&
+      !/^executive\s*\/\s*operator$/i.test(roleLabel)
+        ? roleLabel
+        : "";
+    const subtitle = [relLabel, cleanRole].filter(Boolean).join(" · ");
+    pushItem({
+      title: title || relLabel,
+      subtitle: title ? subtitle : "",
+      date: rel.eventDate || rel.date || rel.validSince || rel.since || "",
+      category: classifyCategory("rel", rawRel),
+      tier: extractDossierTier(rel),
+      entityId: rel.id || rel.entityId || rel.entity_id || "",
+      isProductArtifact: PRODUCT_ARTIFACT_RE.test(rawRel)
+    });
+  }
+
+  const items = [...dedup.values()].sort((a, b) => {
+    const aDated = Boolean(a.sortDate);
+    const bDated = Boolean(b.sortDate);
+    if (aDated !== bDated) return aDated ? -1 : 1;
+    if (aDated && bDated && a.sortDate !== b.sortDate) {
+      return b.sortDate.localeCompare(a.sortDate);
+    }
+    if (a.isProductArtifact !== b.isProductArtifact) return a.isProductArtifact ? 1 : -1;
+    const tierDiff = tierRankValue(b.tier) - tierRankValue(a.tier);
+    if (tierDiff !== 0) return tierDiff;
+    return a.title.localeCompare(b.title);
+  });
+
+  const countByCat = new Map();
+  for (const it of items) {
+    countByCat.set(it.category, (countByCat.get(it.category) || 0) + 1);
+  }
+  const categories = [...countByCat.entries()]
+    .map(([key, count]) => ({
+      key,
+      label: TIMELINE_CATEGORY_META[key]?.label || humanizeCodeToken(key),
+      order: TIMELINE_CATEGORY_META[key]?.order || 9,
+      count
+    }))
+    .sort((a, b) => a.order - b.order);
+
+  const datedCount = items.filter((it) => Boolean(it.sortDate)).length;
+  const recentCount = items.filter((it) => it.isRecent).length;
+  return {
+    items,
+    categories,
+    stats: {
+      total: items.length,
+      datedCount,
+      recentCount,
+      undatedCount: items.length - datedCount,
+      metricsCount: empSeries.length + finMetrics.length
+    }
+  };
+}
+
+/**
+ * Deduplicates, normalizes, and ranks Cala sources by provenance strength and recency.
+ */
+export function organizeDossierSources(sources = []) {
+  const unique = new Map();
+  const metaToKey = new Map();
+  for (const src of Array.isArray(sources) ? sources : []) {
+    if (!src) continue;
+    const rawUrl = String(src.url || src.document || src.link || "").trim();
+    const safeUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : "";
+    const title = String(src.title || src.name || src.publisher || src.id || safeUrl || "").trim();
+    if (!title && !safeUrl) continue;
+    const publisher = String(src.publisher || "").trim();
+    const date = String(src.date || src.publishedAt || "").trim();
+    const metaSig = `${title.toLowerCase()}::${publisher.toLowerCase()}::${date}`;
+    let key = String(safeUrl || src.id || title).trim().toLowerCase();
+    if (!safeUrl && metaToKey.has(metaSig)) {
+      key = metaToKey.get(metaSig);
+    }
+    const tier = extractDossierTier(src);
+    if (!unique.has(key)) {
+      unique.set(key, {
+        id: String(src.id || "").trim(),
+        title,
+        publisher,
+        date,
+        sortDate: normalizeIsoDateForSort(date),
+        url: safeUrl,
+        tier
+      });
+      if (!safeUrl) metaToKey.set(metaSig, key);
+    } else {
+      const existing = unique.get(key);
+      if (tierRankValue(tier) > tierRankValue(existing.tier)) existing.tier = tier;
+      if (!existing.url && safeUrl) existing.url = safeUrl;
+    }
+  }
+
+  const items = [...unique.values()].sort((a, b) => {
+    const tierDiff = tierRankValue(b.tier) - tierRankValue(a.tier);
+    if (tierDiff !== 0) return tierDiff;
+    if (b.sortDate !== a.sortDate) return b.sortDate.localeCompare(a.sortDate);
+    return a.title.localeCompare(b.title);
+  });
+
+  const counts = { all: items.length, FILING: 0, PRIMARY: 0, PRESS: 0, AGGREGATOR: 0 };
+  for (const it of items) {
+    if (counts[it.tier] !== undefined) counts[it.tier] += 1;
+  }
+
+  return {
+    items: items.map(({ sortDate, ...rest }) => rest),
+    counts
+  };
+}
