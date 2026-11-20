@@ -1836,7 +1836,7 @@ export function createAppServer(options = {}) {
               primaryTargetId,
               referenceDate: body.referenceDate || null
             },
-            { hideMegaHubs: body.hideMegaHubs }
+            { hideMegaHubs: body.hideMegaHubs, expandAllEntities: Boolean(body.expandAllEntities) }
           );
           const { allRanked, ...publicPayload } = result;
           sendJson(res, 200, {

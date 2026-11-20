@@ -5750,13 +5750,26 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
     String(right.date || '').localeCompare(String(left.date || '')) ||
     String(left.label || '').localeCompare(String(right.label || '')) ||
     String(left.id).localeCompare(String(right.id));
+  const availableEntityIds = new Set();
+  for (const edge of edges) {
+    if (!edge) continue;
+    if (edge.from && !focalById.has(edge.from) && edge.from !== perspectiveId) availableEntityIds.add(edge.from);
+    if (edge.to && !focalById.has(edge.to) && edge.to !== perspectiveId) availableEntityIds.add(edge.to);
+  }
+  const totalAvailableEntities = availableEntityIds.size;
+
+  const expandAll = Boolean(options.expandAllEntities);
   const selectedEdgeIds = new Set(
     edges
       .filter((edge) => edge.isSharedBridge || edge.touchesPerspective || edge.isPerspectiveBridge || directFocalEdge(edge))
       .map((edge) => edge.id)
   );
-  const maxNonsharedPerGroup = focalEntityIds.length === 1 ? 3 : 2;
-  const maxNonsharedPerFocal = focalEntityIds.length === 1 ? 12 : focalEntityIds.length <= 3 ? 9 : 6;
+  const maxNonsharedPerGroup = expandAll
+    ? (focalEntityIds.length === 1 ? 24 : 12)
+    : (focalEntityIds.length === 1 ? 3 : 2);
+  const maxNonsharedPerFocal = expandAll
+    ? (focalEntityIds.length === 1 ? 64 : focalEntityIds.length <= 3 ? 28 : 16)
+    : (focalEntityIds.length === 1 ? 12 : focalEntityIds.length <= 3 ? 9 : 6);
   for (const focalId of focalEntityIds) {
     const candidates = edges
       .filter((edge) => edge.focalEntityId === focalId && !edge.isSharedBridge && !directFocalEdge(edge))
@@ -5964,6 +5977,7 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
     anchor,
     focalEntityIds,
     analysisMode,
+    expandAllEntities: expandAll,
     perspectiveEntity: perspectiveContext,
     primaryTargetId,
     referenceDate,
@@ -5979,6 +5993,7 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
     stats: {
       renderedStartups: Math.max(0, nodeMap.size - focalEntities.length),
       renderedEntities: Math.max(0, nodeMap.size - focalEntities.length),
+      totalAvailableEntities,
       renderedFocalEntities: focalEntities.length,
       renderedSharedBridges: displayedSharedBridgeNodeIds.length,
       renderedBridges: displayEdges.length,

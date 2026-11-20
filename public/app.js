@@ -18,24 +18,31 @@ import {
 import {
   buildChronologicalCatalystTimeline,
   buildCrossEntityOverlapMatrix,
+  buildDiligenceScopeKey,
+  buildDossierEntityConfig,
   buildIcDiligenceMemoMarkdown,
   buildOverlapMatrixCsv,
   buildShareableWorkspaceUrl,
   buildVerifiedConnectionsCsv,
   cleanInstitutionalProseNames,
+  computeDiligenceProgress,
   computeMapUniqueProvenance,
   connectionStarKey,
   filterAndSortLedgerRecords,
+  findShortestVerifiedPaths,
   formatInstitutionalEntityName,
   formatInstitutionalPath,
   matchClaudeFindingToRecord,
-  parseShareableWorkspaceParams
+  normalizeDiligenceState,
+  parseShareableWorkspaceParams,
+  searchMappedGraphNodes
 } from "./analystTools.js";
 
 const THEME_STORAGE_KEY = "rte_theme_v2";
 const MAP_STATE_STORAGE_KEY = "rte_entity_map_v2";
 const PERSPECTIVE_STORAGE_KEY = "rte_perspective_v1";
 const STARRED_CONNECTIONS_STORAGE_KEY = "vl_starred_conns_v1";
+const DILIGENCE_STORAGE_KEY = "venturelink.diligence.v1";
 const MISSING = "Not found in Cala";
 
 const STRUCTURAL_ROLE_META = {
@@ -197,6 +204,15 @@ const state = {
   decisionLedgerShowAll: false,
   matrixRoleFilter: "all",
   matrixQuery: "",
+  expandAllEntities: false,
+  mapFinderOpen: false,
+  mapFinderQuery: "",
+  mapFinderActiveIndex: 0,
+  pathTracerOpen: false,
+  pathTraceFromId: "",
+  pathTraceToId: "",
+  tracedPath: null,
+  diligenceStore: {},
   filtersPanelOpen: false,
   suggestItems: [],
   suggestTimer: null,
@@ -1485,11 +1501,13 @@ function layoutAnchorDirectSatellites(aNode, ap, items, spanDeg, posMap, usedSat
   });
   const count = ordered.length;
   if (!count) return;
-  const effectiveSpan = count === 1 ? 0 : Math.min(spanDeg, Math.max(46, count * 20));
+  const effectiveSpan = count === 1 ? 0 : Math.min(state.expandAllEntities ? Math.max(spanDeg, 165) : spanDeg, Math.max(46, count * 20));
   ordered.forEach((sat, idx) => {
     const frac = count === 1 ? 0.5 : idx / (count - 1);
     const deg = count === 1 ? ap.outAngle : ap.outAngle - effectiveSpan / 2 + frac * effectiveSpan;
-    const rad = count >= 5 && idx % 2 === 1 ? 286 : 212;
+    const rad = count > 10
+      ? 210 + (idx % 3) * 86
+      : count >= 5 && idx % 2 === 1 ? 286 : 212;
     const pt = polarToCartesian(ap.x, ap.y, rad, deg);
     const sm = estimateNodeBoxMetrics(sat, "entity", false, computeEntityOrbSize(sat, false));
     posMap.set(sat.id, {
@@ -1712,8 +1730,9 @@ function layoutBridgeMapNodes(bridgeMap) {
       })
       .sort((a, b) => Number(b.rarityScore || 0) - Number(a.rarityScore || 0));
 
+    const expandAll = Boolean(state.expandAllEntities);
     const cappedSatellites = [];
-    const perSectorCap = 8;
+    const perSectorCap = expandAll ? 28 : 8;
     const byRoleBuckets = Object.fromEntries(STRUCTURAL_SECTOR_ORDER.map((r) => [r, []]));
     for (const sat of satellites) {
       const bucket = byRoleBuckets[sat.placedRole] || byRoleBuckets.governance;
@@ -1770,7 +1789,14 @@ function layoutBridgeMapNodes(bridgeMap) {
       const uMax = sec.endDeg - pad;
       items.forEach((item, idx) => {
         const deg = items.length === 1 ? sec.midDeg : uMin + (idx / Math.max(1, items.length - 1)) * (uMax - uMin);
-        const ringR = items.length >= 3 && idx % 2 === 1 ? 336 : 254;
+        const rings = items.length > 12
+          ? [248, 358, 472, 592]
+          : items.length > 5
+            ? [248, 350, 456]
+            : items.length >= 3
+              ? [254, 336]
+              : [254];
+        const ringR = rings[idx % rings.length];
         const pt = polarToCartesian(CONSTELLATION_CX, CONSTELLATION_CY, ringR, deg);
         const sm = estimateNodeBoxMetrics(item, "entity", false, computeEntityOrbSize(item, false));
         posMap.set(item.id, {
@@ -1780,8 +1806,9 @@ function layoutBridgeMapNodes(bridgeMap) {
           sectorMinDeg: uMin,
           sectorMaxDeg: uMax,
           minRingR: 214,
-          maxRingR: 396,
+          maxRingR: expandAll ? 720 : 396,
           placedRole: role,
+          isTopUniqueLabel: idx < 5 || items.length <= 2,
           ...sm
         });
       });
@@ -1895,7 +1922,7 @@ function layoutBridgeMapNodes(bridgeMap) {
     const perpX = -dy / dist;
     const perpY = dx / dist;
 
-    sortedShared.slice(0, 14).forEach((n, idx, list) => {
+    sortedShared.slice(0, state.expandAllEntities ? 32 : 14).forEach((n, idx, list) => {
       const t = list.length === 1 ? 0 : idx - (list.length - 1) / 2;
       const along = idx % 2 === 0 ? -56 : 56;
       const perp = t * 84;
@@ -1911,7 +1938,7 @@ function layoutBridgeMapNodes(bridgeMap) {
       const ap = posMap.get(aNode.id);
       const items = (uniqueByAnchor.get(aNode.id) || [])
         .sort((a, b) => Number(b.rarityScore || 0) - Number(a.rarityScore || 0))
-        .slice(0, 10);
+        .slice(0, state.expandAllEntities ? 28 : 10);
       layoutAnchorDirectSatellites(aNode, ap, items, 138, posMap, placedSatIdSet);
     });
   } else {
@@ -1926,7 +1953,9 @@ function layoutBridgeMapNodes(bridgeMap) {
       posMap.set(aNode.id, { x: pt.x, y: pt.y, outAngle: deg, locked: true, ...am });
     });
 
-    const maxShared = Math.min(28, Math.max(16, countA * 4));
+    const maxShared = state.expandAllEntities
+      ? Math.min(48, Math.max(24, countA * 8))
+      : Math.min(28, Math.max(16, countA * 4));
     const slotByOwnerSig = new Map();
     let universalIdx = 0;
     sortedShared.slice(0, maxShared).forEach((n) => {
@@ -1961,7 +1990,9 @@ function layoutBridgeMapNodes(bridgeMap) {
       }
     });
 
-    const perAnchorLimit = countA <= 4 ? 8 : 6;
+    const perAnchorLimit = state.expandAllEntities
+      ? (countA <= 4 ? 22 : 14)
+      : (countA <= 4 ? 8 : 6);
     const span = Math.min(130, Math.max(54, Math.round(300 / countA)));
     anchorNodes.forEach((aNode) => {
       const ap = posMap.get(aNode.id);
@@ -2203,7 +2234,7 @@ function getIsolatedSetForNode(focusNodeId, layout) {
 function syncClearFocusButton() {
   const btn = $("#mapClearFocusBtn");
   if (!btn) return;
-  btn.hidden = !(state.selectedNodeId || state.selectedEdgeId);
+  btn.hidden = !(state.selectedNodeId || state.selectedEdgeId || state.tracedPath?.found);
 }
 
 function restoreDefaultMapStatus() {
@@ -2216,11 +2247,17 @@ function restoreDefaultMapStatus() {
 function clearMapIsolation(options = {}) {
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
+  if (!options.keepTrace) {
+    state.tracedPath = null;
+  }
   if (!options.keepHover) {
     state.hoveredNodeId = null;
     state.hoveredEdgeId = null;
   }
   applyPathLaserIsolation();
+  if (!options.keepTrace && typeof renderPathTracerResults === "function") {
+    renderPathTracerResults();
+  }
   const statusText = $("#mapStatus")?.textContent || "";
   if (statusText.includes("Focused signal on constellation map")) {
     restoreDefaultMapStatus();
@@ -2238,7 +2275,8 @@ function applyPathLaserIsolation() {
 
   const focusId = state.hoveredNodeId || state.selectedNodeId || null;
   const focusEdgeId = state.hoveredEdgeId || state.selectedEdgeId || null;
-  if (!focusId && !focusEdgeId) {
+  const traceActive = !focusId && !focusEdgeId && Boolean(state.tracedPath?.found);
+  if (!focusId && !focusEdgeId && !traceActive) {
     svgEl.classList.remove("has-isolation");
     svgEl.querySelectorAll(".edge-arc").forEach((el) => el.classList.remove("is-highlighted", "is-path-active"));
     nodesLayer.querySelectorAll(".map-node").forEach((el) => {
@@ -2251,6 +2289,10 @@ function applyPathLaserIsolation() {
 
   const activeNodes = new Set();
   const activeEdges = new Set();
+  if (traceActive) {
+    for (const id of state.tracedPath.allNodeIds || []) activeNodes.add(id);
+    for (const eid of state.tracedPath.allEdgeIds || []) activeEdges.add(eid);
+  }
   if (focusId) {
     const iso = getIsolatedSetForNode(focusId, layout);
     iso.activeNodes.forEach((id) => activeNodes.add(id));
@@ -2732,7 +2774,7 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
       : "";
     const tierClass =
       layout.mode === "teardown"
-        ? (outerNodes.length <= 24 ? "is-tier-1" : "is-tier-2")
+        ? (outerNodes.length <= 24 || p.isTopUniqueLabel ? "is-tier-1" : "is-tier-2")
         : layout.mode === "polar"
           ? "is-tier-2"
           : ent.isSharedOverlap || outerNodes.length <= 36 || p.isTopUniqueLabel
@@ -2939,6 +2981,32 @@ function syncConstellationControls() {
   syncPerspectiveControl();
   syncLegendForActiveMode();
   renderExploredEntitiesBox();
+  syncMapDensityToggleBtn();
+}
+
+function syncMapDensityToggleBtn() {
+  const btn = $("#mapDensityToggleBtn");
+  if (!btn) return;
+  if (!state.bridgeMap) {
+    btn.hidden = true;
+    return;
+  }
+  const rendered = Number(
+    state.bridgeMap?.stats?.renderedEntities ??
+    Math.max(0, asList(state.bridgeMap?.nodes).filter((n) => n.kind !== "anchor" && !n.isFocalEntity).length)
+  );
+  const totalAvail = Number(state.bridgeMap?.stats?.totalAvailableEntities ?? rendered);
+  const active = Boolean(state.expandAllEntities);
+  const canExpand = active || totalAvail > rendered;
+  btn.hidden = !canExpand;
+  btn.classList.toggle("is-active", active);
+  btn.setAttribute("aria-pressed", String(active));
+  if (active) {
+    btn.textContent = `All (${rendered}) · Compact`;
+  } else {
+    const extra = Math.max(0, totalAvail - rendered);
+    btn.textContent = extra > 0 ? `All entities (+${extra})` : "All entities";
+  }
 }
 
 // ---------- Math-First Deterministic Hover Tooltips ----------
@@ -4218,13 +4286,79 @@ function mergeExpandedConnectionRecords(records = [], factorGroup = "access", br
   });
 }
 
-function buildAnalystExportToolbarHtml(starredCount = 0) {
+function loadDiligenceStore() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DILIGENCE_STORAGE_KEY) || "{}");
+    return raw && typeof raw === "object" ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveDiligenceStore() {
+  try {
+    localStorage.setItem(DILIGENCE_STORAGE_KEY, JSON.stringify(state.diligenceStore || {}));
+  } catch {}
+}
+
+function getActiveDiligenceScopeKey() {
+  const focalIds = asList(state.bridgeMap?.focalEntityIds).length
+    ? asList(state.bridgeMap?.focalEntityIds)
+    : asList(state.pinnedEntities).map((p) => p.id);
+  return buildDiligenceScopeKey(focalIds);
+}
+
+function getActiveDiligenceMap() {
+  const key = getActiveDiligenceScopeKey();
+  return normalizeDiligenceState(state.diligenceStore?.[key] || {});
+}
+
+function formatDiligenceProgressText(prog) {
+  if (!prog) return "";
+  if ((prog.verified || 0) === 0 && (prog.blocked || 0) === 0) return "";
+  return `${prog.verified}/${prog.total} Verified${prog.blocked ? ` · ${prog.blocked} Blocked` : ""}`;
+}
+
+function syncDiligenceToolbarProgress() {
+  if (!state.bridgeMap) return;
+  const summary = buildFourFactorDecisionSummary(state.bridgeMap);
+  const prog = computeDiligenceProgress(summary?.factors || [], getActiveDiligenceMap());
+  const text = formatDiligenceProgressText(prog);
+  const pill = $("#decisionDiligenceProgressPill");
+  if (pill) {
+    pill.textContent = text;
+    pill.hidden = !text;
+  }
+}
+
+function setFactorDiligenceUpdate(group, patch = {}) {
+  if (!group) return;
+  const scopeKey = getActiveDiligenceScopeKey();
+  const currentScope = normalizeDiligenceState(state.diligenceStore?.[scopeKey] || {});
+  const prev = currentScope[group] || { status: "open", note: "", updatedAt: "" };
+  const next = {
+    status: patch.status !== undefined ? patch.status : prev.status,
+    note: patch.note !== undefined ? String(patch.note || "").slice(0, 280) : prev.note,
+    updatedAt: new Date().toISOString().slice(0, 10)
+  };
+  state.diligenceStore = {
+    ...(state.diligenceStore || {}),
+    [scopeKey]: { ...currentScope, [group]: next }
+  };
+  saveDiligenceStore();
+  syncDiligenceToolbarProgress();
+}
+
+function buildAnalystExportToolbarHtml(starredCount = 0, diligenceProg = null) {
   const starBadge = starredCount > 0 ? `<span class="decision-export-star-count">&#9733; ${starredCount} flagged</span>` : "";
+  const dilText = formatDiligenceProgressText(diligenceProg);
+  const dilBadge = `<span class="decision-diligence-progress-pill" id="decisionDiligenceProgressPill"${dilText ? "" : " hidden"}>${escapeHtml(dilText)}</span>`;
   return `
     <div class="decision-export-bar" role="group" aria-label="Analyst deliverables and sharing">
       <div class="decision-export-bar-left">
         <span class="decision-focus-kicker">Analyst Deliverables</span>
         ${starBadge}
+        ${dilBadge}
       </div>
       <div class="decision-export-actions">
         <button type="button" class="decision-export-btn is-primary" data-export-action="copy-memo">Copy IC Memo</button>
@@ -4258,13 +4392,16 @@ function downloadTextFile(filename, content, mimeType = "text/plain;charset=utf-
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function buildIcPrintSheetHtml({ summary, bridgeMap, sourceById, factorEvidenceByGroup, claudeResult, starredKeys }) {
+function buildIcPrintSheetHtml({ summary, bridgeMap, sourceById, factorEvidenceByGroup, claudeResult, starredKeys, diligenceChecks = {} }) {
   const exec = summary?.executive || {};
   const mapProv = computeMapUniqueProvenance(bridgeMap, sourceById);
   const provPct = mapProv.total > 0 ? mapProv.verifiedSharePct : Number(exec.verifiedSharePct || 0);
   const srcCount = mapProv.total > 0 ? mapProv.total : Number(exec.provenanceMix?.total || 0);
   const focalNames = asList(bridgeMap?.focalEntities).map((f) => formatInstitutionalEntityName(f.name || f.label)).filter(Boolean);
   const claudeFactors = new Map(asList(claudeResult?.factorAnalyses).map((a) => [a.group, a]));
+  const normDil = normalizeDiligenceState(diligenceChecks);
+  const dilProg = computeDiligenceProgress(summary?.factors || [], normDil);
+  const hasDilUpdates = Object.values(normDil).some((d) => d.status !== "open" || d.note);
   const today = new Date().toISOString().slice(0, 10);
 
   const starredHtml = [];
@@ -4277,19 +4414,29 @@ function buildIcPrintSheetHtml({ summary, bridgeMap, sourceById, factorEvidenceB
     }
   }
 
+  const diligenceSummaryHtml = hasDilUpdates && asList(summary?.factors).length
+    ? `<section class="ic-print-section"><h3>IC Diligence Verification Tracker (${dilProg.verified} Verified · ${dilProg.blocked} Blocked · ${dilProg.open} Open)</h3><ul>${asList(summary?.factors).map((f) => {
+        const d = normDil[f.group] || { status: "open", note: "" };
+        return `<li><strong>[${escapeHtml(f.shortTabLabel || f.label)}] [${escapeHtml(d.status.toUpperCase())}]</strong>${d.note ? ` — ${escapeHtml(d.note)}` : ""}</li>`;
+      }).join("")}</ul></section>`
+    : "";
+
   const factorsHtml = asList(summary?.factors).map((f) => {
     const fa = claudeFactors.get(f.group);
     const verdict = fa?.verdict || f.effect || "Mapped";
     const headline = fa?.headline || f.line || "";
     const takeaway = fa?.decisionEffect?.text || f.investmentImpact || "";
     const nextCheck = fa?.nextCheck || f.actionableCheck || "";
+    const dEntry = normDil[f.group];
+    const dStatusTag = dEntry && dEntry.status !== "open" ? ` [${dEntry.status.toUpperCase()}]` : "";
     const recs = asList(factorEvidenceByGroup[f.group]).slice(0, 5);
     return `
       <section class="ic-print-section">
         <h3>${escapeHtml(f.displayLabel || f.label)} &mdash; <span>${escapeHtml(verdict)}</span> (${f.count} paths)</h3>
         ${headline ? `<p class="ic-print-lead"><strong>${escapeHtml(headline)}</strong></p>` : ""}
         ${takeaway ? `<p>${escapeHtml(takeaway)}</p>` : ""}
-        ${nextCheck ? `<p class="ic-print-check"><strong>Diligence check:</strong> ${escapeHtml(nextCheck)}</p>` : ""}
+        ${nextCheck ? `<p class="ic-print-check"><strong>Diligence check${escapeHtml(dStatusTag)}:</strong> ${escapeHtml(nextCheck)}</p>` : ""}
+        ${dEntry?.note ? `<p><strong>Analyst note:</strong> ${escapeHtml(dEntry.note)}</p>` : ""}
         ${recs.length ? `<ul>${recs.map((r) => `<li><strong>${escapeHtml(formatInstitutionalPath(r.path))}</strong> [${escapeHtml(r.sourceRank || "CALA")}${r.date ? `, ${escapeHtml(r.date)}` : ""}]: ${escapeHtml(deriveConnectionAnalystInsight(r, f.group, fa?.findings))}</li>`).join("")}</ul>` : ""}
       </section>
     `;
@@ -4310,6 +4457,7 @@ function buildIcPrintSheetHtml({ summary, bridgeMap, sourceById, factorEvidenceB
         </div>
       </header>
       <p class="ic-print-exec">${escapeHtml(claudeResult?.summary || summary?.investmentEffect || "")}</p>
+      ${diligenceSummaryHtml}
       ${starredHtml.length ? `<section class="ic-print-section"><h3>Flagged Connections for IC (${starredHtml.length})</h3><ul>${starredHtml.join("")}</ul></section>` : ""}
       ${factorsHtml}
       ${gaps.length ? `<section class="ic-print-section"><h3>Explicit Cala Disclosure Gaps</h3><ul>${gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join("")}</ul></section>` : ""}
@@ -4341,6 +4489,7 @@ async function runAnalystExportAction(action) {
       claudeResult: res,
       starredKeys: state.starredConnectionKeys,
       deriveInsight,
+      diligenceChecks: getActiveDiligenceMap(),
       generatedAt: today
     });
     try {
@@ -4362,6 +4511,7 @@ async function runAnalystExportAction(action) {
       claudeResult: res,
       starredKeys: state.starredConnectionKeys,
       deriveInsight,
+      diligenceChecks: getActiveDiligenceMap(),
       generatedAt: today
     });
     downloadTextFile(`VentureLink-IC-Memo-${slug}-${today}.md`, md, "text/markdown;charset=utf-8");
@@ -4399,7 +4549,8 @@ async function runAnalystExportAction(action) {
         sourceById,
         factorEvidenceByGroup,
         claudeResult: res,
-        starredKeys: state.starredConnectionKeys
+        starredKeys: state.starredConnectionKeys,
+        diligenceChecks: getActiveDiligenceMap()
       });
     }
     try {
@@ -5135,6 +5286,10 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
     ? `<button type="button" class="decision-cite-count is-interactive" data-open-sources-drawer="true" title="View verified sources">${decisionEffectSourceIds.length} cited &#8595;</button>`
     : "";
 
+  const activeDilMap = getActiveDiligenceMap();
+  const activeDilEntry = activeDilMap[factor.group] || { status: "open", note: "" };
+  const dilProg = computeDiligenceProgress(summary.factors, activeDilMap);
+
   const takeawayBlockHtml = `
     <div class="decision-ai-impact-block ${hasClaudeFactorEffect ? "" : "is-fallback"}">
       <div class="decision-takeaway-top">
@@ -5145,8 +5300,18 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
       ${decisionEffectSourceIds.length ? `<div class="decision-ai-citations">${renderCitations(decisionEffectSourceIds, state.decisionPanelExpanded ? 3 : 2)}</div>` : ""}
     </div>
     <div class="decision-ai-next-check">
-      <span class="decision-ai-section-label">Action / Diligence Question</span>
+      <div class="decision-next-check-head">
+        <span class="decision-ai-section-label">Action / Diligence Question</span>
+        ${state.decisionPanelExpanded ? `
+          <div class="decision-diligence-pills" role="group" aria-label="Diligence check status">
+            ${["open", "verified", "blocked"].map((st) => `
+              <button type="button" class="diligence-status-btn ${activeDilEntry.status === st ? "is-active" : ""}" data-diligence-group="${escapeHtml(factor.group)}" data-diligence-status="${st}">${st === "open" ? "Open" : st === "verified" ? "Verified" : "Blocked"}</button>
+            `).join("")}
+          </div>
+        ` : ""}
+      </div>
       <p>${escapeHtml(factorNextCheck)}</p>
+      ${state.decisionPanelExpanded ? `<input type="text" class="decision-diligence-note-input" data-diligence-note-group="${escapeHtml(factor.group)}" value="${escapeHtml(activeDilEntry.note)}" placeholder="Add analyst verification note or source ref..." aria-label="Analyst verification note" maxlength="280" />` : ""}
     </div>
   `;
 
@@ -5317,7 +5482,7 @@ function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(s
         </div>
         ${icTakeaway ? `<p class="decision-exec-ic">${escapeHtml(icTakeaway)}</p>` : ""}
         ${expandedModeControlsHtml}
-        ${buildAnalystExportToolbarHtml(starredInViewCount || state.starredConnectionKeys.size)}
+        ${buildAnalystExportToolbarHtml(starredInViewCount || state.starredConnectionKeys.size, dilProg)}
       </div>
       ${workspaceContentHtml}
     `;
@@ -6385,6 +6550,7 @@ async function runEntityMapAnalysis(entityRefs, options = {}) {
       perspectiveEntity: activePersp || undefined,
       primaryTargetId: validPrimary || undefined,
       hideMegaHubs: state.hideMegaHubs,
+      expandAllEntities: Boolean(state.expandAllEntities),
       discoverLive: options.discoverLive !== false
     };
 
@@ -6433,6 +6599,9 @@ async function runEntityMapAnalysis(entityRefs, options = {}) {
     state.selectedEdgeId = null;
     state.hoveredNodeId = null;
     state.hoveredEdgeId = null;
+    state.tracedPath = null;
+    if (typeof closeMapFinder === "function") closeMapFinder({ restoreFocus: false });
+    if (typeof closePathTracer === "function") closePathTracer();
 
     if (result.calaBudget) {
       state.calaBudget = result.calaBudget;
@@ -6632,6 +6801,8 @@ function resetMapView({ stayOnMap = false } = {}) {
   state.contributionGroup = "all";
   state.sharedOnly = false;
   state.filingOnly = false;
+  state.expandAllEntities = false;
+  state.tracedPath = null;
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
   state.hoveredNodeId = null;
@@ -7331,57 +7502,114 @@ function renderDossierTabContent(dossier) {
   if (dossier.tab === "overview") {
     const aliasList = [...new Set(asList(data.aliases).map(recordText).filter((v) => v && v !== MISSING))];
     const entityKind = typeBadge(data);
-    const isPerson = entityKind === "Person";
-    const affiliatedOrgs = [...new Set([...people, ...relationshipRows(data.relationships)].map((r) => formatReadableEntityLabel(nameOf(r))).filter(Boolean))]
-      .slice(0, 3)
-      .join(", ");
+    const portfolio = deduplicateEntityList(data.portfolio);
+    const timelineCount =
+      asList(data.employeeCountSeries).length +
+      asList(data.corporateEvents).length +
+      asList(data.financialMetrics).length +
+      relationshipRows(data.relationships).length;
+    const connCount = Math.max(remoteConns.length, mapEdges.length);
+    const fundingCount = rounds.length + investors.length;
+    const relRows = relationshipRows(data.relationships);
+    const orgLikeRelRows = relRows.filter((r) => {
+      const t = String(r?.entityType || r?.entity_type || "").toLowerCase();
+      return !t.includes("event") && !t.includes("round");
+    });
+    const nonEventRemote = remoteConns.filter((c) => {
+      const t = String(c?.entityType || "").toLowerCase();
+      return !t.includes("event");
+    });
+    const affiliatedOrgsList = [
+      ...new Set(
+        [
+          ...mapEdges.map((e) => {
+            const otherId = e.from === node.id ? e.to : e.from;
+            const other = (state.bridgeMap?.nodes || []).find((n) => n.id === otherId);
+            return other ? nameOf(other) : "";
+          }),
+          ...nonEventRemote.map((c) => c.entityName || c.name),
+          ...orgLikeRelRows,
+          ...people,
+          ...relRows
+        ]
+          .map((r) => (typeof r === "string" ? formatReadableEntityLabel(r) : formatReadableEntityLabel(nameOf(r))))
+          .filter((nm) => nm && nm !== MISSING && nm !== formatReadableEntityLabel(nameOf(data)))
+      )
+    ];
+    const dossierCfg = buildDossierEntityConfig(entityKind, {
+      peopleCount: people.length,
+      portfolioCount: portfolio.length,
+      roundsCount: rounds.length,
+      investorsCount: investors.length,
+      connCount,
+      timelineCount,
+      sourcesCount: sources.length
+    });
+    const affiliatedOrgs = affiliatedOrgsList.slice(0, 3).join(", ");
     const personRole = cleanText(data.role || data.title || data.jobTitle);
     const totalFundingLabel = formatTotalFundingDisplay(data);
 
-    const schemaFields = isPerson
-      ? [
-          { label: "Category", value: populatedValue(data.category || data.sector || entityKind) },
-          { label: "Role / Title", value: populatedValue(personRole) },
-          { label: "Affiliations", value: populatedValue(affiliatedOrgs) },
-          { label: "Location / Country", value: populatedValue(data.headquarters || data.hq || data.hqCity || data.country) },
-          { label: "Website", value: populatedValue(data.website || data.domain || data.url) }
-        ]
-      : [
-          { label: "Category", value: populatedValue(data.category || data.sector || entityKind) },
-          { label: "Funding Stage", value: populatedValue(data.fundingStage) },
-          { label: "Total Funding", value: populatedValue(totalFundingLabel) },
-          { label: "Headquarters", value: populatedValue(data.headquarters || data.hq || data.hqCity || data.address) },
-          { label: "Country", value: populatedValue(data.country) },
-          { label: "Founded", value: populatedValue(data.founded || data.foundingDate) },
-          { label: "Status", value: formatOperationalStatus(populatedValue(data.operationalStatus || data.status || data.ownershipStatus)) },
-          { label: "Website", value: populatedValue(data.website || data.domain || data.url) },
-          { label: "Listing or Parent", value: populatedValue(data.listing || data.parentCompany || data.parent || data.acquiredBy) }
-        ];
+    let schemaFields;
+    if (dossierCfg.archetype === "person") {
+      schemaFields = [
+        { label: "Category", value: populatedValue(data.category || data.sector || entityKind) },
+        { label: "Role / Title", value: populatedValue(personRole) },
+        { label: "Affiliations", value: populatedValue(affiliatedOrgs) },
+        { label: "Location", value: populatedValue(data.headquarters || data.hq || data.hqCity || data.country) },
+        { label: "Website", value: populatedValue(data.website || data.domain || data.url) }
+      ];
+    } else if (dossierCfg.archetype === "investor") {
+      schemaFields = [
+        { label: "Category", value: populatedValue(data.category || data.sector || entityKind) },
+        { label: "Headquarters", value: populatedValue(data.headquarters || data.hq || data.hqCity || data.address) },
+        { label: "Founded", value: populatedValue(data.founded || data.foundingDate) },
+        { label: "Status", value: formatOperationalStatus(populatedValue(data.operationalStatus || data.status || data.ownershipStatus)) },
+        { label: "Website", value: populatedValue(data.website || data.domain || data.url) }
+      ];
+    } else if (dossierCfg.archetype === "event") {
+      schemaFields = [
+        { label: "Category", value: populatedValue(data.category || data.sector || entityKind) },
+        { label: "Date", value: populatedValue(data.date || data.eventDate || data.founded) },
+        { label: "Amount / Stage", value: populatedValue(totalFundingLabel || data.fundingStage) },
+        { label: "Participants", value: populatedValue(affiliatedOrgs) },
+        { label: "Location", value: populatedValue(data.headquarters || data.hq || data.hqCity || data.country) }
+      ];
+    } else {
+      schemaFields = [
+        { label: "Category", value: populatedValue(data.category || data.sector || entityKind) },
+        { label: "Funding Stage", value: populatedValue(data.fundingStage) },
+        { label: "Total Funding", value: populatedValue(totalFundingLabel) },
+        { label: "Headquarters", value: populatedValue(data.headquarters || data.hq || data.hqCity || data.address) },
+        { label: "Country", value: populatedValue(data.country) },
+        { label: "Founded", value: populatedValue(data.founded || data.foundingDate) },
+        { label: "Status", value: formatOperationalStatus(populatedValue(data.operationalStatus || data.status || data.ownershipStatus)) },
+        { label: "Website", value: populatedValue(data.website || data.domain || data.url) },
+        { label: "Listing or Parent", value: populatedValue(data.listing || data.parentCompany || data.parent || data.acquiredBy) }
+      ];
+    }
 
     const populated = schemaFields.filter((f) => f.value);
     const missing = schemaFields.filter((f) => !f.value);
     const allCards = populated.length ? populated : [{ label: "Category", value: entityKind }];
     const displayCards = state.dossierExpanded ? allCards : allCards.slice(0, 4);
 
-    const connCount = Math.max(remoteConns.length, mapEdges.length);
+    const kpiCountLookup = {
+      connections: connCount,
+      affiliatedOrgs: affiliatedOrgsList.length || connCount,
+      portfolio: portfolio.length,
+      timeline: timelineCount,
+      people: people.length,
+      funding: dossierCfg.archetype === "investor" ? Math.max(portfolio.length, fundingCount) : fundingCount,
+      sources: sources.length
+    };
     const kpiHtml = `
-      <div class="dossier-kpi-strip">
-        <button type="button" class="dossier-kpi-card" data-switch-dossier-tab="connections">
-          <span class="kpi-num">${connCount}</span>
-          <span class="kpi-lbl">Verified Links</span>
-        </button>
-        <button type="button" class="dossier-kpi-card" data-switch-dossier-tab="people">
-          <span class="kpi-num">${people.length}</span>
-          <span class="kpi-lbl">People</span>
-        </button>
-        <button type="button" class="dossier-kpi-card" data-switch-dossier-tab="funding">
-          <span class="kpi-num">${rounds.length + investors.length}</span>
-          <span class="kpi-lbl">${rounds.length ? "Rounds & Backers" : "Backers"}</span>
-        </button>
-        <button type="button" class="dossier-kpi-card" data-switch-dossier-tab="sources">
-          <span class="kpi-num">${sources.length}</span>
-          <span class="kpi-lbl">Cala Sources</span>
-        </button>
+      <div class="dossier-kpi-strip${dossierCfg.kpis.length === 3 ? " is-3-col" : ""}">
+        ${dossierCfg.kpis.map((k) => `
+          <button type="button" class="dossier-kpi-card" data-switch-dossier-tab="${escapeHtml(k.targetTab)}">
+            <span class="kpi-num">${Number(kpiCountLookup[k.countKey] || 0)}</span>
+            <span class="kpi-lbl">${escapeHtml(k.label)}</span>
+          </button>
+        `).join("")}
       </div>
     `;
 
@@ -7405,7 +7633,7 @@ function renderDossierTabContent(dossier) {
       ? `
       <section class="dossier-section">
         <div class="dossier-section-head-row">
-          <h3>Top Verified Connections</h3>
+          <h3>${escapeHtml(dossierCfg.previewTitle)}</h3>
           <button type="button" class="dossier-link-btn" data-switch-dossier-tab="connections">View all (${connCount}) &rarr;</button>
         </div>
         <div class="group-entry-list">
@@ -7458,7 +7686,7 @@ function renderDossierTabContent(dossier) {
       ${aboutHtml}
       <section class="dossier-section">
         <div class="dossier-section-head-row">
-          <h3>Identity</h3>
+          <h3>${escapeHtml(dossierCfg.profileCardTitle)}</h3>
           <span class="source-tier" data-tier="${escapeHtml(aboutTier)}">${escapeHtml(aboutTier)}</span>
         </div>
         <div class="fact-grid">
@@ -7562,9 +7790,17 @@ function renderDossierTabContent(dossier) {
           .join("")}</div>`
       : `<p class="dossier-empty">No dedicated FundingRound nodes recorded in Cala${investors.length ? `; ${investors.length} investor links appear below.` : "."}</p>`;
 
-    return `
-      ${loading}
-      <section class="dossier-section"><h3>Funding Rounds (${rounds.length})</h3>${roundsHtml}</section>
+    const portfolioSectionHtml = `
+      <section class="dossier-section">
+        <h3>Portfolio &amp; Investments (${portfolio.length + fallback.length})</h3>
+        ${portfolio.length || fallback.length
+          ? `<ul class="data-list">${portfolio.map((item) => `<li>${clickableChipHtml(nameOf(item), item, "data-open-investor")}<span class="source-tier" data-tier="${escapeHtml(connectionTierBadge(item))}">${escapeHtml(connectionTierBadge(item))}</span></li>`).join("")}${fallback.map((item) => `<li><span>${escapeHtml(recordText(item))}</span></li>`).join("")}</ul>`
+          : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`}
+      </section>
+    `;
+
+    const roundsSectionHtml = `<section class="dossier-section"><h3>Funding Rounds (${rounds.length})</h3>${roundsHtml}</section>`;
+    const investorsSectionHtml = `
       <section class="dossier-section">
         <h3>Investors (${investors.length})</h3>
         ${investors.length
@@ -7577,13 +7813,18 @@ function renderDossierTabContent(dossier) {
               .join("")}</ul>`
           : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`}
       </section>
-      <section class="dossier-section">
-        <h3>Portfolio &amp; Corporate Holdings (${portfolio.length + fallback.length})</h3>
-        ${portfolio.length || fallback.length
-          ? `<ul class="data-list">${portfolio.map((item) => `<li>${clickableChipHtml(nameOf(item), item, "data-open-investor")}<span class="source-tier" data-tier="${escapeHtml(connectionTierBadge(item))}">${escapeHtml(connectionTierBadge(item))}</span></li>`).join("")}${fallback.map((item) => `<li><span>${escapeHtml(recordText(item))}</span></li>`).join("")}</ul>`
-          : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`}
-      </section>
     `;
+
+    const cfgForFunding = buildDossierEntityConfig(typeBadge(data), {
+      peopleCount: people.length,
+      portfolioCount: portfolio.length,
+      roundsCount: rounds.length,
+      investorsCount: investors.length
+    });
+    if (cfgForFunding.archetype === "investor") {
+      return `${loading}${portfolioSectionHtml}${roundsSectionHtml}${investorsSectionHtml}`;
+    }
+    return `${loading}${roundsSectionHtml}${investorsSectionHtml}${portfolioSectionHtml}`;
   }
 
   if (dossier.tab === "connections") {
@@ -7767,10 +8008,6 @@ function renderDossier(options = {}) {
   if (!d) return;
 
   const tabsEl = $(".dossier-tabs");
-  const actionsRow = $("#dossierActionsRow");
-  const showMapBtn = $("#dossierShowMapBtn");
-  const centerBtn = $("#dossierCenterBtn");
-  const addBtn = $("#dossierAddBtn");
   const backBtn = $("#dossierBackBtn");
   const tierEl = $("#dossierTier");
   const body = $("#dossierBody");
@@ -7795,11 +8032,7 @@ function renderDossier(options = {}) {
     $("#dossierMeta").textContent = metaParts.join(" · ") || "Verified Cala Connection";
 
     if (tabsEl) tabsEl.hidden = true;
-    if (actionsRow) actionsRow.hidden = true;
     if (backBtn) backBtn.hidden = !d.history.length;
-    if (showMapBtn) showMapBtn.hidden = true;
-    if (centerBtn) centerBtn.hidden = true;
-    if (addBtn) addBtn.hidden = true;
     if (body) {
       body.innerHTML = renderConnectionInspectorBody(d);
       if (options.resetScroll) body.scrollTop = 0;
@@ -7811,10 +8044,11 @@ function renderDossier(options = {}) {
   const displayName = formatReadableEntityLabel(nameOf(data), data.date);
   const rawTier = dossierTier(data);
   const tier = rawTier !== MISSING ? rawTier : "CALA GRAPH";
+  const entityKind = typeBadge(data);
 
   $("#dossierInitials").textContent = initialsOf(displayName);
   $("#dossierTitle").textContent = displayName;
-  $("#dossierTypeBadge").textContent = typeBadge(data);
+  $("#dossierTypeBadge").textContent = entityKind;
   delete $("#dossierTypeBadge").dataset.group;
   if (tierEl) {
     tierEl.textContent = tier;
@@ -7825,17 +8059,15 @@ function renderDossier(options = {}) {
     populatedValue(data.founded || data.foundingDate),
     formatOperationalStatus(populatedValue(data.operationalStatus || data.status || data.role || data.title))
   ].filter(Boolean);
-  $("#dossierMeta").textContent = metaParts.join(" · ") || typeBadge(data);
+  $("#dossierMeta").textContent = metaParts.join(" · ") || entityKind;
 
   if (tabsEl) tabsEl.hidden = false;
-  if (actionsRow) actionsRow.hidden = false;
-  if (showMapBtn) showMapBtn.hidden = false;
-  if (centerBtn) centerBtn.hidden = false;
   if (backBtn) backBtn.hidden = !d.history.length;
-  if (addBtn) addBtn.hidden = isEntityOnMap(node) || state.pinnedEntities.length >= 20;
 
   const peopleCount = peopleFor(data).length;
-  const fundingCount = roundsFor(data).length + deduplicateEntityList(data.investors).length;
+  const portfolioCount = deduplicateEntityList(data.portfolio).length;
+  const roundsCount = roundsFor(data).length;
+  const investorsCount = deduplicateEntityList(data.investors).length;
   const connCount = Math.max(connectionRows(data).length, mapEdgesForNode(node).length);
   const timelineCount =
     asList(data.employeeCountSeries).length +
@@ -7843,9 +8075,28 @@ function renderDossier(options = {}) {
     asList(data.financialMetrics).length +
     relationshipRows(data.relationships).length;
   const sourcesCount = sourcesFor(data).length;
+
+  const cfg = buildDossierEntityConfig(entityKind, {
+    peopleCount,
+    portfolioCount,
+    roundsCount,
+    investorsCount,
+    connCount,
+    timelineCount,
+    sourcesCount
+  });
+  if (!cfg.visibleTabs.some((t) => t.key === d.tab)) {
+    d.tab = "overview";
+  }
+
+  const fundingTabCount = cfg.archetype === "person"
+    ? portfolioCount
+    : cfg.archetype === "investor"
+      ? Math.max(portfolioCount, roundsCount + investorsCount)
+      : (roundsCount + investorsCount);
   const tabCounts = {
     people: peopleCount,
-    funding: fundingCount,
+    funding: fundingTabCount,
     connections: connCount,
     timeline: timelineCount,
     sources: sourcesCount
@@ -7853,16 +8104,23 @@ function renderDossier(options = {}) {
 
   document.querySelectorAll("[data-dossier-tab]").forEach((tab) => {
     const key = tab.dataset.dossierTab;
+    const tabCfg = cfg.visibleTabs.find((t) => t.key === key);
+    tab.hidden = !tabCfg;
+    if (!tabCfg) {
+      tab.classList.remove("is-active");
+      tab.setAttribute("aria-selected", "false");
+      tab.tabIndex = -1;
+      return;
+    }
     const active = key === d.tab;
     tab.classList.toggle("is-active", active);
     tab.setAttribute("aria-selected", String(active));
     tab.tabIndex = active ? 0 : -1;
-    const base = DOSSIER_TAB_LABELS[key] || tab.textContent;
-    const count = tabCounts[key];
+    const count = tabCfg.countKey ? tabCounts[tabCfg.countKey] : null;
     tab.innerHTML =
       typeof count === "number"
-        ? `${escapeHtml(base)} <span class="dossier-tab-count${count === 0 ? " is-zero" : ""}">${count}</span>`
-        : escapeHtml(base);
+        ? `${escapeHtml(tabCfg.label)} <span class="dossier-tab-count${count === 0 ? " is-zero" : ""}">${count}</span>`
+        : escapeHtml(tabCfg.label);
   });
 
   if (body) {
@@ -8022,6 +8280,9 @@ function bindFilterAndHudEvents() {
     state.selectedEdgeId = null;
     state.hoveredNodeId = null;
     state.hoveredEdgeId = null;
+    state.tracedPath = null;
+    if (typeof closeMapFinder === "function") closeMapFinder({ restoreFocus: false });
+    if (typeof closePathTracer === "function") closePathTracer();
     syncConstellationControls();
     renderConstellationMap(undefined, { fit: true });
   };
@@ -8123,6 +8384,9 @@ function bindFilterAndHudEvents() {
   // Bottom-left Legend Popover
   $("#mapLegendToggleBtn")?.addEventListener("click", () => {
     state.legendPopoverOpen = !state.legendPopoverOpen;
+    if (state.legendPopoverOpen && typeof closePathTracer === "function") {
+      closePathTracer();
+    }
     if (state.legendPopoverOpen && window.innerWidth <= 900 && state.decisionSummaryOpen) {
       closeDecisionPopover();
     }
@@ -8316,6 +8580,16 @@ function bindFilterAndHudEvents() {
       resetDecisionPopoverScroll();
       renderDecisionSummaryWidget();
       $("[data-decision-expand]")?.focus();
+      return;
+    }
+    const dilBtn = e.target.closest("[data-diligence-status]");
+    if (dilBtn) {
+      const grp = dilBtn.dataset.diligenceGroup || "";
+      const st = dilBtn.dataset.diligenceStatus || "open";
+      setFactorDiligenceUpdate(grp, { status: st });
+      document.querySelectorAll(`[data-diligence-group="${CSS.escape(grp)}"][data-diligence-status]`).forEach((b) => {
+        b.classList.toggle("is-active", b.dataset.diligenceStatus === st);
+      });
     }
   });
   $("#decisionAiOutput")?.addEventListener("input", (e) => {
@@ -8328,6 +8602,11 @@ function bindFilterAndHudEvents() {
     if (e.target.id === "matrixSearchInput") {
       state.matrixQuery = e.target.value || "";
       updateOverlapMatrixInPlace();
+      return;
+    }
+    const noteGroup = e.target.dataset?.diligenceNoteGroup;
+    if (noteGroup) {
+      setFactorDiligenceUpdate(noteGroup, { note: e.target.value || "" });
     }
   });
   $("#decisionAiOutput")?.addEventListener("change", (e) => {
@@ -9022,36 +9301,8 @@ function bindDossierEvents() {
     }
   });
 
-  $("#dossierShowMapBtn")?.addEventListener("click", () => {
-    const node = state.dossier?.node;
-    if (!node) return;
-    closeEntityDossier({ preserveSelection: true });
-    state.selectedNodeId = node.id;
-    state.selectedEdgeId = null;
-    state.hoveredNodeId = null;
-    state.hoveredEdgeId = null;
-    applyPathLaserIsolation();
-    focusNodeOnMap(node.id);
-  });
-
-  $("#dossierCenterBtn")?.addEventListener("click", async () => {
-    const data = state.dossier?.data;
-    const node = state.dossier?.node;
-    if (!node) return;
-    closeEntityDossier();
-    await focusOnlyEntityOnMap({ ...node, ...data });
-  });
-
-  $("#dossierAddBtn")?.addEventListener("click", async () => {
-    const data = state.dossier?.data;
-    const node = state.dossier?.node;
-    if (!node) return;
-    closeEntityDossier();
-    await addEntityToMap({ ...node, ...data });
-  });
-
   const dossierTabs = [...document.querySelectorAll("[data-dossier-tab]")];
-  dossierTabs.forEach((tab, index) => {
+  dossierTabs.forEach((tab) => {
     tab.addEventListener("click", () => {
       if (!state.dossier) return;
       state.dossier.tab = tab.dataset.dossierTab;
@@ -9060,8 +9311,11 @@ function bindDossierEvents() {
     tab.addEventListener("keydown", (e) => {
       if (!state.dossier || (e.key !== "ArrowRight" && e.key !== "ArrowLeft")) return;
       e.preventDefault();
+      const visible = dossierTabs.filter((t) => !t.hidden);
+      if (!visible.length) return;
+      const curIdx = Math.max(0, visible.indexOf(tab));
       const delta = e.key === "ArrowRight" ? 1 : -1;
-      const nextTab = dossierTabs[(index + delta + dossierTabs.length) % dossierTabs.length];
+      const nextTab = visible[(curIdx + delta + visible.length) % visible.length];
       if (!nextTab) return;
       state.dossier.tab = nextTab.dataset.dossierTab;
       renderDossier({ resetScroll: true });
@@ -9178,8 +9432,34 @@ function bindDossierEvents() {
   });
 
   document.addEventListener("keydown", (e) => {
+    if (state.workspaceMode === "map") {
+      const keyLow = String(e.key || "").toLowerCase();
+      if ((e.metaKey || e.ctrlKey) && keyLow === "k") {
+        e.preventDefault();
+        if (state.mapFinderOpen) closeMapFinder();
+        else openMapFinder();
+        return;
+      }
+      const tag = String(document.activeElement?.tagName || "").toUpperCase();
+      const isTyping = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || document.activeElement?.isContentEditable;
+      if (e.key === "/" && !isTyping && (!backdrop || backdrop.hidden) && !state.decisionPanelExpanded) {
+        e.preventDefault();
+        openMapFinder();
+        return;
+      }
+    }
     if (!backdrop || backdrop.hidden) {
       if (e.key === "Escape") {
+        if (state.mapFinderOpen) {
+          e.preventDefault();
+          closeMapFinder();
+          return;
+        }
+        if (state.pathTracerOpen) {
+          e.preventDefault();
+          closePathTracer();
+          return;
+        }
         const suggest = $("#entitySuggestPopup");
         if (suggest && !suggest.hidden) {
           closeSuggestPopup();
@@ -9204,7 +9484,7 @@ function bindDossierEvents() {
           $("#mapLegendToggleBtn")?.setAttribute("aria-expanded", "false");
           return;
         }
-        if (state.selectedNodeId || state.selectedEdgeId || state.hoveredNodeId || state.hoveredEdgeId) {
+        if (state.selectedNodeId || state.selectedEdgeId || state.hoveredNodeId || state.hoveredEdgeId || state.tracedPath?.found) {
           e.preventDefault();
           clearMapIsolation();
           hideMapTooltip();
@@ -9249,15 +9529,358 @@ function bindDossierEvents() {
   });
 }
 
+// ---------- Wave 4: Quick Node Finder (⌘K) & Verified Shortest-Path Tracer ----------
+
+function closeMapFinder(options = {}) {
+  state.mapFinderOpen = false;
+  const bd = $("#mapFinderBackdrop");
+  if (bd) bd.hidden = true;
+  $("#mapFinderToggleBtn")?.setAttribute("aria-expanded", "false");
+  if (options.restoreFocus !== false) {
+    $("#mapFinderToggleBtn")?.focus();
+  }
+}
+
+function renderMapFinderResults() {
+  const listEl = $("#mapFinderList");
+  const metaEl = $("#mapFinderMeta");
+  if (!listEl) return;
+  const mapData = getEffectiveBridgeMap() || state.bridgeMap;
+  if (!mapData) {
+    listEl.innerHTML = `<div class="map-finder-empty">Load an entity map above to search entities.</div>`;
+    if (metaEl) metaEl.textContent = "0 entities indexed";
+    return;
+  }
+  const allIndexed = searchMappedGraphNodes(mapData, "", { limit: 250 });
+  const matches = searchMappedGraphNodes(mapData, state.mapFinderQuery, { limit: 16 });
+  if (metaEl) {
+    metaEl.textContent = state.mapFinderQuery.trim()
+      ? `${matches.length} matching of ${allIndexed.length} mapped entities`
+      : `Showing top ${matches.length} of ${allIndexed.length} mapped entities · Arrow keys + Enter`;
+  }
+  if (!matches.length) {
+    listEl.innerHTML = `<div class="map-finder-empty">No mapped entities match "${escapeHtml(state.mapFinderQuery)}".</div>`;
+    return;
+  }
+  if (state.mapFinderActiveIndex >= matches.length) state.mapFinderActiveIndex = 0;
+
+  listEl.innerHTML = matches.map((item, idx) => `
+    <div
+      class="map-finder-row ${idx === state.mapFinderActiveIndex ? "is-active" : ""}"
+      role="option"
+      aria-selected="${idx === state.mapFinderActiveIndex}"
+      data-finder-node-id="${escapeHtml(item.id)}"
+      data-finder-index="${idx}"
+    >
+      <div class="map-finder-main">
+        <div class="map-finder-title-row">
+          <strong>${escapeHtml(item.formattedName)}</strong>
+          ${item.isFocal ? `<span class="decision-badge-shared">Target</span>` : ""}
+          ${item.sharedCount >= 2 ? `<span class="decision-badge-shared">${item.sharedCount}x Shared</span>` : ""}
+          <span class="source-tier" data-tier="${escapeHtml(item.strongestTier)}">${escapeHtml(item.strongestTier)}</span>
+        </div>
+        <span class="map-finder-sub">${escapeHtml(item.entityType)} · ${item.degree} verified ${item.degree === 1 ? "link" : "links"}${item.relationLabels.length ? ` · ${escapeHtml(item.relationLabels.slice(0, 2).join(", "))}` : ""}</span>
+      </div>
+      <div class="map-finder-actions">
+        <button type="button" class="decision-focus-btn" data-finder-action="locate" data-finder-node-id="${escapeHtml(item.id)}">Locate</button>
+        <button type="button" class="decision-focus-btn" data-finder-action="dossier" data-finder-node-id="${escapeHtml(item.id)}">Dossier</button>
+        <button type="button" class="decision-focus-btn" data-finder-action="trace" data-finder-node-id="${escapeHtml(item.id)}">Trace</button>
+      </div>
+    </div>
+  `).join("");
+}
+
+function selectMapFinderNode(nodeId, action = "dossier") {
+  const mapData = getEffectiveBridgeMap() || state.bridgeMap;
+  const node = asList(mapData?.nodes || state.bridgeMap?.nodes).find((n) => String(n.id) === String(nodeId));
+  if (!node) return;
+  closeMapFinder({ restoreFocus: false });
+
+  if (action === "trace") {
+    state.pathTraceFromId = String(node.id);
+    openPathTracer({ autoTrace: false });
+    return;
+  }
+
+  state.tracedPath = null;
+  state.selectedNodeId = String(node.id);
+  state.selectedEdgeId = null;
+  state.hoveredNodeId = null;
+  state.hoveredEdgeId = null;
+  applyPathLaserIsolation();
+  focusNodeOnMap(String(node.id));
+  if (action === "dossier") {
+    openEntityDossier(node);
+  }
+}
+
+function openMapFinder() {
+  if (!state.bridgeMap) return;
+  closePathTracer();
+  state.legendPopoverOpen = false;
+  const legendPop = $("#mapLegendPopover");
+  if (legendPop) legendPop.hidden = true;
+  $("#mapLegendToggleBtn")?.setAttribute("aria-expanded", "false");
+
+  state.mapFinderOpen = true;
+  state.mapFinderQuery = "";
+  state.mapFinderActiveIndex = 0;
+  const bd = $("#mapFinderBackdrop");
+  if (bd) bd.hidden = false;
+  $("#mapFinderToggleBtn")?.setAttribute("aria-expanded", "true");
+  const inp = $("#mapFinderInput");
+  if (inp) {
+    inp.value = "";
+    renderMapFinderResults();
+    requestAnimationFrame(() => inp.focus());
+  }
+}
+
+function closePathTracer() {
+  state.pathTracerOpen = false;
+  const pop = $("#mapPathTracerPopover");
+  if (pop) pop.hidden = true;
+  $("#mapPathTracerToggleBtn")?.setAttribute("aria-expanded", "false");
+}
+
+function populatePathTracerSelects() {
+  const fromSel = $("#pathTraceFromSelect");
+  const toSel = $("#pathTraceToSelect");
+  const mapData = getEffectiveBridgeMap() || state.bridgeMap;
+  if (!fromSel || !toSel || !mapData) return;
+  const items = searchMappedGraphNodes(mapData, "", { limit: 120 });
+  if (!items.length) {
+    fromSel.innerHTML = "";
+    toSel.innerHTML = "";
+    return;
+  }
+  const focals = items.filter((n) => n.isFocal);
+  const validIds = new Set(items.map((n) => n.id));
+  if (!state.pathTraceFromId || !validIds.has(state.pathTraceFromId)) {
+    state.pathTraceFromId = (focals[0] || items[0]).id;
+  }
+  if (!state.pathTraceToId || !validIds.has(state.pathTraceToId) || state.pathTraceToId === state.pathTraceFromId) {
+    const fallbackTo = focals.find((f) => f.id !== state.pathTraceFromId)
+      || items.find((n) => n.id !== state.pathTraceFromId)
+      || items[0];
+    state.pathTraceToId = fallbackTo.id;
+  }
+
+  const optionsHtml = items
+    .map((n) => `<option value="${escapeHtml(n.id)}">${escapeHtml(n.formattedName)}${n.isFocal ? " (Target)" : n.sharedCount >= 2 ? ` (${n.sharedCount}x)` : ""}</option>`)
+    .join("");
+  fromSel.innerHTML = optionsHtml;
+  toSel.innerHTML = optionsHtml;
+  fromSel.value = state.pathTraceFromId;
+  toSel.value = state.pathTraceToId;
+}
+
+function renderPathTracerResults() {
+  const box = $("#pathTraceResults");
+  if (!box) return;
+  const trace = state.tracedPath;
+  if (!trace) {
+    box.innerHTML = `<p class="path-tracer-hint">Pick two entities above and click <strong>Trace</strong> to find the shortest verified Cala routes between them.</p>`;
+    return;
+  }
+  if (!trace.found || !trace.paths.length) {
+    box.innerHTML = `<div class="path-tracer-empty">No verified Cala path connects those two entities within 4 hops on this map.</div>`;
+    return;
+  }
+
+  box.innerHTML = `
+    <div class="path-tracer-summary">
+      <span><strong>${trace.hopCount}-${trace.hopCount === 1 ? "hop" : "hop"} shortest verified route${trace.paths.length > 1 ? "s" : ""}</strong> (${trace.paths.length} ranked by filing provenance)</span>
+    </div>
+    <div class="path-chain-list">
+      ${trace.paths.map((p, idx) => `
+        <article class="path-chain-card">
+          <div class="path-chain-meta">
+            <span>Route #${idx + 1} · ${p.hops.length} ${p.hops.length === 1 ? "hop" : "hops"}</span>
+            <span class="source-tier" data-tier="${escapeHtml(p.strongestTier)}">${escapeHtml(p.strongestTier)}</span>
+          </div>
+          <div class="path-chain-hops">
+            ${p.hops.map((h, hi) => `
+              ${hi === 0 ? `<button type="button" class="path-hop-node-btn" data-inspect-node-id="${escapeHtml(h.fromId)}">${escapeHtml(h.fromName)}</button>` : ""}
+              <span class="path-hop-sep" aria-hidden="true">&rarr;</span>
+              <button type="button" class="path-hop-edge-btn" data-trace-edge-id="${escapeHtml(h.edgeId)}" title="${escapeHtml(`${h.relation}${h.date ? ` · ${h.date}` : ""}`)}">${escapeHtml(formatDossierRelationLabel(h.relation))}${h.date ? ` · ${escapeHtml(h.date)}` : ""}</button>
+              <span class="path-hop-sep" aria-hidden="true">&rarr;</span>
+              <button type="button" class="path-hop-node-btn" data-inspect-node-id="${escapeHtml(h.toId)}">${escapeHtml(h.toName)}</button>
+            `).join("")}
+          </div>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function centerViewportOnNodeIds(nodeIds = []) {
+  const canvasEl = $("#bridgeMapCanvas");
+  const posMap = state.mapLayoutNodes?.posMap;
+  if (!canvasEl || !posMap || !nodeIds.length) return;
+  const pts = nodeIds.map((id) => posMap.get(String(id))).filter(Boolean);
+  if (!pts.length) return;
+  const avgX = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+  const avgY = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+  const rect = canvasEl.getBoundingClientRect();
+  state.mapPanX = Math.round(rect.width / 2 - avgX * state.mapZoom);
+  state.mapPanY = Math.round(rect.height / 2 - avgY * state.mapZoom);
+  applyMapViewportTransform();
+}
+
+function runShortestPathTrace() {
+  const mapData = getEffectiveBridgeMap() || state.bridgeMap;
+  if (!mapData || !state.pathTraceFromId || !state.pathTraceToId) return;
+  if (state.pathTraceFromId === state.pathTraceToId) {
+    state.tracedPath = null;
+    clearMapIsolation({ keepTrace: false });
+    renderPathTracerResults();
+    return;
+  }
+  const res = findShortestVerifiedPaths(mapData, state.pathTraceFromId, state.pathTraceToId, { maxDepth: 4, maxPaths: 4 });
+  state.tracedPath = res;
+  state.selectedNodeId = null;
+  state.selectedEdgeId = null;
+  state.hoveredNodeId = null;
+  state.hoveredEdgeId = null;
+  applyPathLaserIsolation();
+  renderPathTracerResults();
+  if (res.found) {
+    centerViewportOnNodeIds(res.allNodeIds);
+  }
+}
+
+function openPathTracer(options = {}) {
+  if (!state.bridgeMap) return;
+  if (state.legendPopoverOpen) {
+    state.legendPopoverOpen = false;
+    const pop = $("#mapLegendPopover");
+    if (pop) pop.hidden = true;
+    $("#mapLegendToggleBtn")?.setAttribute("aria-expanded", "false");
+  }
+  state.pathTracerOpen = true;
+  const pop = $("#mapPathTracerPopover");
+  if (pop) pop.hidden = false;
+  $("#mapPathTracerToggleBtn")?.setAttribute("aria-expanded", "true");
+  populatePathTracerSelects();
+  if (options.autoTrace && state.pathTraceFromId && state.pathTraceToId && state.pathTraceFromId !== state.pathTraceToId) {
+    runShortestPathTrace();
+  } else {
+    renderPathTracerResults();
+  }
+}
+
+function bindWave4ToolsEvents() {
+  $("#mapFinderToggleBtn")?.addEventListener("click", () => {
+    if (state.mapFinderOpen) closeMapFinder();
+    else openMapFinder();
+  });
+  $("#mapFinderCloseBtn")?.addEventListener("click", () => closeMapFinder());
+  $("#mapFinderBackdrop")?.addEventListener("click", (e) => {
+    if (e.target.id === "mapFinderBackdrop") closeMapFinder();
+  });
+  $("#mapFinderInput")?.addEventListener("input", (e) => {
+    state.mapFinderQuery = e.target.value || "";
+    state.mapFinderActiveIndex = 0;
+    renderMapFinderResults();
+  });
+  $("#mapFinderInput")?.addEventListener("keydown", (e) => {
+    const rows = [...document.querySelectorAll("#mapFinderList .map-finder-row")];
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMapFinder();
+      return;
+    }
+    if (!rows.length) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      state.mapFinderActiveIndex = (state.mapFinderActiveIndex + 1) % rows.length;
+      renderMapFinderResults();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      state.mapFinderActiveIndex = (state.mapFinderActiveIndex - 1 + rows.length) % rows.length;
+      renderMapFinderResults();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const targetRow = rows[state.mapFinderActiveIndex] || rows[0];
+      const nodeId = targetRow?.dataset?.finderNodeId;
+      if (nodeId) selectMapFinderNode(nodeId, "dossier");
+    }
+  });
+  $("#mapFinderList")?.addEventListener("click", (e) => {
+    const actBtn = e.target.closest("[data-finder-action]");
+    if (actBtn) {
+      selectMapFinderNode(actBtn.dataset.finderNodeId, actBtn.dataset.finderAction);
+      return;
+    }
+    const row = e.target.closest("[data-finder-node-id]");
+    if (row) selectMapFinderNode(row.dataset.finderNodeId, "dossier");
+  });
+
+  $("#mapPathTracerToggleBtn")?.addEventListener("click", () => {
+    if (state.pathTracerOpen) closePathTracer();
+    else openPathTracer({ autoTrace: true });
+  });
+  $("#mapPathTracerCloseBtn")?.addEventListener("click", () => closePathTracer());
+  $("#pathTraceFromSelect")?.addEventListener("change", (e) => {
+    state.pathTraceFromId = e.target.value || "";
+  });
+  $("#pathTraceToSelect")?.addEventListener("change", (e) => {
+    state.pathTraceToId = e.target.value || "";
+  });
+  $("#pathTraceSwapBtn")?.addEventListener("click", () => {
+    const prevFrom = state.pathTraceFromId;
+    state.pathTraceFromId = state.pathTraceToId;
+    state.pathTraceToId = prevFrom;
+    const fSel = $("#pathTraceFromSelect");
+    const tSel = $("#pathTraceToSelect");
+    if (fSel) fSel.value = state.pathTraceFromId;
+    if (tSel) tSel.value = state.pathTraceToId;
+    runShortestPathTrace();
+  });
+  $("#pathTraceRunBtn")?.addEventListener("click", () => runShortestPathTrace());
+  $("#pathTraceClearBtn")?.addEventListener("click", () => {
+    state.tracedPath = null;
+    clearMapIsolation({ keepTrace: false });
+  });
+  $("#pathTraceResults")?.addEventListener("click", (e) => {
+    const nodeBtn = e.target.closest("[data-inspect-node-id]");
+    if (nodeBtn) {
+      const n = asList(state.bridgeMap?.nodes).find((x) => String(x.id) === String(nodeBtn.dataset.inspectNodeId));
+      if (n) openEntityDossier(n);
+      return;
+    }
+    const edgeBtn = e.target.closest("[data-trace-edge-id]");
+    if (edgeBtn) {
+      const edge = asList(state.bridgeMap?.edges).find((x) => String(x.id) === String(edgeBtn.dataset.traceEdgeId));
+      if (edge) openConnectionInspector(edge);
+    }
+  });
+  $("#mapDensityToggleBtn")?.addEventListener("click", async () => {
+    if (!state.bridgeMap || !state.pinnedEntities.length || state.analysisLoading) return;
+    state.expandAllEntities = !state.expandAllEntities;
+    await runEntityMapAnalysis(state.pinnedEntities, {
+      fit: true,
+      discoverLive: false,
+      loadingMessage: state.expandAllEntities
+        ? `Loading full verified Cala graph for ${state.pinnedEntities.map((p) => p.name).join(" + ")}...`
+        : `Restoring compact view for ${state.pinnedEntities.map((p) => p.name).join(" + ")}...`
+    });
+  });
+}
+
 // ---------- Bootstrap ----------
 
 async function initApp() {
   state.starredConnectionKeys = loadStarredConnectionsFromStorage();
+  state.diligenceStore = loadDiligenceStore();
   applyTheme(getActiveTheme());
   bindSearchAndCommandEvents();
   bindFilterAndHudEvents();
   bindCanvasAndMapInteractions();
   bindDossierEvents();
+  bindWave4ToolsEvents();
 
   setWorkspaceMode("hero");
   switchHeroInfoTab("explorer");

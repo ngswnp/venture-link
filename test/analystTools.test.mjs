@@ -15,7 +15,13 @@ import {
   buildVerifiedConnectionsCsv,
   buildIcDiligenceMemoMarkdown,
   buildShareableWorkspaceUrl,
-  parseShareableWorkspaceParams
+  parseShareableWorkspaceParams,
+  searchMappedGraphNodes,
+  findShortestVerifiedPaths,
+  buildDiligenceScopeKey,
+  normalizeDiligenceState,
+  computeDiligenceProgress,
+  buildDossierEntityConfig
 } from '../public/analystTools.js';
 
 test('formatInstitutionalEntityName normalizes raw 13F ALL-CAPS while preserving mixed-case & acronyms', () => {
@@ -306,4 +312,122 @@ test('buildChronologicalCatalystTimeline splits <=18m active vs >18m historical 
   assert.equal(tl.active[0].amount, '$30B');
   assert.equal(tl.historical.length, 1);
   assert.equal(tl.historical[0].amount, '');
+});
+
+test('searchMappedGraphNodes excludes group hubs and ranks shared high-tier matches first', () => {
+  const bridgeMap = {
+    focalEntityIds: ['f1', 'f2'],
+    nodes: [
+      { id: 'f1', label: 'OpenAI', kind: 'anchor', isFocalEntity: true },
+      { id: 'f2', label: 'Anthropic', kind: 'anchor', isFocalEntity: true },
+      { id: 'group-hub:access', label: 'Capital', kind: 'group-hub' },
+      { id: 'seq', label: 'Sequoia Capital', entityType: 'Organization' },
+      { id: 'minor', label: 'Sequoia Partner Note', entityType: 'Person' }
+    ],
+    edges: [
+      { id: 'tree-spoke-1', from: 'group-hub:access', to: 'f1', topSourceRank: 'FILING' },
+      { id: 'e1', from: 'seq', to: 'f1', label: 'Invested in', topSourceRank: 'FILING' },
+      { id: 'e2', from: 'seq', to: 'f2', label: 'Invested in', topSourceRank: 'PRIMARY' },
+      { id: 'e3', from: 'minor', to: 'f1', label: 'Mentioned', topSourceRank: 'AGGREGATOR' }
+    ]
+  };
+  const all = searchMappedGraphNodes(bridgeMap, '');
+  assert.equal(all.some((r) => r.id.startsWith('group-hub:')), false);
+  assert.equal(all.length, 4);
+  const seqMatches = searchMappedGraphNodes(bridgeMap, 'Sequoia');
+  assert.equal(seqMatches[0].id, 'seq');
+  assert.equal(seqMatches[0].sharedCount, 2);
+  assert.equal(seqMatches[0].strongestTier, 'FILING');
+});
+
+test('findShortestVerifiedPaths computes minimum-hop verified BFS paths & provenance ranking', () => {
+  const bridgeMap = {
+    nodes: [
+      { id: 'a', label: 'OpenAI' },
+      { id: 'b', label: 'Sequoia Capital' },
+      { id: 'c', label: 'Dario Amodei' },
+      { id: 'd', label: 'Anthropic' },
+      { id: 'isolated', label: 'Isolated Corp' }
+    ],
+    edges: [
+      { id: 'tree-spoke-skip', from: 'a', to: 'd', topSourceRank: 'FILING' },
+      { id: 'e1', from: 'a', to: 'b', label: 'Backed by', topSourceRank: 'FILING', date: '2026-07-03' },
+      { id: 'e2', from: 'b', to: 'd', label: 'Invested in', topSourceRank: 'PRIMARY', date: '2026-06-01' },
+      { id: 'e3', from: 'a', to: 'c', label: 'Former VP', topSourceRank: 'PRESS' },
+      { id: 'e4', from: 'c', to: 'd', label: 'Co-founder', topSourceRank: 'PRESS' }
+    ]
+  };
+  const res = findShortestVerifiedPaths(bridgeMap, 'a', 'd');
+  assert.equal(res.found, true);
+  assert.equal(res.hopCount, 2);
+  assert.equal(res.paths.length, 2);
+  // Higher provenance FILING+PRIMARY path ranks ahead of PRESS+PRESS path
+  assert.deepEqual(res.paths[0].nodeIds, ['a', 'b', 'd']);
+  assert.deepEqual(res.paths[0].edgeIds, ['e1', 'e2']);
+
+  const none = findShortestVerifiedPaths(bridgeMap, 'a', 'isolated');
+  assert.equal(none.found, false);
+  assert.equal(none.paths.length, 0);
+});
+
+test('diligence state normalization, progress counts, and IC memo embedding work cleanly', () => {
+  assert.equal(buildDiligenceScopeKey(['f2', 'f1', 'F2']), 'f1|f2');
+  const norm = normalizeDiligenceState({
+    access: { status: 'verified', note: 'Verified separate committees.', updatedAt: '2026-11-20' },
+    caution: { status: 'blocked', note: 'Pending FTC filing check.' },
+    lineage: { status: 'bogus', note: 'Fallback status' }
+  });
+  assert.equal(norm.access.status, 'verified');
+  assert.equal(norm.lineage.status, 'open');
+
+  const factors = [{ group: 'access', shortTabLabel: 'Backers' }, { group: 'lineage', shortTabLabel: 'Talent' }, { group: 'caution', shortTabLabel: 'Risks' }];
+  const prog = computeDiligenceProgress(factors, norm);
+  assert.equal(prog.verified, 1);
+  assert.equal(prog.blocked, 1);
+  assert.equal(prog.open, 1);
+  assert.equal(prog.resolved, 2);
+
+  const md = buildIcDiligenceMemoMarkdown({
+    summary: {
+      overall: { label: 'Proceed' },
+      investmentEffect: 'Thesis',
+      factors: [
+        { group: 'access', displayLabel: 'Backers & Stack', shortTabLabel: 'Backers', effect: 'Strong', count: 3, actionableCheck: 'Check LP firewalls' },
+        { group: 'lineage', displayLabel: 'Talent & M&A', shortTabLabel: 'Talent', effect: 'Moderate', count: 1, actionableCheck: 'Check founder overlap' },
+        { group: 'caution', displayLabel: 'Rivalry & Risk', shortTabLabel: 'Risks', effect: 'Flag', count: 1, actionableCheck: 'Check FTC review' }
+      ]
+    },
+    bridgeMap: { focalEntities: [{ id: 'f1', name: 'OpenAI' }], nodes: [], edges: [] },
+    diligenceChecks: norm
+  });
+  assert.ok(md.includes('## IC Diligence Verification Tracker (1 Verified · 1 Blocked · 1 Open)'));
+  assert.ok(md.includes('**Diligence Question [VERIFIED]:** Check LP firewalls'));
+  assert.ok(md.includes('**Analyst Note:** Verified separate committees.'));
+});
+
+test('buildDossierEntityConfig adapts tabs, KPIs, and profile headings per entity type', () => {
+  const personNoInv = buildDossierEntityConfig('Person', { peopleCount: 0, portfolioCount: 0, roundsCount: 0, investorsCount: 0 });
+  assert.equal(personNoInv.archetype, 'person');
+  assert.equal(personNoInv.profileCardTitle, 'Executive Profile');
+  assert.deepEqual(personNoInv.visibleTabs.map((t) => t.key), ['overview', 'connections', 'timeline', 'sources']);
+  assert.equal(personNoInv.visibleTabs.some((t) => t.key === 'people' || t.key === 'funding'), false);
+
+  const personAngel = buildDossierEntityConfig('Person', { portfolioCount: 3 });
+  assert.deepEqual(personAngel.visibleTabs.map((t) => t.key), ['overview', 'connections', 'funding', 'timeline', 'sources']);
+
+  const investor = buildDossierEntityConfig('Fund', { peopleCount: 4, portfolioCount: 12 });
+  assert.equal(investor.archetype, 'investor');
+  assert.equal(investor.profileCardTitle, 'Firm Profile');
+  assert.equal(investor.visibleTabs.find((t) => t.key === 'funding')?.label, 'Portfolio');
+  assert.equal(investor.visibleTabs.find((t) => t.key === 'people')?.label, 'Team');
+
+  const roundEv = buildDossierEntityConfig('Round', { investorsCount: 5 });
+  assert.equal(roundEv.archetype, 'event');
+  assert.equal(roundEv.kpis.length, 3);
+  assert.equal(roundEv.visibleTabs.some((t) => t.key === 'people' || t.key === 'timeline'), false);
+
+  const company = buildDossierEntityConfig('Company', { peopleCount: 8, roundsCount: 3, investorsCount: 12 });
+  assert.equal(company.archetype, 'company');
+  assert.equal(company.profileCardTitle, 'Company Profile');
+  assert.deepEqual(company.visibleTabs.map((t) => t.key), ['overview', 'people', 'funding', 'connections', 'timeline', 'sources']);
 });

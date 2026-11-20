@@ -933,3 +933,36 @@ test('buildEntityBridgeMap decouples structuralRole from decision lenses, enforc
   assert.equal(coldMap.perspectiveEntity?.isColdOutreach, true);
   assert.equal(coldMap.decisionIntelligence.factors.access.count, 0);
 });
+
+test('buildEntityBridgeMap expandAllEntities unlocks >20 connected nodes while reporting totalAvailableEntities', () => {
+  const investors = Array.from({ length: 42 }, (_, idx) => ({
+    id: `inv-${idx}`,
+    name: `Backer Firm ${idx + 1}`,
+    entity_type: 'Organization',
+    properties: {
+      sources: [{ id: `src-${idx}`, name: `Filing ${idx}`, document: 'https://sec.example/f', source_rank: 'FILING' }]
+    }
+  }));
+  const focalCo = {
+    id: 'focal-big',
+    name: 'OpenAI Scale Test',
+    entity_type: 'Company',
+    properties: {},
+    relationships: {
+      incoming: { INVESTED_IN: investors },
+      outgoing: {}
+    }
+  };
+  const compactMap = buildEntityBridgeMap([focalCo], [], { multiCenter: true, referenceDate: '2026-11-20' });
+  assert.equal(compactMap.expandAllEntities, false);
+  assert.equal(compactMap.stats.renderedEntities <= 12, true);
+  assert.equal(compactMap.stats.totalAvailableEntities >= 42, true);
+
+  const expandedMap = buildEntityBridgeMap([focalCo], [], {
+    multiCenter: true,
+    expandAllEntities: true,
+    referenceDate: '2026-11-20'
+  });
+  assert.equal(expandedMap.expandAllEntities, true);
+  assert.equal(expandedMap.stats.renderedEntities >= 40, true);
+});

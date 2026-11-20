@@ -432,6 +432,7 @@ export function buildIcDiligenceMemoMarkdown({
   claudeResult = null,
   starredKeys = new Set(),
   deriveInsight = null,
+  diligenceChecks = {},
   generatedAt = new Date().toISOString().slice(0, 10)
 } = {}) {
   const exec = summary?.executive || {};
@@ -441,6 +442,8 @@ export function buildIcDiligenceMemoMarkdown({
   const provPct = mapProv.total > 0 ? mapProv.verifiedSharePct : Number(exec.verifiedSharePct || 0);
   const sourceTotal = mapProv.total > 0 ? mapProv.total : Number(exec.provenanceMix?.total || 0);
   const claudeFactors = new Map((Array.isArray(claudeResult?.factorAnalyses) ? claudeResult.factorAnalyses : []).map((a) => [a.group, a]));
+  const normalizedDiligence = normalizeDiligenceState(diligenceChecks);
+  const dilProg = computeDiligenceProgress(summary?.factors || [], normalizedDiligence);
   const lines = [];
 
   lines.push(`# VentureLink · Investment Committee Diligence Memo`);
@@ -458,6 +461,17 @@ export function buildIcDiligenceMemoMarkdown({
   lines.push(`## Executive Verdict: ${verdictLabel}`);
   if (thesisText) lines.push(thesisText);
   lines.push("");
+
+  const hasDiligenceUpdates = Object.values(normalizedDiligence).some((d) => d.status !== "open" || d.note);
+  if (hasDiligenceUpdates && (summary?.factors || []).length) {
+    lines.push(`## IC Diligence Verification Tracker (${dilProg.verified} Verified · ${dilProg.blocked} Blocked · ${dilProg.open} Open)`);
+    for (const factor of summary?.factors || []) {
+      const entry = normalizedDiligence[factor.group] || { status: "open", note: "" };
+      const stUpper = entry.status.toUpperCase();
+      lines.push(`- **[${factor.shortTabLabel || factor.label}]** \`[${stUpper}]\`${entry.note ? ` — ${entry.note}` : ""}`);
+    }
+    lines.push("");
+  }
 
   // Collect starred connections first if any are flagged
   const starredItems = [];
@@ -495,10 +509,13 @@ export function buildIcDiligenceMemoMarkdown({
       ? factorEvidenceByGroup[factor.group]
       : (factor.rankedRecords || [])).slice(0, 5);
 
+    const dCheck = normalizedDiligence[factor.group];
+    const dTag = dCheck && dCheck.status !== "open" ? ` [${dCheck.status.toUpperCase()}]` : "";
     lines.push(`### ${factor.displayLabel || factor.label} — ${verdict} (${factor.count} paths)`);
     if (headline) lines.push(`**Headline:** ${headline}`);
     if (takeaway) lines.push(`**Investment Implication:** ${takeaway}`);
-    if (nextCheck) lines.push(`**Diligence Question:** ${nextCheck}`);
+    if (nextCheck) lines.push(`**Diligence Question${dTag}:** ${nextCheck}`);
+    if (dCheck?.note) lines.push(`**Analyst Note:** ${dCheck.note}`);
     if (records.length) {
       lines.push(`**Key Verified Links:**`);
       for (const rec of records) {
@@ -962,5 +979,417 @@ export function parseShareableWorkspaceParams(search = "") {
   return {
     mapTerms,
     perspectiveTerm: perspRaw || null
+  };
+}
+
+/**
+ * Indexes real mapped graph nodes (excluding synthetic group hubs) for quick search/jumping.
+ */
+export function searchMappedGraphNodes(bridgeMap, query = "", { limit = 14 } = {}) {
+  if (!bridgeMap || !Array.isArray(bridgeMap.nodes)) return [];
+  const q = String(query || "").trim().toLowerCase();
+  const nodes = bridgeMap.nodes.filter(
+    (n) => n && n.id && !String(n.id).startsWith("group-hub:") && n.kind !== "group-hub"
+  );
+  const focalIds = new Set([
+    ...(Array.isArray(bridgeMap.focalEntityIds) ? bridgeMap.focalEntityIds : []).map(String),
+    ...(Array.isArray(bridgeMap.focalEntities) ? bridgeMap.focalEntities.map((f) => String(f?.id || "")) : []).filter(Boolean),
+    ...nodes.filter((n) => n.kind === "anchor" || n.isFocalEntity).map((n) => String(n.id))
+  ]);
+
+  const statsById = new Map();
+  for (const n of nodes) {
+    statsById.set(String(n.id), {
+      degree: 0,
+      connectedFocalIds: new Set(),
+      maxRank: 0,
+      strongestTier: "",
+      relations: new Set()
+    });
+  }
+
+  for (const edge of Array.isArray(bridgeMap.edges) ? bridgeMap.edges : []) {
+    if (!edge || String(edge.id || "").startsWith("tree-spoke-")) continue;
+    const fromId = String(edge.from || "");
+    const toId = String(edge.to || "");
+    const tier = String(edge.topSourceRank || "AGGREGATOR").toUpperCase();
+    const rankScore = LEDGER_TIER_RANK[tier] || 1;
+    const rel = String(edge.label || edge.relation || "").trim();
+
+    const sFrom = statsById.get(fromId);
+    const sTo = statsById.get(toId);
+    if (sFrom) {
+      sFrom.degree += 1;
+      if (focalIds.has(toId) && toId !== fromId) sFrom.connectedFocalIds.add(toId);
+      if (rankScore > sFrom.maxRank) {
+        sFrom.maxRank = rankScore;
+        sFrom.strongestTier = tier;
+      }
+      if (rel) sFrom.relations.add(rel);
+    }
+    if (sTo) {
+      sTo.degree += 1;
+      if (focalIds.has(fromId) && fromId !== toId) sTo.connectedFocalIds.add(fromId);
+      if (rankScore > sTo.maxRank) {
+        sTo.maxRank = rankScore;
+        sTo.strongestTier = tier;
+      }
+      if (rel) sTo.relations.add(rel);
+    }
+  }
+
+  const results = [];
+  for (const node of nodes) {
+    const id = String(node.id);
+    const rawName = String(node.label || node.name || id).trim();
+    const formattedName = formatInstitutionalEntityName(rawName) || rawName;
+    const entityType = String(node.entityType || (node.kind === "anchor" ? "Target" : "Entity")).trim();
+    const stat = statsById.get(id);
+    const isFocal = focalIds.has(id);
+    const sharedCount = isFocal ? 0 : stat.connectedFocalIds.size;
+    const relationLabels = [...stat.relations].slice(0, 4);
+
+    let matchRank = 0;
+    if (q) {
+      const nameLow = formattedName.toLowerCase();
+      const rawLow = rawName.toLowerCase();
+      const extraHay = `${entityType} ${relationLabels.join(" ")}`.toLowerCase();
+      if (nameLow === q || rawLow === q) matchRank = 0;
+      else if (nameLow.startsWith(q) || rawLow.startsWith(q)) matchRank = 1;
+      else if (nameLow.includes(q) || rawLow.includes(q)) matchRank = 2;
+      else if (extraHay.includes(q)) matchRank = 3;
+      else continue;
+    }
+
+    results.push({
+      id,
+      rawName,
+      formattedName,
+      entityType,
+      isFocal,
+      sharedCount,
+      degree: stat.degree,
+      strongestTier: stat.strongestTier || "CALA GRAPH",
+      rankScore: stat.maxRank || 0,
+      relationLabels,
+      matchRank
+    });
+  }
+
+  results.sort((a, b) => {
+    if (q && a.matchRank !== b.matchRank) return a.matchRank - b.matchRank;
+    if (a.isFocal !== b.isFocal) return a.isFocal ? -1 : 1;
+    if (b.sharedCount !== a.sharedCount) return b.sharedCount - a.sharedCount;
+    if (b.rankScore !== a.rankScore) return b.rankScore - a.rankScore;
+    if (b.degree !== a.degree) return b.degree - a.degree;
+    return a.formattedName.localeCompare(b.formattedName);
+  });
+
+  const cap = Number.isFinite(limit) && limit > 0 ? limit : results.length;
+  return results.slice(0, cap);
+}
+
+/**
+ * Finds all shortest simple verified Cala paths (BFS) between two mapped nodes up to maxDepth hops.
+ */
+export function findShortestVerifiedPaths(bridgeMap, startNodeId, endNodeId, { maxDepth = 4, maxPaths = 4 } = {}) {
+  const empty = { found: false, hopCount: 0, paths: [], allNodeIds: [], allEdgeIds: [] };
+  const startId = String(startNodeId || "").trim();
+  const endId = String(endNodeId || "").trim();
+  if (!bridgeMap || !startId || !endId || startId === endId) return empty;
+
+  const nodeById = new Map(
+    (Array.isArray(bridgeMap.nodes) ? bridgeMap.nodes : [])
+      .filter((n) => n && n.id && !String(n.id).startsWith("group-hub:") && n.kind !== "group-hub")
+      .map((n) => [String(n.id), n])
+  );
+  if (!nodeById.has(startId) || !nodeById.has(endId)) return empty;
+
+  // Undirected adjacency list keeping the highest-provenance edge between any node pair (u, v).
+  const adj = new Map();
+  const bestPairEdge = new Map();
+  for (const edge of Array.isArray(bridgeMap.edges) ? bridgeMap.edges : []) {
+    if (!edge || !edge.id || String(edge.id).startsWith("tree-spoke-")) continue;
+    const u = String(edge.from || "");
+    const v = String(edge.to || "");
+    if (!u || !v || u === v || !nodeById.has(u) || !nodeById.has(v)) continue;
+    const pairKey = u < v ? `${u}::${v}` : `${v}::${u}`;
+    const tier = String(edge.topSourceRank || "AGGREGATOR").toUpperCase();
+    const score = LEDGER_TIER_RANK[tier] || 1;
+    const prev = bestPairEdge.get(pairKey);
+    if (!prev || score > prev.score || (score === prev.score && edge.date && !prev.edge.date)) {
+      bestPairEdge.set(pairKey, { edge, score, tier });
+    }
+  }
+
+  for (const { edge, score, tier } of bestPairEdge.values()) {
+    const u = String(edge.from);
+    const v = String(edge.to);
+    if (!adj.has(u)) adj.set(u, []);
+    if (!adj.has(v)) adj.set(v, []);
+    adj.get(u).push({ neighborId: v, edge, score, tier });
+    adj.get(v).push({ neighborId: u, edge, score, tier });
+  }
+
+  if (!adj.has(startId) || !adj.has(endId)) return empty;
+
+  // Level-order BFS to enumerate all shortest simple paths of exact minimum length.
+  let frontier = [[startId]];
+  let edgeChains = [[]];
+  const minDist = new Map([[startId, 0]]);
+  const matched = [];
+
+  for (let depth = 1; depth <= maxDepth && frontier.length && matched.length === 0; depth += 1) {
+    const nextFrontier = [];
+    const nextEdgeChains = [];
+    for (let i = 0; i < frontier.length; i += 1) {
+      const pathNodes = frontier[i];
+      const pathEdges = edgeChains[i];
+      const curr = pathNodes[pathNodes.length - 1];
+      for (const step of adj.get(curr) || []) {
+        if (pathNodes.includes(step.neighborId)) continue;
+        const prevDist = minDist.get(step.neighborId);
+        if (prevDist !== undefined && prevDist < depth) continue;
+        const nextNodes = [...pathNodes, step.neighborId];
+        const nextEdges = [...pathEdges, step];
+        if (step.neighborId === endId) {
+          matched.push({ nextNodes, nextEdges });
+        } else {
+          minDist.set(step.neighborId, depth);
+          if (nextFrontier.length < 250) {
+            nextFrontier.push(nextNodes);
+            nextEdgeChains.push(nextEdges);
+          }
+        }
+      }
+    }
+    frontier = nextFrontier;
+    edgeChains = nextEdgeChains;
+  }
+
+  if (!matched.length) return empty;
+
+  const formattedPaths = matched.map(({ nextNodes, nextEdges }) => {
+    const hops = nextEdges.map((step, idx) => {
+      const fId = nextNodes[idx];
+      const tId = nextNodes[idx + 1];
+      const fNode = nodeById.get(fId);
+      const tNode = nodeById.get(tId);
+      return {
+        edgeId: String(step.edge.id),
+        fromId: fId,
+        fromName: formatInstitutionalEntityName(fNode?.label || fNode?.name || fId),
+        toId: tId,
+        toName: formatInstitutionalEntityName(tNode?.label || tNode?.name || tId),
+        relation: String(step.edge.label || step.edge.relation || "Verified link").trim(),
+        date: String(step.edge.roundDate || step.edge.date || "").trim(),
+        sourceRank: step.tier,
+        rankScore: step.score,
+        sourceIds: Array.isArray(step.edge.sourceIds) ? step.edge.sourceIds : [],
+        detail: String(step.edge.detail || "").trim()
+      };
+    });
+    const avgRankScore = hops.reduce((sum, h) => sum + h.rankScore, 0) / Math.max(1, hops.length);
+    const bestHop = hops.reduce((b, h) => (h.rankScore > b.rankScore ? h : b), hops[0]);
+    return {
+      nodeIds: nextNodes,
+      edgeIds: hops.map((h) => h.edgeId),
+      hops,
+      strongestTier: bestHop?.sourceRank || "CALA GRAPH",
+      avgRankScore
+    };
+  });
+
+  formattedPaths.sort((a, b) => b.avgRankScore - a.avgRankScore);
+  const topPaths = formattedPaths.slice(0, Math.max(1, maxPaths));
+  const allNodeIds = [...new Set(topPaths.flatMap((p) => p.nodeIds))];
+  const allEdgeIds = [...new Set(topPaths.flatMap((p) => p.edgeIds))];
+
+  return {
+    found: true,
+    hopCount: topPaths[0].hops.length,
+    paths: topPaths,
+    allNodeIds,
+    allEdgeIds
+  };
+}
+
+/**
+ * Deterministic key for persisting per-map IC diligence verification checklist state.
+ */
+export function buildDiligenceScopeKey(focalIds = []) {
+  const clean = (Array.isArray(focalIds) ? focalIds : [])
+    .map((id) => String(id || "").trim().toLowerCase())
+    .filter(Boolean);
+  if (!clean.length) return "default";
+  return [...new Set(clean)].sort().join("|");
+}
+
+const VALID_DILIGENCE_STATUSES = new Set(["open", "verified", "blocked"]);
+
+/**
+ * Sanitizes persisted diligence status/notes per 4-factor group.
+ */
+export function normalizeDiligenceState(raw = {}) {
+  const out = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [group, val] of Object.entries(raw)) {
+    if (!group || !val || typeof val !== "object") continue;
+    const statusRaw = String(val.status || "open").toLowerCase();
+    const status = VALID_DILIGENCE_STATUSES.has(statusRaw) ? statusRaw : "open";
+    const note = String(val.note || "").slice(0, 280).trim();
+    const updatedAt = String(val.updatedAt || "").trim();
+    out[String(group)] = { status, note, updatedAt };
+  }
+  return out;
+}
+
+/**
+ * Computes completion counts across the 4 decision diligence checks.
+ */
+export function computeDiligenceProgress(factors = [], diligenceByGroup = {}) {
+  const list = Array.isArray(factors) ? factors : [];
+  const norm = normalizeDiligenceState(diligenceByGroup);
+  let verified = 0;
+  let blocked = 0;
+  let open = 0;
+  for (const f of list) {
+    const st = norm[f?.group]?.status || "open";
+    if (st === "verified") verified += 1;
+    else if (st === "blocked") blocked += 1;
+    else open += 1;
+  }
+  return {
+    total: list.length,
+    verified,
+    blocked,
+    open,
+    resolved: verified + blocked
+  };
+}
+
+/**
+ * Returns entity-type-specific tab visibility, labels, Overview section headings,
+ * and KPI tiles so Person, Fund/Investor, Round/Event, and Company dossiers never show
+ * irrelevant sections (e.g. "People 0" or startup "Funding 0" inside a Person dossier).
+ */
+export function buildDossierEntityConfig(entityKind = "Company", counts = {}) {
+  const kindLower = String(entityKind || "").toLowerCase();
+  const peopleCount = Number(counts.peopleCount || 0);
+  const portfolioCount = Number(counts.portfolioCount || 0);
+  const roundsCount = Number(counts.roundsCount || 0);
+  const investorsCount = Number(counts.investorsCount || 0);
+  const financingTotal = portfolioCount + roundsCount + investorsCount;
+
+  let archetype = "company";
+  if (kindLower.includes("person") || kindLower.includes("founder") || kindLower.includes("exec")) {
+    archetype = "person";
+  } else if (kindLower.includes("round") || kindLower.includes("event") || kindLower.includes("catalyst")) {
+    archetype = "event";
+  } else if (
+    kindLower.includes("fund") ||
+    kindLower.includes("investor") ||
+    (kindLower.includes("organization") && portfolioCount > 0 && roundsCount === 0 && investorsCount === 0)
+  ) {
+    archetype = "investor";
+  }
+
+  if (archetype === "person") {
+    const visibleTabs = [
+      { key: "overview", label: "Overview", countKey: null },
+      { key: "connections", label: "Network", countKey: "connections" }
+    ];
+    if (portfolioCount > 0) {
+      visibleTabs.push({ key: "funding", label: "Investments", countKey: "funding" });
+    }
+    visibleTabs.push(
+      { key: "timeline", label: "Career", countKey: "timeline" },
+      { key: "sources", label: "Sources", countKey: "sources" }
+    );
+    const thirdKpi = portfolioCount > 0
+      ? { label: "Investments", countKey: "portfolio", targetTab: "funding" }
+      : { label: "Career Events", countKey: "timeline", targetTab: "timeline" };
+    return {
+      archetype,
+      visibleTabs,
+      profileCardTitle: "Executive Profile",
+      previewTitle: "Affiliations & Network",
+      kpis: [
+        { label: "Verified Links", countKey: "connections", targetTab: "connections" },
+        { label: "Affiliated Orgs", countKey: "affiliatedOrgs", targetTab: "connections" },
+        thirdKpi,
+        { label: "Cala Sources", countKey: "sources", targetTab: "sources" }
+      ]
+    };
+  }
+
+  if (archetype === "investor") {
+    const visibleTabs = [
+      { key: "overview", label: "Overview", countKey: null },
+      ...(peopleCount > 0 ? [{ key: "people", label: "Team", countKey: "people" }] : []),
+      { key: "funding", label: "Portfolio", countKey: "funding" },
+      { key: "connections", label: "Network", countKey: "connections" },
+      { key: "timeline", label: "Activity", countKey: "timeline" },
+      { key: "sources", label: "Sources", countKey: "sources" }
+    ];
+    return {
+      archetype,
+      visibleTabs,
+      profileCardTitle: "Firm Profile",
+      previewTitle: "Key Portfolio & Co-Investor Links",
+      kpis: [
+        { label: "Portfolio & Deals", countKey: "funding", targetTab: "funding" },
+        { label: "Verified Links", countKey: "connections", targetTab: "connections" },
+        { label: "Team", countKey: "people", targetTab: peopleCount > 0 ? "people" : "connections" },
+        { label: "Cala Sources", countKey: "sources", targetTab: "sources" }
+      ]
+    };
+  }
+
+  if (archetype === "event") {
+    const hasParticipants = investorsCount + roundsCount > 0;
+    const visibleTabs = [
+      { key: "overview", label: "Overview", countKey: null },
+      ...(hasParticipants ? [{ key: "funding", label: "Participants", countKey: "funding" }] : []),
+      { key: "connections", label: "Connections", countKey: "connections" },
+      { key: "sources", label: "Sources", countKey: "sources" }
+    ];
+    return {
+      archetype,
+      visibleTabs,
+      profileCardTitle: "Event / Deal Details",
+      previewTitle: "Verified Participants & Links",
+      kpis: [
+        {
+          label: "Participants",
+          countKey: hasParticipants ? "funding" : "connections",
+          targetTab: hasParticipants ? "funding" : "connections"
+        },
+        { label: "Verified Links", countKey: "connections", targetTab: "connections" },
+        { label: "Cala Sources", countKey: "sources", targetTab: "sources" }
+      ]
+    };
+  }
+
+  const showOrgFunding = !kindLower.includes("organization") || financingTotal > 0;
+  const visibleTabs = [
+    { key: "overview", label: "Overview", countKey: null },
+    { key: "people", label: "Leadership", countKey: "people" },
+    ...(showOrgFunding ? [{ key: "funding", label: "Funding", countKey: "funding" }] : []),
+    { key: "connections", label: "Connections", countKey: "connections" },
+    { key: "timeline", label: "Timeline", countKey: "timeline" },
+    { key: "sources", label: "Sources", countKey: "sources" }
+  ];
+  return {
+    archetype,
+    visibleTabs,
+    profileCardTitle: kindLower.includes("organization") ? "Organization Profile" : "Company Profile",
+    previewTitle: "Top Verified Connections",
+    kpis: [
+      { label: "Verified Links", countKey: "connections", targetTab: "connections" },
+      { label: "Leadership", countKey: "people", targetTab: "people" },
+      { label: "Rounds & Backers", countKey: "funding", targetTab: showOrgFunding ? "funding" : "connections" },
+      { label: "Cala Sources", countKey: "sources", targetTab: "sources" }
+    ]
   };
 }

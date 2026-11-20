@@ -639,7 +639,7 @@
             <button type="button" class="zoom-text-btn" id="mapFitViewBtn" title="Fit constellation to viewport">Fit</button>
           </div>
 
-          <!-- Bottom-left Key Toggle Pill + Legend Popover -->
+          <!-- Bottom-left Key, Finder & Shortest-Path Controls -->
           <div class="map-bottom-left-overlay map-minimal-hud" id="mapMinimalHud">
             <div class="map-legend-popover" id="mapLegendPopover" role="dialog" aria-label="Constellation key and controls" hidden>
               <div class="legend-pop-header">
@@ -661,21 +661,72 @@
                 Hover an edge or node for structural role &amp; source proof &middot; Click any Entity orb for full Cala Dossier &middot; Scroll/trackpad pans &amp; zooms
               </div>
             </div>
-            <button
-              type="button"
-              class="map-key-toggle-pill"
-              id="mapLegendToggleBtn"
-              aria-expanded="false"
-              aria-controls="mapLegendPopover"
-            >
-              <span class="key-pill-dots" aria-hidden="true">
-                <span class="fam-dot fam-dot-feeder"></span>
-                <span class="fam-dot fam-dot-alumni"></span>
-                <span class="fam-dot fam-dot-event"></span>
-                <span class="fam-dot fam-dot-twin"></span>
-              </span>
-              <span>Key &middot; ?</span>
-            </button>
+
+            <div class="path-tracer-popover" id="mapPathTracerPopover" role="dialog" aria-label="Verified shortest path tracer" hidden>
+              <div class="path-tracer-head">
+                <div>
+                  <span class="legend-pop-title">Verified Path Tracer</span>
+                  <span class="path-tracer-sub">Shortest verified Cala graph route between entities</span>
+                </div>
+                <button type="button" class="legend-pop-close" id="mapPathTracerCloseBtn" aria-label="Close path tracer">x</button>
+              </div>
+              <div class="path-tracer-controls">
+                <select id="pathTraceFromSelect" class="path-tracer-select" aria-label="Starting entity"></select>
+                <button type="button" class="path-tracer-swap-btn" id="pathTraceSwapBtn" aria-label="Swap start and end entities" title="Swap endpoints">&#8644;</button>
+                <select id="pathTraceToSelect" class="path-tracer-select" aria-label="Destination entity"></select>
+                <button type="button" class="path-tracer-run-btn" id="pathTraceRunBtn">Trace</button>
+                <button type="button" class="path-tracer-clear-btn" id="pathTraceClearBtn">Clear</button>
+              </div>
+              <div id="pathTraceResults" class="path-tracer-results" aria-live="polite"></div>
+            </div>
+
+            <div class="map-hud-pill-row">
+              <button
+                type="button"
+                class="map-key-toggle-pill"
+                id="mapLegendToggleBtn"
+                aria-expanded="false"
+                aria-controls="mapLegendPopover"
+              >
+                <span class="key-pill-dots" aria-hidden="true">
+                  <span class="fam-dot fam-dot-feeder"></span>
+                  <span class="fam-dot fam-dot-alumni"></span>
+                  <span class="fam-dot fam-dot-event"></span>
+                  <span class="fam-dot fam-dot-twin"></span>
+                </span>
+                <span>Key &middot; ?</span>
+              </button>
+              <button
+                type="button"
+                class="map-key-toggle-pill map-tool-pill"
+                id="mapFinderToggleBtn"
+                aria-expanded="false"
+                aria-controls="mapFinderBackdrop"
+                title="Search entities currently on this map (⌘K or /)"
+              >
+                <span>Find &middot; &#8984;K</span>
+              </button>
+              <button
+                type="button"
+                class="map-key-toggle-pill map-tool-pill"
+                id="mapPathTracerToggleBtn"
+                aria-expanded="false"
+                aria-controls="mapPathTracerPopover"
+                title="Trace shortest verified Cala path between two entities"
+              >
+                <span>Path &middot; A&#8596;B</span>
+              </button>
+              <button
+                type="button"
+                class="map-key-toggle-pill map-tool-pill map-density-pill"
+                id="mapDensityToggleBtn"
+                aria-pressed="false"
+                title="Toggle between compact highlights and full verified Cala entity graph"
+                hidden
+              >
+                All entities
+              </button>
+            </div>
           </div>
 
           <div class="map-bottom-right-overlay" id="mapDecisionHud">
@@ -709,6 +760,26 @@
               <span class="decision-pill-dot" id="decisionPillDot" aria-hidden="true"></span>
               <span id="decisionPillLabel">Decision &middot; 4 Factors</span>
             </button>
+          </div>
+
+          <!-- Quick On-Map Node Finder Palette (⌘K or /) -->
+          <div id="mapFinderBackdrop" class="map-finder-backdrop" hidden>
+            <section id="mapFinderPanel" class="map-finder-panel" role="dialog" aria-modal="false" aria-label="Find entity on map">
+              <div class="map-finder-head">
+                <input
+                  type="search"
+                  id="mapFinderInput"
+                  class="map-finder-input"
+                  placeholder="Find entity on map (investor, founder, partner)..."
+                  aria-label="Search entities on loaded map"
+                  autocomplete="off"
+                />
+                <kbd class="map-finder-kbd">Esc</kbd>
+                <button type="button" class="legend-pop-close" id="mapFinderCloseBtn" aria-label="Close entity finder">x</button>
+              </div>
+              <div id="mapFinderMeta" class="map-finder-meta"></div>
+              <div id="mapFinderList" class="map-finder-list" role="listbox" aria-label="Matched entities on map"></div>
+            </section>
           </div>
 
           <!-- Floating Hover Math-First Tooltip -->
@@ -749,11 +820,6 @@
               <span aria-hidden="true">&times;</span>
             </button>
           </div>
-        </div>
-        <div class="drawer-header-right dossier-actions" id="dossierActionsRow">
-          <button id="dossierShowMapBtn" type="button" class="btn sm">Locate on map</button>
-          <button id="dossierCenterBtn" type="button" class="btn sm">Focus only this</button>
-          <button id="dossierAddBtn" type="button" class="btn sm primary" hidden>+ Expand on map</button>
         </div>
       </header>
 
