@@ -15255,6 +15255,9 @@ html[data-theme="light"] .map-density-pill.is-active {
 
 .map-finder-list {
   flex: 1 1 auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+  align-content: start;
   overflow-y: auto;
   padding: 8px;
   display: grid;
@@ -15446,6 +15449,8 @@ html[data-theme="light"] .map-finder-row.is-active {
 
 .path-tracer-results {
   flex: 1 1 auto;
+  min-height: 0;
+  overscroll-behavior: contain;
   overflow-y: auto;
   display: grid;
   gap: 8px;

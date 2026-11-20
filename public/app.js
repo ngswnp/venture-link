@@ -9757,7 +9757,8 @@ function bindCanvasAndMapInteractions() {
   canvas.addEventListener(
     "wheel",
     (e) => {
-      if (e.target.closest?.(".decision-summary-popover, .map-legend-popover")) return;
+      if (state.mapFinderOpen) return;
+      if (e.target.closest?.(".decision-summary-popover, .map-legend-popover, .map-finder-backdrop, .map-finder-panel, .path-tracer-popover, .explored-entities-box, .map-zoom-controls, .map-top-center-bar, .constellation-empty-state")) return;
       e.preventDefault();
       cancelMapViewportGlide();
       const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE
@@ -9792,7 +9793,8 @@ function bindCanvasAndMapInteractions() {
   );
 
   canvas.addEventListener("pointerdown", (e) => {
-    if (e.target.closest(".map-node, [data-edge-id], .edge-hit-target, button, input, aside, .map-zoom-controls, .map-minimal-hud, .map-top-center-bar, .decision-summary-popover, .map-legend-popover, .map-bottom-left-overlay, .map-bottom-right-overlay")) {
+    if (state.mapFinderOpen) return;
+    if (e.target.closest(".map-node, [data-edge-id], .edge-hit-target, button, input, select, textarea, aside, .map-zoom-controls, .map-minimal-hud, .map-top-center-bar, .decision-summary-popover, .map-legend-popover, .map-bottom-left-overlay, .map-bottom-right-overlay, .map-finder-backdrop, .map-finder-panel, .path-tracer-popover, .constellation-empty-state, .map-hover-tooltip")) {
       return;
     }
     cancelMapViewportGlide();
@@ -10442,6 +10444,18 @@ function bindWave4ToolsEvents() {
   $("#mapFinderBackdrop")?.addEventListener("click", (e) => {
     if (e.target.id === "mapFinderBackdrop") closeMapFinder();
   });
+  // Keep wheel/drag inside the finder from panning or zooming the map behind it.
+  $("#mapFinderBackdrop")?.addEventListener("pointerdown", (e) => e.stopPropagation());
+  $("#mapFinderBackdrop")?.addEventListener(
+    "wheel",
+    (e) => {
+      e.stopPropagation();
+      if (!e.target.closest?.("#mapFinderList")) e.preventDefault();
+    },
+    { passive: false }
+  );
+  $("#mapPathTracerPopover")?.addEventListener("pointerdown", (e) => e.stopPropagation());
+  $("#mapPathTracerPopover")?.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
   $("#mapFinderInput")?.addEventListener("input", (e) => {
     state.mapFinderQuery = e.target.value || "";
     state.mapFinderActiveIndex = 0;
