@@ -5975,6 +5975,11 @@ html[data-theme="light"] .ribbon-count-pill {
   will-change: transform;
 }
 
+#bridgeMapCanvas.is-panning #mapPanZoomViewport,
+#bridgeMapCanvas.is-gliding #mapPanZoomViewport {
+  will-change: transform;
+}
+
 .map-node.is-physics-dragging {
   cursor: grabbing;
   z-index: 40 !important;

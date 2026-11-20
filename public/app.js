@@ -188,8 +188,6 @@ const state = {
   mapPhysicsRafId: null,
   mapPhysicsLastFrame: 0,
   viewportGlide: null,
-  viewportGlideRafId: null,
-  viewportGlideLastFrame: 0,
   mapNodeDrag: null,
   mapNodeClickSuppressUntil: 0,
   pointerPan: null,
@@ -2363,7 +2361,7 @@ function applyPathLaserIsolation() {
 function applyMapViewportTransform() {
   const vp = $("#mapPanZoomViewport");
   if (vp) {
-    vp.style.transform = `translate(${state.mapPanX}px, ${state.mapPanY}px) scale(${state.mapZoom})`;
+    vp.style.transform = `translate3d(${state.mapPanX.toFixed(2)}px, ${state.mapPanY.toFixed(2)}px, 0) scale(${state.mapZoom})`;
     const labelScale = Math.min(2.35, Math.max(1, 0.78 / Math.max(0.22, state.mapZoom)));
     vp.style.setProperty("--map-label-scale", labelScale.toFixed(3));
   }
@@ -2452,22 +2450,18 @@ function prefersReducedMotion() {
 }
 
 function cancelMapViewportGlide() {
-  if (state.viewportGlideRafId !== null) {
-    cancelAnimationFrame(state.viewportGlideRafId);
-    state.viewportGlideRafId = null;
-  }
   state.viewportGlide = null;
-  state.viewportGlideLastFrame = 0;
+  $("#bridgeMapCanvas")?.classList?.remove("is-gliding");
 }
 
-function triggerMapPanPhysics(deltaScreenX, deltaScreenY, dtFrames = 1) {
+function triggerMapPanPhysics(deltaScreenX, deltaScreenY) {
   if (!state.mapLayoutNodes || !state.mapPhysics || state.workspaceMode !== "map") return;
   const triggered = applyMapViewportPanImpulse(
     state.mapLayoutNodes,
     state.mapPhysics,
     deltaScreenX,
     deltaScreenY,
-    { zoom: state.mapZoom, dt: dtFrames, reducedMotion: prefersReducedMotion() }
+    { zoom: state.mapZoom, reducedMotion: prefersReducedMotion() }
   );
   if (triggered) scheduleMapPhysicsFrame();
 }
@@ -2488,32 +2482,10 @@ function triggerMapZoomPhysics(pivotWorldX, pivotWorldY, zoomFactorRatio) {
 function startMapViewportGlide(vx, vy) {
   cancelMapViewportGlide();
   if (prefersReducedMotion()) return;
-  state.viewportGlide = { vx, vy };
-  state.viewportGlideLastFrame = performance.now();
-  const tick = (now) => {
-    state.viewportGlideRafId = null;
-    const glide = state.viewportGlide;
-    if (!glide || state.workspaceMode !== "map") {
-      cancelMapViewportGlide();
-      return;
-    }
-    const elapsed = state.viewportGlideLastFrame ? now - state.viewportGlideLastFrame : 1000 / 60;
-    state.viewportGlideLastFrame = now;
-    const dtFrames = Math.max(0.4, Math.min(2.2, elapsed / (1000 / 60)));
-    const { dx, dy, moving } = stepViewportPanGlide(glide, dtFrames);
-    if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
-      state.mapPanX += dx;
-      state.mapPanY += dy;
-      applyMapViewportTransform();
-      triggerMapPanPhysics(dx, dy, dtFrames);
-    }
-    if (moving) {
-      state.viewportGlideRafId = requestAnimationFrame(tick);
-    } else {
-      cancelMapViewportGlide();
-    }
-  };
-  state.viewportGlideRafId = requestAnimationFrame(tick);
+  const clampSpeed = (v) => Math.max(-42, Math.min(42, Number(v) || 0));
+  state.viewportGlide = { vx: clampSpeed(vx), vy: clampSpeed(vy) };
+  $("#bridgeMapCanvas")?.classList?.add("is-gliding");
+  scheduleMapPhysicsFrame();
 }
 
 function centerConstellationView() {
@@ -2539,7 +2511,7 @@ function centerConstellationView() {
   applyMapViewportTransform();
   const dx = Math.max(-140, Math.min(140, state.mapPanX - prevPanX));
   const dy = Math.max(-140, Math.min(140, state.mapPanY - prevPanY));
-  if (Math.hypot(dx, dy) > 4) triggerMapPanPhysics(dx * 0.45, dy * 0.45, 1.5);
+  if (Math.hypot(dx, dy) > 4) triggerMapPanPhysics(dx * 0.45, dy * 0.45);
 }
 
 function focusNodeOnMap(nodeId) {
@@ -2555,7 +2527,7 @@ function focusNodeOnMap(nodeId) {
   applyMapViewportTransform();
   const dx = Math.max(-140, Math.min(140, state.mapPanX - prevPanX));
   const dy = Math.max(-140, Math.min(140, state.mapPanY - prevPanY));
-  if (Math.hypot(dx, dy) > 4) triggerMapPanPhysics(dx * 0.45, dy * 0.45, 1.5);
+  if (Math.hypot(dx, dy) > 4) triggerMapPanPhysics(dx * 0.45, dy * 0.45);
 }
 
 function stopMapPhysics() {
@@ -2596,19 +2568,43 @@ function stabilizeMapLayoutForPhysics(layout, physics) {
 
 function renderMapPhysicsVisuals(layout = state.mapLayoutNodes, physics = state.mapPhysics) {
   if (!layout?.posMap) return;
+  const movedNodes = new Set();
   for (const [id, pos] of layout.posMap) {
     const element = layout.nodeElements?.get(id);
     const origin = layout.renderPositions?.get(id);
     if (!element || !origin) continue;
     const nodeState = physics?.nodes?.get(id);
-    element.style.setProperty("--physics-dx", `${(pos.x - origin.x).toFixed(2)}px`);
-    element.style.setProperty("--physics-dy", `${(pos.y - origin.y).toFixed(2)}px`);
-    element.style.setProperty("--physics-tilt", `${(nodeState?.tiltDeg || 0).toFixed(2)}deg`);
+    const dxVal = Math.round((pos.x - origin.x) * 100) / 100;
+    const dyVal = Math.round((pos.y - origin.y) * 100) / 100;
+    const tiltVal = Math.round((nodeState?.tiltDeg || 0) * 100) / 100;
+    const prev = element._physCache;
+    if (
+      !prev ||
+      Math.abs(dxVal - prev.dx) > 0.01 ||
+      Math.abs(dyVal - prev.dy) > 0.01 ||
+      Math.abs(tiltVal - prev.tilt) > 0.01
+    ) {
+      movedNodes.add(id);
+      element._physCache = { dx: dxVal, dy: dyVal, tilt: tiltVal };
+      element.style.setProperty("--physics-dx", `${dxVal.toFixed(2)}px`);
+      element.style.setProperty("--physics-dy", `${dyVal.toFixed(2)}px`);
+      element.style.setProperty("--physics-tilt", `${tiltVal.toFixed(2)}deg`);
+    }
   }
   for (const edge of layout.displayEdges || []) {
+    const edgeKey = edge.id || `${edge.from}->${edge.to}`;
+    const bowVal = Math.round((physics?.edgeBows?.get?.(edgeKey) || 0) * 100) / 100;
+    const paths = layout.edgePathElements?.get(edge.id) || [];
+    const prevBow = paths[0]?._physBow || 0;
+    if (!movedNodes.has(edge.from) && !movedNodes.has(edge.to) && Math.abs(bowVal) <= 0.01 && Math.abs(prevBow) <= 0.01) {
+      continue;
+    }
     const d = buildMapEdgePathData(edge, layout.posMap, physics);
     if (!d) continue;
-    for (const path of layout.edgePathElements?.get(edge.id) || []) path.setAttribute("d", d);
+    for (const path of paths) {
+      path.setAttribute("d", d);
+      path._physBow = bowVal;
+    }
   }
 }
 
@@ -2624,12 +2620,30 @@ function scheduleMapPhysicsFrame() {
     if (!layout || !physics) return;
     const elapsed = state.mapPhysicsLastFrame ? now - state.mapPhysicsLastFrame : 1000 / 60;
     state.mapPhysicsLastFrame = now;
-    const stillMoving = stepMapPhysics(layout, physics, elapsed / (1000 / 60));
+    const dtFrames = Math.max(0.35, Math.min(2.0, elapsed / (1000 / 60)));
+
+    if (state.viewportGlide && state.workspaceMode === "map") {
+      const { dx, dy, moving } = stepViewportPanGlide(state.viewportGlide, dtFrames);
+      if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+        state.mapPanX += dx;
+        state.mapPanY += dy;
+        applyMapViewportTransform();
+        applyMapViewportPanImpulse(layout, physics, dx, dy, {
+          zoom: state.mapZoom,
+          reducedMotion: prefersReducedMotion()
+        });
+      }
+      if (!moving) cancelMapViewportGlide();
+    } else if (state.viewportGlide) {
+      cancelMapViewportGlide();
+    }
+
+    const stillMoving = stepMapPhysics(layout, physics, dtFrames);
     renderMapPhysicsVisuals(layout, physics);
     if (physics.draggedNodeId !== null) {
       recomputeMapLayoutBounds(layout, 68);
     }
-    if (stillMoving) {
+    if (stillMoving || state.viewportGlide !== null) {
       scheduleMapPhysicsFrame();
     } else {
       state.mapPhysicsLastFrame = 0;
@@ -9774,7 +9788,7 @@ function bindCanvasAndMapInteractions() {
         state.mapPanX += dx;
         state.mapPanY += dy;
         applyMapViewportTransform();
-        triggerMapPanPhysics(dx, dy, 1);
+        triggerMapPanPhysics(dx, dy);
       }
     },
     { passive: false }
@@ -9813,17 +9827,17 @@ function bindCanvasAndMapInteractions() {
     if (Math.hypot(e.clientX - pan.x, e.clientY - pan.y) > 3) {
       hideMapTooltip();
     }
-    const instVx = dx / dtFrames;
-    const instVy = dy / dtFrames;
-    pan.vx = pan.vx * 0.35 + instVx * 0.65;
-    pan.vy = pan.vy * 0.35 + instVy * 0.65;
+    const instVx = Math.max(-42, Math.min(42, dx / dtFrames));
+    const instVy = Math.max(-42, Math.min(42, dy / dtFrames));
+    pan.vx = pan.vx * 0.5 + instVx * 0.5;
+    pan.vy = pan.vy * 0.5 + instVy * 0.5;
     pan.lastClientX = e.clientX;
     pan.lastClientY = e.clientY;
     pan.lastTime = now;
     state.mapPanX = pan.panX + (e.clientX - pan.x);
     state.mapPanY = pan.panY + (e.clientY - pan.y);
     applyMapViewportTransform();
-    triggerMapPanPhysics(dx, dy, dtFrames);
+    triggerMapPanPhysics(dx, dy);
   });
 
   const finishPan = (e, allowClickClear) => {

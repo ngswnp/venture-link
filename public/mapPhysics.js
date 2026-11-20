@@ -105,24 +105,26 @@ export function createMapPhysics(layout, options = {}) {
     const mass = isAnchor
       ? 2.3
       : isHub
-        ? 1.55
+        ? 0.92
         : isShared
-          ? 1.35 + seed * 0.2
-          : 0.85 + (1 - radialRatio) * 0.25 + seed * 0.2;
+          ? 0.62 + seed * 0.10
+          : 0.44 + (1 - radialRatio) * 0.16 + seed * 0.08;
 
     const homeK = isAnchor
-      ? 1.65
+      ? 3.1
       : isHub
-        ? 1.25
-        : 0.78 + (1 - radialRatio) * 0.35 + seed * 0.15;
+        ? 1.15
+        : isShared
+          ? 0.92 + seed * 0.10
+          : 0.68 + (1 - radialRatio) * 0.24 + seed * 0.08;
 
     const inertiaWeight = isAnchor
-      ? 0.45
+      ? 0.36
       : isHub
-        ? 0.78
+        ? 0.68
         : isShared
-          ? 0.95
-          : 1.05 + radialRatio * 0.45 + seed * 0.15;
+          ? 0.82
+          : 0.88 + radialRatio * 0.34 + seed * 0.10;
 
     nodeStates.set(id, {
       id,
@@ -131,6 +133,7 @@ export function createMapPhysics(layout, options = {}) {
       homeK,
       inertiaWeight,
       radialRatio,
+      degree: 0,
       vx: 0,
       vy: 0,
       tiltDeg: 0,
@@ -148,9 +151,16 @@ export function createMapPhysics(layout, options = {}) {
         from: edge.from,
         to: edge.to,
         restLength: Math.max(24, Math.hypot(to.x - from.x, to.y - from.y)),
-        strength: edge.isOverviewSpoke ? 0.0085 : edge.isSharedBridge ? 0.0075 : 0.0065
+        strength: edge.isOverviewSpoke ? 0.0032 : edge.isSharedBridge ? 0.0028 : 0.0024
       };
     });
+
+  for (const link of links) {
+    const fromNode = nodeStates.get(link.from);
+    const toNode = nodeStates.get(link.to);
+    if (fromNode) fromNode.degree = (fromNode.degree || 0) + 1;
+    if (toNode) toNode.degree = (toNode.degree || 0) + 1;
+  }
 
   return {
     nodes: nodeStates,
@@ -158,17 +168,21 @@ export function createMapPhysics(layout, options = {}) {
     draggedNodeId: null,
     frameCount: 0,
     maxFrames: options.maxFrames ?? 720,
-    homeStrength: options.homeStrength ?? 0.028,
-    damping: options.damping ?? 0.85,
-    linkDamping: options.linkDamping ?? 0.045,
-    maxDisplacement: options.maxDisplacement ?? 130,
+    homeStrength: options.homeStrength ?? 0.0155,
+    damping: options.damping ?? 0.87,
+    linkDamping: options.linkDamping ?? 0.04,
+    maxDisplacement: options.maxDisplacement ?? 122,
     collisionGap: options.collisionGap ?? 12,
     collisionIterations: options.collisionIterations ?? 20,
-    maxSpeed: options.maxSpeed ?? 34,
-    tiltScale: options.tiltScale ?? 0.22,
+    maxSpeed: options.maxSpeed ?? 24,
+    tiltScale: options.tiltScale ?? 0.20,
+    pendingPanX: 0,
+    pendingPanY: 0,
+    pendingZoom: 1,
+    reducedMotion: false,
     camVx: 0,
     camVy: 0,
-    viewportInputTtl: 0,
+    edgeBows: new Map(),
     sleepFrames: 0,
     centroidX: centroid.x,
     centroidY: centroid.y,
@@ -182,11 +196,15 @@ function inverseMass(physics, id) {
   return 1 / mass;
 }
 
-export function resolveMapNodeCollisions(layout, physics) {
+export function resolveMapNodeCollisions(layout, physics, options = {}) {
+  const soft = Boolean(options.soft);
+  const maxIter = soft ? Math.min(4, physics.collisionIterations) : physics.collisionIterations;
+  const sepFactor = soft ? 0.24 : 1;
+  const velKick = soft ? 0.005 : 0.025;
   const entries = [...layout.posMap.entries()];
   let maxPenetration = 0;
 
-  for (let iteration = 0; iteration < physics.collisionIterations; iteration += 1) {
+  for (let iteration = 0; iteration < maxIter; iteration += 1) {
     let iterMaxPenetration = 0;
     for (let i = 0; i < entries.length; i += 1) {
       const [idA, a] = entries[i];
@@ -211,18 +229,18 @@ export function resolveMapNodeCollisions(layout, physics) {
         const direction = stableDirection(idA, idB);
         if (overlapX <= overlapY) {
           const sign = Math.abs(dx) > 0.25 ? Math.sign(dx) : direction.x >= 0 ? 1 : -1;
-          const correction = Math.min(180, overlapX + 0.25);
+          const correction = Math.min(180, overlapX + (soft ? 0 : 0.25)) * sepFactor;
           a.x -= sign * correction * (weightA / totalWeight);
           b.x += sign * correction * (weightB / totalWeight);
-          physics.nodes.get(idA).vx -= sign * correction * 0.025 * (weightA / totalWeight);
-          physics.nodes.get(idB).vx += sign * correction * 0.025 * (weightB / totalWeight);
+          physics.nodes.get(idA).vx -= sign * correction * velKick * (weightA / totalWeight);
+          physics.nodes.get(idB).vx += sign * correction * velKick * (weightB / totalWeight);
         } else {
           const sign = Math.abs(dy) > 0.25 ? Math.sign(dy) : direction.y >= 0 ? 1 : -1;
-          const correction = Math.min(180, overlapY + 0.25);
+          const correction = Math.min(180, overlapY + (soft ? 0 : 0.25)) * sepFactor;
           a.y -= sign * correction * (weightA / totalWeight);
           b.y += sign * correction * (weightB / totalWeight);
-          physics.nodes.get(idA).vy -= sign * correction * 0.025 * (weightA / totalWeight);
-          physics.nodes.get(idB).vy += sign * correction * 0.025 * (weightB / totalWeight);
+          physics.nodes.get(idA).vy -= sign * correction * velKick * (weightA / totalWeight);
+          physics.nodes.get(idB).vy += sign * correction * velKick * (weightB / totalWeight);
         }
         const pen = Math.min(overlapX, overlapY);
         iterMaxPenetration = Math.max(iterMaxPenetration, pen);
@@ -250,28 +268,48 @@ export function stepMapPhysics(layout, physics, dt = 1) {
   if (!layout?.posMap?.size || !physics?.nodes?.size) return false;
   const step = clamp(Number(dt) || 1, 0.35, 2.2);
 
-  // When viewport input pauses or releases, inject braking deceleration overshoot in the prior pan direction.
-  if (physics.viewportInputTtl > 0) {
-    physics.viewportInputTtl = Math.max(0, physics.viewportInputTtl - step);
-  } else if (Math.hypot(physics.camVx || 0, physics.camVy || 0) > 0.05) {
-    const camDecay = Math.pow(0.68, step);
-    const nextCamVx = physics.camVx * camDecay;
-    const nextCamVy = physics.camVy * camDecay;
-    const dCamVx = nextCamVx - physics.camVx;
-    const dCamVy = nextCamVy - physics.camVy;
-    physics.camVx = Math.abs(nextCamVx) < 0.05 ? 0 : nextCamVx;
-    physics.camVy = Math.abs(nextCamVy) < 0.05 ? 0 : nextCamVy;
+  // Consume frame-accumulated viewport delta ONCE per RAF step for rock-steady, smooth non-inertial lag & braking.
+  const pendX = Number(physics.pendingPanX) || 0;
+  const pendY = Number(physics.pendingPanY) || 0;
+  const hasInput = Math.hypot(pendX, pendY) > 0.01;
+  physics.pendingPanX = 0;
+  physics.pendingPanY = 0;
+
+  const zoomScale = Math.pow(clamp(Number(physics.pendingZoom) || 1, 0.25, 1.5), 0.82);
+  const rawVx = hasInput ? (pendX / zoomScale) / step : 0;
+  const rawVy = hasInput ? (pendY / zoomScale) / step : 0;
+  const prevCamVx = Number(physics.camVx) || 0;
+  const prevCamVy = Number(physics.camVy) || 0;
+
+  let nextCamVx = hasInput ? prevCamVx * 0.55 + rawVx * 0.45 : prevCamVx * Math.pow(0.76, step);
+  let nextCamVy = hasInput ? prevCamVy * 0.55 + rawVy * 0.45 : prevCamVy * Math.pow(0.76, step);
+  if (!hasInput && Math.hypot(nextCamVx, nextCamVy) < 0.02) {
+    nextCamVx = 0;
+    nextCamVy = 0;
+  }
+
+  const camAx = (nextCamVx - prevCamVx) / step;
+  const camAy = (nextCamVy - prevCamVy) / step;
+  physics.camVx = nextCamVx;
+  physics.camVy = nextCamVy;
+
+  if (hasInput || Math.hypot(camAx, camAy) > 0.01 || Math.hypot(nextCamVx, nextCamVy) > 0.02) {
+    const motionScale = physics.reducedMotion ? 0.22 : 1;
+    const rawDriveX = -(camAx * 0.13 + nextCamVx * 0.017) * motionScale;
+    const rawDriveY = -(camAy * 0.13 + nextCamVy * 0.017) * motionScale;
+    const driveX = Math.tanh(rawDriveX / 4.8) * 4.8;
+    const driveY = Math.tanh(rawDriveY / 4.8) * 4.8;
     for (const [id, node] of physics.nodes) {
       if (physics.draggedNodeId === id) continue;
       const ratio = (node.inertiaWeight ?? 1) / Math.max(0.25, node.mass || 1);
-      node.vx = clamp(node.vx - dCamVx * ratio * 0.42, -physics.maxSpeed, physics.maxSpeed);
-      node.vy = clamp(node.vy - dCamVy * ratio * 0.42, -physics.maxSpeed, physics.maxSpeed);
+      node.vx = clamp(node.vx + driveX * ratio * step, -physics.maxSpeed, physics.maxSpeed);
+      node.vy = clamp(node.vy + driveY * ratio * step, -physics.maxSpeed, physics.maxSpeed);
     }
   }
 
   const forces = new Map([...physics.nodes.keys()].map((id) => [id, { x: 0, y: 0 }]));
-  const maxDisp = physics.maxDisplacement ?? 130;
-  const softLimit = maxDisp * 0.65;
+  const maxDisp = physics.maxDisplacement ?? 122;
+  const softLimit = maxDisp * 0.58;
 
   for (const [id, node] of physics.nodes) {
     if (physics.draggedNodeId === id) continue;
@@ -286,7 +324,7 @@ export function stepMapPhysics(layout, physics, dt = 1) {
 
     const distHome = Math.hypot(hdx, hdy);
     if (distHome > softLimit && distHome > 0.001) {
-      const extraMag = (distHome - softLimit) * physics.homeStrength * 2.4;
+      const extraMag = (distHome - softLimit) * physics.homeStrength * 2.8;
       force.x += (hdx / distHome) * extraMag;
       force.y += (hdy / distHome) * extraMag;
     }
@@ -306,21 +344,23 @@ export function stepMapPhysics(layout, physics, dt = 1) {
     const vFrom = physics.nodes.get(link.from);
     const vTo = physics.nodes.get(link.to);
     const relVelAlong = ((vTo?.vx || 0) - (vFrom?.vx || 0)) * ux + ((vTo?.vy || 0) - (vFrom?.vy || 0)) * uy;
-    const totalF = clamp(springF + relVelAlong * (physics.linkDamping ?? 0.045), -14, 14);
+    const totalF = clamp(springF + relVelAlong * (physics.linkDamping ?? 0.04), -12, 12);
     const fx = ux * totalF;
     const fy = uy * totalF;
-    forces.get(link.from).x += fx;
-    forces.get(link.from).y += fy;
-    forces.get(link.to).x -= fx;
-    forces.get(link.to).y -= fy;
+    const fromGain = 1 / Math.max(1, vFrom?.degree || 1);
+    const toGain = 1 / Math.max(1, vTo?.degree || 1);
+    forces.get(link.from).x += fx * fromGain;
+    forces.get(link.from).y += fy * fromGain;
+    forces.get(link.to).x -= fx * toGain;
+    forces.get(link.to).y -= fy * toGain;
   }
 
   const damping = Math.pow(physics.damping, step);
-  const tiltScale = physics.tiltScale ?? 0.22;
+  const tiltScale = physics.tiltScale ?? 0.20;
   let maxSpeed = 0;
   let maxStepDelta = 0;
   let maxHomeOffset = 0;
-  let maxAccel = 0;
+  let maxTilt = 0;
 
   for (const [id, node] of physics.nodes) {
     if (physics.draggedNodeId === id) {
@@ -332,7 +372,6 @@ export function stepMapPhysics(layout, physics, dt = 1) {
     const force = forces.get(id);
     const ax = force.x / node.mass;
     const ay = force.y / node.mass;
-    maxAccel = Math.max(maxAccel, Math.hypot(ax, ay));
 
     node.vx = clamp((node.vx + ax * step) * damping, -physics.maxSpeed, physics.maxSpeed);
     node.vy = clamp((node.vy + ay * step) * damping, -physics.maxSpeed, physics.maxSpeed);
@@ -357,38 +396,73 @@ export function stepMapPhysics(layout, physics, dt = 1) {
     }
 
     const targetTilt = clamp(-node.vx * tiltScale, -3.2, 3.2);
-    node.tiltDeg = (node.tiltDeg || 0) * 0.72 + targetTilt * 0.28;
-    if (Math.abs(node.tiltDeg) < 0.04 && Math.abs(node.vx) < 0.08) node.tiltDeg = 0;
+    node.tiltDeg = (node.tiltDeg || 0) * 0.82 + targetTilt * 0.18;
+    if (Math.abs(node.tiltDeg) < 0.04 && Math.abs(targetTilt) < 0.04) node.tiltDeg = 0;
 
     maxSpeed = Math.max(maxSpeed, Math.hypot(node.vx, node.vy));
     maxStepDelta = Math.max(maxStepDelta, Math.hypot(pos.x - prevX, pos.y - prevY));
     maxHomeOffset = Math.max(maxHomeOffset, Math.hypot(pos.x - node.homeX, pos.y - node.homeY));
+    maxTilt = Math.max(maxTilt, Math.abs(node.tiltDeg || 0));
   }
 
-  const maxPenetration = resolveMapNodeCollisions(layout, physics);
-  physics.frameCount += step;
+  const maxPenetration = resolveMapNodeCollisions(layout, physics, {
+    soft: physics.draggedNodeId === null
+  });
 
-  if (maxStepDelta < 0.03 && maxSpeed < 0.06 && maxPenetration <= 0.6 && physics.draggedNodeId === null) {
+  // Update low-pass smoothed curved edge bows
+  if (!(physics.edgeBows instanceof Map)) physics.edgeBows = new Map();
+  let maxBow = 0;
+  for (const edge of layout?.displayEdges || []) {
+    const key = edge.id || `${edge.from}->${edge.to}`;
+    const targetBow = rawEdgeNormalBow(edge, layout.posMap, physics);
+    const prevBow = physics.edgeBows.get(key) || 0;
+    let nextBow = prevBow * 0.80 + targetBow * 0.20;
+    if (Math.abs(nextBow) < 0.05 && Math.abs(targetBow) < 0.05) {
+      physics.edgeBows.delete(key);
+      nextBow = 0;
+    } else {
+      physics.edgeBows.set(key, nextBow);
+      maxBow = Math.max(maxBow, Math.abs(nextBow));
+    }
+  }
+
+  physics.frameCount += step;
+  const camSpeed = Math.hypot(physics.camVx || 0, physics.camVy || 0);
+  if (
+    maxStepDelta < 0.03 &&
+    maxSpeed < 0.04 &&
+    maxHomeOffset <= 0.18 &&
+    maxTilt <= 0.05 &&
+    maxBow <= 0.12 &&
+    camSpeed <= 0.04 &&
+    maxPenetration <= 0.4 &&
+    physics.draggedNodeId === null
+  ) {
     physics.sleepFrames = (physics.sleepFrames || 0) + 1;
   } else {
     physics.sleepFrames = 0;
   }
 
-  const hasCamInertia = Math.hypot(physics.camVx || 0, physics.camVy || 0) > 0.08 || physics.viewportInputTtl > 0;
-  const springTurning = maxHomeOffset > 0.45 && (maxAccel > 0.02 || maxStepDelta > 0.05);
+  const needsContinue =
+    physics.draggedNodeId !== null ||
+    maxSpeed > 0.04 ||
+    maxHomeOffset > 0.18 ||
+    maxTilt > 0.05 ||
+    maxBow > 0.12 ||
+    camSpeed > 0.04 ||
+    maxPenetration > 0.4;
+
   const stillMoving =
-    (physics.draggedNodeId !== null ||
-      maxSpeed > 0.08 ||
-      maxPenetration > 0.6 ||
-      springTurning ||
-      hasCamInertia) &&
+    needsContinue &&
     (physics.sleepFrames || 0) < 8 &&
     physics.frameCount < physics.maxFrames;
 
   if (!stillMoving) {
     physics.camVx = 0;
     physics.camVy = 0;
-    physics.viewportInputTtl = 0;
+    physics.pendingPanX = 0;
+    physics.pendingPanY = 0;
+    physics.edgeBows.clear();
     for (const node of physics.nodes.values()) {
       if (physics.draggedNodeId !== node.id) {
         node.vx = 0;
@@ -400,40 +474,23 @@ export function stepMapPhysics(layout, physics, dt = 1) {
   return stillMoving;
 }
 
-/** Inject a non-inertial viewport pan impulse scaled by each entity's mass and differential inertiaWeight. */
+/** Queue screen-space pan delta to be integrated once cleanly on the next RAF physics step. */
 export function applyMapViewportPanImpulse(
   layout,
   physics,
   deltaScreenX,
   deltaScreenY,
-  { zoom = 1, dt = 1, reducedMotion = false } = {}
+  { zoom = 1, reducedMotion = false } = {}
 ) {
   if (!layout?.posMap?.size || !physics?.nodes?.size) return false;
   const dxScreen = Number(deltaScreenX) || 0;
   const dyScreen = Number(deltaScreenY) || 0;
   if (Math.hypot(dxScreen, dyScreen) < 0.05) return false;
 
-  const safeDt = clamp(Number(dt) || 1, 0.4, 3);
-  const zoomScale = Math.pow(clamp(Number(zoom) || 1, 0.18, 1.6), 0.72);
-  const vxWorld = (dxScreen / zoomScale) / safeDt;
-  const vyWorld = (dyScreen / zoomScale) / safeDt;
-  const ax = vxWorld - (physics.camVx || 0);
-  const ay = vyWorld - (physics.camVy || 0);
-
-  const motionScale = reducedMotion ? 0.25 : 1;
-  const driveX = clamp(-(ax * 0.52 + vxWorld * 0.16) * motionScale, -14, 14);
-  const driveY = clamp(-(ay * 0.52 + vyWorld * 0.16) * motionScale, -14, 14);
-
-  for (const [id, node] of physics.nodes) {
-    if (physics.draggedNodeId === id) continue;
-    const ratio = (node.inertiaWeight ?? 1) / Math.max(0.25, node.mass || 1);
-    node.vx = clamp(node.vx + driveX * ratio, -physics.maxSpeed, physics.maxSpeed);
-    node.vy = clamp(node.vy + driveY * ratio, -physics.maxSpeed, physics.maxSpeed);
-  }
-
-  physics.camVx = vxWorld;
-  physics.camVy = vyWorld;
-  physics.viewportInputTtl = 2.2;
+  physics.pendingPanX = (Number(physics.pendingPanX) || 0) + dxScreen;
+  physics.pendingPanY = (Number(physics.pendingPanY) || 0) + dyScreen;
+  physics.pendingZoom = clamp(Number(zoom) || 1, 0.18, 1.6);
+  physics.reducedMotion = Boolean(reducedMotion);
   physics.frameCount = 0;
   physics.sleepFrames = 0;
   return true;
@@ -464,7 +521,7 @@ export function applyMapViewportZoomImpulse(
     const dist = Math.hypot(dx, dy);
     if (dist < 1) continue;
     const ratio = (node.inertiaWeight ?? 1) / Math.max(0.25, node.mass || 1);
-    const pulse = clamp(zRatio * (node.radialRatio ?? 0.5) * 14 * ratio * motionScale, -6.5, 6.5);
+    const pulse = clamp(zRatio * (node.radialRatio ?? 0.5) * 9.5 * ratio * motionScale, -6.5, 6.5);
     node.vx = clamp(node.vx + (dx / dist) * pulse, -physics.maxSpeed, physics.maxSpeed);
     node.vy = clamp(node.vy + (dy / dist) * pulse, -physics.maxSpeed, physics.maxSpeed);
   }
@@ -474,8 +531,7 @@ export function applyMapViewportZoomImpulse(
   return true;
 }
 
-/** Return dynamic midpoint lateral bow offset for curved SVG edges during motion (0 when stationary). */
-export function computeEdgeDynamicBowOffset(edge, posMap, physics) {
+function rawEdgeNormalBow(edge, posMap, physics) {
   if (!edge || !posMap || !physics?.nodes) return 0;
   const p1 = posMap.get(edge.from);
   const p2 = posMap.get(edge.to);
@@ -494,14 +550,24 @@ export function computeEdgeDynamicBowOffset(edge, posMap, physics) {
   const mvy = ((v1?.vy || 0) + (v2?.vy || 0)) * 0.5;
   const normalVel = mvx * nx + mvy * ny;
   if (Math.abs(normalVel) < 0.02) return 0;
-  return clamp(normalVel * 2.1, -28, 28);
+  return clamp(normalVel * 2.2, -26, 26);
+}
+
+/** Return low-pass smoothed midpoint lateral bow offset for curved SVG edges during motion (0 when stationary). */
+export function computeEdgeDynamicBowOffset(edge, posMap, physics) {
+  if (!edge || !posMap || !physics?.nodes) return 0;
+  const key = edge.id || `${edge.from}->${edge.to}`;
+  if (physics.edgeBows instanceof Map && physics.edgeBows.has(key)) {
+    return physics.edgeBows.get(key);
+  }
+  return rawEdgeNormalBow(edge, posMap, physics);
 }
 
 /** Step camera pan momentum glide after releasing a mouse/touch pan drag. */
 export function stepViewportPanGlide(glide, dt = 1) {
   if (!glide) return { dx: 0, dy: 0, moving: false };
   const step = clamp(Number(dt) || 1, 0.35, 2.2);
-  const decay = Math.pow(0.90, step);
+  const decay = Math.pow(0.915, step);
   glide.vx = (Number(glide.vx) || 0) * decay;
   glide.vy = (Number(glide.vy) || 0) * decay;
   const dx = glide.vx * step;

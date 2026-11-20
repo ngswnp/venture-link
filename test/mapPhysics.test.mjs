@@ -274,3 +274,63 @@ test('stepViewportPanGlide damps flick momentum cleanly to rest', () => {
   assert.equal(glide.vx, 0);
   assert.equal(glide.vy, 0);
 });
+
+test('high-frequency multi-event pan deltas accumulate smoothly and obey soft displacement bounds', () => {
+  const layoutSingle = makeRichInertiaLayout();
+  const physicsSingle = createMapPhysics(layoutSingle);
+  applyMapViewportPanImpulse(layoutSingle, physicsSingle, 60, 0, { zoom: 1 });
+  stepMapPhysics(layoutSingle, physicsSingle, 1);
+
+  const layoutMulti = makeRichInertiaLayout();
+  const physicsMulti = createMapPhysics(layoutMulti);
+  for (let i = 0; i < 10; i += 1) {
+    applyMapViewportPanImpulse(layoutMulti, physicsMulti, 6, 0, { zoom: 1 });
+  }
+  stepMapPhysics(layoutMulti, physicsMulti, 1);
+
+  assert.equal(
+    layoutMulti.posMap.get('sat-outer').x,
+    layoutSingle.posMap.get('sat-outer').x,
+    'Multiple sub-frame deltas must match single equivalent frame impulse cleanly'
+  );
+
+  // Even a violent extreme swipe remains smoothly bounded under maxDisplacement without runaway popping
+  for (let f = 0; f < 10; f += 1) {
+    applyMapViewportPanImpulse(layoutMulti, physicsMulti, 400, 0, { zoom: 0.4 });
+    stepMapPhysics(layoutMulti, physicsMulti, 1);
+  }
+  const offset = Math.abs(layoutMulti.posMap.get('sat-outer').x - 860);
+  assert.ok(offset <= physicsMulti.maxDisplacement + 0.01, `Offset (${offset}) must respect soft displacement bound`);
+});
+
+test('gentle pan produces lightweight visible satellite sway, >3x anchor depth ratio, and clean zero-tilt settle', () => {
+  const layout = makeRichInertiaLayout();
+  const physics = createMapPhysics(layout);
+  const satStartX = layout.posMap.get('sat-outer').x;
+  const anchorStartX = layout.posMap.get('anchor-main').x;
+
+  let maxSatSway = 0;
+  let maxAnchorSway = 0;
+  for (let f = 0; f < 3; f += 1) {
+    applyMapViewportPanImpulse(layout, physics, 16, 0, { zoom: 1 });
+    stepMapPhysics(layout, physics, 1);
+    maxSatSway = Math.max(maxSatSway, Math.abs(layout.posMap.get('sat-outer').x - satStartX));
+    maxAnchorSway = Math.max(maxAnchorSway, Math.abs(layout.posMap.get('anchor-main').x - anchorStartX));
+  }
+
+  let moving = true;
+  for (let i = 0; i < 240 && moving; i += 1) {
+    moving = stepMapPhysics(layout, physics, 1);
+    maxSatSway = Math.max(maxSatSway, Math.abs(layout.posMap.get('sat-outer').x - satStartX));
+    maxAnchorSway = Math.max(maxAnchorSway, Math.abs(layout.posMap.get('anchor-main').x - anchorStartX));
+  }
+
+  assert.ok(maxSatSway > 8, `Expected gentle pan to produce > 8px satellite sway (got ${maxSatSway})`);
+  assert.ok(
+    maxSatSway > maxAnchorSway * 3,
+    `Expected > 3x anchor-vs-satellite lightness hierarchy (sat=${maxSatSway}, anchor=${maxAnchorSway})`
+  );
+  assert.equal(moving, false);
+  assert.ok(Math.abs(layout.posMap.get('sat-outer').x - satStartX) < 0.25);
+  assert.equal(physics.nodes.get('sat-outer').tiltDeg, 0);
+});
