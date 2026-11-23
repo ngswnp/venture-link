@@ -33,6 +33,7 @@ function makeRequestHash(method, apiPath, body) {
 export function createCalaClient(options = {}) {
   const cachePath = options.cachePath || options.cacheFile || DEFAULT_CACHE_PATH;
   const maxLiveCalls = options.maxLiveCalls ?? 8;
+  const timeoutMs = options.timeoutMs ?? 12000;
   const fetchFn = options.fetchFn || globalThis.fetch;
   const getApiKey = () => options.apiKey ?? process.env.CALA_API_KEY ?? '';
 
@@ -93,13 +94,27 @@ export function createCalaClient(options = {}) {
       'X-API-KEY': apiKey,
       'Accept': 'application/json'
     };
-    const fetchOpts = { method, headers };
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller && timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    const fetchOpts = { method, headers, ...(controller ? { signal: controller.signal } : {}) };
     if (body !== null && method !== 'GET') {
       headers['Content-Type'] = 'application/json';
       fetchOpts.body = JSON.stringify(body);
     }
 
-    const res = await fetchFn(`${CALA_BASE_URL}${apiPath}`, fetchOpts);
+    let res;
+    try {
+      res = await fetchFn(`${CALA_BASE_URL}${apiPath}`, fetchOpts);
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        const timeoutErr = new Error(`Cala API timed out after ${Math.round(timeoutMs / 1000)}s on ${apiPath}`);
+        timeoutErr.statusCode = 504;
+        throw timeoutErr;
+      }
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     const text = await res.text();
     let parsed = null;
     try {

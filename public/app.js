@@ -502,10 +502,18 @@ function updateTelemetryPill(budget = null) {
 // ---------- API Helpers ----------
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new Error("Cala request timed out — please try again.");
+    }
+    throw new Error("Connection to server was interrupted while searching Cala — please try again.");
+  }
   let body = {};
   try {
     body = await response.json();
