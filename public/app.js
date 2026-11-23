@@ -228,6 +228,7 @@ const state = {
   suggestItems: [],
   suggestTimer: null,
   suggestSeq: 0,
+  calaRequestInFlight: false,
   searchSubmitSeq: 0,
   compareSuggestItems: [],
   compareSearchTimer: null,
@@ -410,12 +411,13 @@ function setStatus(message, isError = false) {
 function showToast(message, isError = false) {
   const el = $("#uiToastBanner");
   if (!el) return;
+  el.classList.remove("is-loading");
   el.textContent = cleanText(message);
   el.classList.toggle("is-error", Boolean(isError));
   el.hidden = false;
   clearTimeout(state.toastTimer);
   state.toastTimer = setTimeout(() => {
-    el.hidden = true;
+    if (!el.classList.contains("is-loading")) el.hidden = true;
   }, 3200);
 }
 
@@ -428,6 +430,60 @@ function updateLiveStatusPill(loadingMessage = null) {
   } else {
     pill.hidden = true;
     pill.innerHTML = "";
+  }
+}
+
+function setCalaRequestLoading(isLoading, message = "") {
+  const active = Boolean(isLoading);
+  state.calaRequestInFlight = active;
+  state.analysisLoading = active;
+
+  const toast = $("#uiToastBanner");
+  if (toast) {
+    if (active) {
+      const label = cleanText(message) || "Searching with Cala AI...";
+      clearTimeout(state.toastTimer);
+      toast.classList.remove("is-error");
+      toast.classList.add("is-loading");
+      toast.innerHTML = `<span class="live-loading-pulse" aria-hidden="true"></span><span>${escapeHtml(label)}</span>`;
+      toast.hidden = false;
+    } else if (toast.classList.contains("is-loading")) {
+      toast.classList.remove("is-loading");
+      toast.hidden = true;
+      toast.textContent = "";
+    }
+  }
+
+  updateLiveStatusPill(active ? (cleanText(message) || "Searching with Cala AI...") : null);
+
+  const submitBtn = $("#aiSearchSubmitBtn");
+  if (submitBtn) {
+    submitBtn.disabled = active;
+    submitBtn.setAttribute("aria-busy", String(active));
+    submitBtn.textContent = active ? "Searching Cala..." : "Cala Search";
+  }
+
+  const demoButtons = [$("#heroQuickDemoBtn"), ...document.querySelectorAll("[data-launch-sample-map]")].filter(Boolean);
+  for (const btn of demoButtons) {
+    if (active) {
+      if (!btn.dataset.origLabel) btn.dataset.origLabel = btn.textContent;
+      btn.disabled = true;
+      btn.setAttribute("aria-busy", "true");
+      if (btn.id === "heroQuickDemoBtn") btn.textContent = "Searching with Cala AI...";
+    } else {
+      btn.disabled = false;
+      btn.removeAttribute("aria-busy");
+      if (btn.dataset.origLabel) {
+        btn.textContent = btn.dataset.origLabel;
+        delete btn.dataset.origLabel;
+      }
+    }
+  }
+
+  for (const btn of [$("#searchLiveCalaBtn"), $("#mapDensityToggleBtn")].filter(Boolean)) {
+    btn.disabled = active;
+    if (active) btn.setAttribute("aria-busy", "true");
+    else btn.removeAttribute("aria-busy");
   }
 }
 
@@ -6648,14 +6704,10 @@ function renderCompareSuggestions(items, queryText = "") {
 async function runEntityMapAnalysis(entityRefs, options = {}) {
   const refs = entityRefs.filter((r) => r && (r.id || r.name)).slice(0, 20);
   if (!refs.length) return;
+  if (!options._ownedLock && (state.calaRequestInFlight || state.analysisLoading)) return;
 
-  state.analysisLoading = true;
-  const submitBtn = $("#aiSearchSubmitBtn");
-  if (submitBtn) {
-    submitBtn.disabled = true;
-    submitBtn.textContent = "Searching Cala...";
-  }
-  updateLiveStatusPill(options.loadingMessage || `Mapping ${refs.map((r) => r.name).join(" + ")} in Cala...`);
+  const loadingMsg = options.loadingMessage || `Searching with Cala AI · ${refs.map((r) => r.name).join(" + ")}...`;
+  setCalaRequestLoading(true, loadingMsg);
   setStatus(`Building Cala map for ${refs.map((r) => r.name).join(", ")}...`);
 
   try {
@@ -6747,11 +6799,8 @@ async function runEntityMapAnalysis(entityRefs, options = {}) {
     setStatus(err.message || "Unable to load Cala map.", true);
     showToast(err.message || "Unable to load Cala map.", true);
   } finally {
-    state.analysisLoading = false;
-    updateLiveStatusPill(null);
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.textContent = "Cala Search";
+    if (!options._ownedLock) {
+      setCalaRequestLoading(false);
     }
   }
 }
@@ -6764,7 +6813,9 @@ async function resolveQueryTermsToEntities(rawQuery, maxTerms = 20) {
     .slice(0, maxTerms);
   if (!parts.length) return [];
 
-  updateLiveStatusPill(`Resolving ${parts.join(", ")} in Cala...`);
+  if (!state.calaRequestInFlight) {
+    updateLiveStatusPill(`Resolving ${parts.join(", ")} in Cala...`);
+  }
   const resolved = [];
   const seenIds = new Set();
 
@@ -6780,7 +6831,9 @@ async function resolveQueryTermsToEntities(rawQuery, maxTerms = 20) {
     }
   }
 
-  updateLiveStatusPill(null);
+  if (!state.calaRequestInFlight) {
+    updateLiveStatusPill(null);
+  }
   return resolved;
 }
 
@@ -6805,6 +6858,7 @@ function focusExistingMappedEntity(ref) {
 }
 
 async function handleEntitySearchSubmit(rawQuery, options = {}) {
+  if (state.calaRequestInFlight || state.analysisLoading) return;
   closeSuggestPopup();
   const terms = cleanText(rawQuery);
   if (!terms) {
@@ -6814,43 +6868,57 @@ async function handleEntitySearchSubmit(rawQuery, options = {}) {
     return;
   }
 
-  const submitSeq = ++state.searchSubmitSeq;
-  const refs = await resolveQueryTermsToEntities(terms);
-  if (submitSeq !== state.searchSubmitSeq) return;
-  if (!refs.length) {
-    setStatus(`No Cala entities found for "${terms}".`, true);
-    showToast(`No Cala entity found matching "${terms}".`, true);
-    return;
-  }
+  const initialMsg = options.loadingMessage || `Searching with Cala AI · ${terms}...`;
+  setCalaRequestLoading(true, initialMsg);
 
-  const input = $("#aiSearchInput");
-  if (input) input.value = "";
+  try {
+    const submitSeq = ++state.searchSubmitSeq;
+    const refs = await resolveQueryTermsToEntities(terms);
+    if (submitSeq !== state.searchSubmitSeq) return;
+    if (!refs.length) {
+      setStatus(`No Cala entities found for "${terms}".`, true);
+      showToast(`No Cala entity found matching "${terms}".`, true);
+      return;
+    }
 
-  if (options.replace || !state.pinnedEntities.length) {
-    await runEntityMapAnalysis(refs, {
+    const input = $("#aiSearchInput");
+    if (input) input.value = "";
+
+    if (options.replace || !state.pinnedEntities.length) {
+      await runEntityMapAnalysis(refs, {
+        fit: true,
+        discoverLive: true,
+        focusNewId: refs[refs.length - 1]?.id,
+        loadingMessage: options.loadingMessage || `Mapping ${refs.map((r) => r.name).join(" + ")} with Cala AI...`,
+        _ownedLock: true
+      });
+      return;
+    }
+
+    const existingIds = new Set(state.pinnedEntities.map((p) => p.id));
+    const newRefs = refs.filter((r) => !existingIds.has(r.id));
+    if (!newRefs.length) {
+      focusExistingMappedEntity(refs[0]);
+      return;
+    }
+    if (state.pinnedEntities.length >= 20) {
+      showToast("Map displays up to 20 explored hubs cleanly. Remove one to add more.", true);
+      return;
+    }
+    const merged = [...state.pinnedEntities, ...newRefs].slice(0, 20);
+    await runEntityMapAnalysis(merged, {
       fit: true,
       discoverLive: true,
-      focusNewId: refs[refs.length - 1]?.id
+      focusNewId: newRefs[newRefs.length - 1]?.id,
+      loadingMessage: options.loadingMessage || `Mapping ${merged.map((r) => r.name).join(" + ")} with Cala AI...`,
+      _ownedLock: true
     });
-    return;
+  } catch (err) {
+    setStatus(err.message || "Unable to search Cala.", true);
+    showToast(err.message || "Unable to search Cala.", true);
+  } finally {
+    setCalaRequestLoading(false);
   }
-
-  const existingIds = new Set(state.pinnedEntities.map((p) => p.id));
-  const newRefs = refs.filter((r) => !existingIds.has(r.id));
-  if (!newRefs.length) {
-    focusExistingMappedEntity(refs[0]);
-    return;
-  }
-  if (state.pinnedEntities.length >= 20) {
-    showToast("Map displays up to 20 explored hubs cleanly. Remove one to add more.", true);
-    return;
-  }
-  const merged = [...state.pinnedEntities, ...newRefs].slice(0, 20);
-  await runEntityMapAnalysis(merged, {
-    fit: true,
-    discoverLive: true,
-    focusNewId: newRefs[newRefs.length - 1].id
-  });
 }
 
 async function focusOnlyEntityOnMap(entity) {
@@ -8728,21 +8796,30 @@ function bindSearchAndCommandEvents() {
     }
     const sampleBtn = e.target.closest("[data-launch-sample-map]");
     if (sampleBtn) {
+      if (state.calaRequestInFlight || state.analysisLoading) return;
       switchHeroInfoTab("explorer");
-      await handleEntitySearchSubmit("OpenAI, Nvidia, Anthropic", { replace: true });
+      await handleEntitySearchSubmit("OpenAI, Nvidia, Anthropic", {
+        replace: true,
+        loadingMessage: "Searching with Cala AI · Loading sample map..."
+      });
     }
   });
 
   $("#heroQuickDemoBtn")?.addEventListener("click", async () => {
+    if (state.calaRequestInFlight || state.analysisLoading) return;
     switchHeroInfoTab("explorer");
-    await handleEntitySearchSubmit("OpenAI, Nvidia, Anthropic", { replace: true });
+    await handleEntitySearchSubmit("OpenAI, Nvidia, Anthropic", {
+      replace: true,
+      loadingMessage: "Searching with Cala AI · Loading sample map..."
+    });
   });
 
   $("#searchLiveCalaBtn")?.addEventListener("click", async () => {
+    if (state.calaRequestInFlight || state.analysisLoading) return;
     if (state.pinnedEntities.length) {
-      await runEntityMapAnalysis(state.pinnedEntities, { fit: false, discoverLive: true, loadingMessage: "Refreshing live Cala graph..." });
+      await runEntityMapAnalysis(state.pinnedEntities, { fit: false, discoverLive: true, loadingMessage: "Searching with Cala AI · Refreshing live graph..." });
     } else {
-      await handleEntitySearchSubmit("OpenAI");
+      await handleEntitySearchSubmit("OpenAI", { loadingMessage: "Searching with Cala AI · OpenAI..." });
     }
   });
 
