@@ -30,6 +30,31 @@ function makeRequestHash(method, apiPath, body) {
   return crypto.createHash('sha256').update(payload).digest('hex');
 }
 
+function trimOversizedObservations(data) {
+  if (!data || typeof data !== 'object' || !data.numerical_observations || typeof data.numerical_observations !== 'object') {
+    return data;
+  }
+  const obs = data.numerical_observations;
+  if (Array.isArray(obs)) {
+    if (obs.length <= 12) return data;
+    return { ...data, numerical_observations: obs.slice(-8) };
+  }
+  const keys = Object.keys(obs);
+  if (keys.length <= 12) return data;
+  const trimmed = {};
+  for (const mk of keys) {
+    if (!/headcount|employ|revenue|valuat|market.?cap|fund|cash|assets/i.test(mk)) continue;
+    const mv = obs[mk];
+    if (Array.isArray(mv)) trimmed[mk] = mv.slice(-3);
+    else if (mv && typeof mv === 'object' && Array.isArray(mv.observations)) {
+      trimmed[mk] = { ...mv, observations: mv.observations.slice(-3) };
+    } else {
+      trimmed[mk] = mv;
+    }
+  }
+  return { ...data, numerical_observations: trimmed };
+}
+
 export function createCalaClient(options = {}) {
   const cachePath = options.cachePath || options.cacheFile || DEFAULT_CACHE_PATH;
   const maxLiveCalls = options.maxLiveCalls ?? 8;
@@ -54,7 +79,7 @@ export function createCalaClient(options = {}) {
   function saveCache() {
     try {
       fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-      fs.writeFileSync(cachePath, JSON.stringify(cacheStore, null, 2), 'utf8');
+      fs.writeFileSync(cachePath, JSON.stringify(cacheStore), 'utf8');
     } catch {
       // Ignore disk write failure in read-only test scenarios
     }
@@ -133,11 +158,12 @@ export function createCalaClient(options = {}) {
     }
 
     const cachedAt = new Date().toISOString();
-    cacheStore[key] = { method, apiPath, body, cachedAt, data: parsed };
+    const cachedData = trimOversizedObservations(parsed);
+    cacheStore[key] = { method, apiPath, body, cachedAt, data: cachedData };
     saveCache();
 
     return {
-      data: parsed,
+      data: cachedData,
       fromCache: false,
       cachedAt,
       budget: getBudgetStatus()
