@@ -6819,8 +6819,10 @@ async function resolveQueryTermsToEntities(rawQuery, maxTerms = 20) {
   const resolved = [];
   const seenIds = new Set();
 
-  for (const term of parts) {
-    const matches = await searchCalaEntities(term);
+  const matchBatches = await Promise.all(parts.map((term) => searchCalaEntities(term).catch(() => [])));
+  for (let i = 0; i < parts.length; i += 1) {
+    const term = parts[i];
+    const matches = matchBatches[i] || [];
     if (!matches.length) continue;
     const needle = normalizedName(term);
     const exact = matches.find((m) => normalizedName(m.name) === needle);

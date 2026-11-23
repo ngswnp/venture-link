@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { COMPANIES, FUNDS, PEER_INVESTORS, REFERENCE_DATE, SOURCES } from './src/data.mjs';
 import { createCalaClient, loadEnvFile } from './src/calaClient.mjs';
@@ -22,7 +23,31 @@ loadEnvFile();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const CALA_CACHE_FILE = path.join(__dirname, '.cache', 'cala-cache.json');
+const CACHE_DIR = path.join(__dirname, '.cache');
+const DEMO_CACHE_DIR = path.join(__dirname, 'src', 'demo-cache');
+const CALA_CACHE_FILE = path.join(CACHE_DIR, 'cala-cache.json');
+const CLAUDE_CACHE_FILE = path.join(CACHE_DIR, 'claude-insight-cache.json');
+
+function hydrateDemoSeedCaches() {
+  try {
+    fsSync.mkdirSync(CACHE_DIR, { recursive: true });
+    const seeds = [
+      [path.join(DEMO_CACHE_DIR, 'cala-seed-cache.json.gz'), CALA_CACHE_FILE],
+      [path.join(DEMO_CACHE_DIR, 'claude-seed-cache.json.gz'), CLAUDE_CACHE_FILE]
+    ];
+    for (const [gzPath, outPath] of seeds) {
+      if (!fsSync.existsSync(gzPath)) continue;
+      const needsHydrate = !fsSync.existsSync(outPath) || fsSync.statSync(outPath).size < 16;
+      if (!needsHydrate) continue;
+      const inflated = zlib.gunzipSync(fsSync.readFileSync(gzPath));
+      fsSync.writeFileSync(outPath, inflated);
+    }
+  } catch (err) {
+    console.warn('[demo-cache] Could not hydrate seed cache:', err?.message || err);
+  }
+}
+
+hydrateDemoSeedCaches();
 const SLUSH_2026_ENTITY_ID = 'bc844d56-6ab4-452b-96bf-2661e86e592b';
 
 const MIME_TYPES = {
