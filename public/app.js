@@ -6867,6 +6867,22 @@ function focusExistingMappedEntity(ref) {
   showToast(`${ref.name} is already on the map.`);
 }
 
+const SAMPLE_MAP_ENTITY_REFS = [
+  { id: "0ac03ffd-ebde-413d-b9e2-c2cb2299b633", name: "OpenAI", entityType: "Organization" },
+  { id: "5f7ca504-01d8-4aa9-b1ac-889202fd17c9", name: "Nvidia", entityType: "Company" },
+  { id: "ff253079-1c16-47f1-814d-9d8e839e5c03", name: "Anthropic", entityType: "Company" }
+];
+
+async function launchSampleMap() {
+  if (state.calaRequestInFlight || state.analysisLoading) return;
+  switchHeroInfoTab("explorer");
+  await runEntityMapAnalysis(SAMPLE_MAP_ENTITY_REFS, {
+    fit: true,
+    discoverLive: true,
+    loadingMessage: "Searching with Cala AI · Loading OpenAI, Nvidia & Anthropic..."
+  });
+}
+
 async function handleEntitySearchSubmit(rawQuery, options = {}) {
   if (state.calaRequestInFlight || state.analysisLoading) return;
   closeSuggestPopup();
@@ -8806,22 +8822,12 @@ function bindSearchAndCommandEvents() {
     }
     const sampleBtn = e.target.closest("[data-launch-sample-map]");
     if (sampleBtn) {
-      if (state.calaRequestInFlight || state.analysisLoading) return;
-      switchHeroInfoTab("explorer");
-      await handleEntitySearchSubmit("OpenAI, Nvidia, Anthropic", {
-        replace: true,
-        loadingMessage: "Searching with Cala AI · Loading sample map..."
-      });
+      await launchSampleMap();
     }
   });
 
   $("#heroQuickDemoBtn")?.addEventListener("click", async () => {
-    if (state.calaRequestInFlight || state.analysisLoading) return;
-    switchHeroInfoTab("explorer");
-    await handleEntitySearchSubmit("OpenAI, Nvidia, Anthropic", {
-      replace: true,
-      loadingMessage: "Searching with Cala AI · Loading sample map..."
-    });
+    await launchSampleMap();
   });
 
   $("#searchLiveCalaBtn")?.addEventListener("click", async () => {
@@ -8829,7 +8835,7 @@ function bindSearchAndCommandEvents() {
     if (state.pinnedEntities.length) {
       await runEntityMapAnalysis(state.pinnedEntities, { fit: false, discoverLive: true, loadingMessage: "Searching with Cala AI · Refreshing live graph..." });
     } else {
-      await handleEntitySearchSubmit("OpenAI", { loadingMessage: "Searching with Cala AI · OpenAI..." });
+      await launchSampleMap();
     }
   });
 
