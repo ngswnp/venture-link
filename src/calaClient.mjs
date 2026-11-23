@@ -1,12 +1,14 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
 const DEFAULT_CACHE_PATH = path.join(ROOT_DIR, '.cache', 'cala-cache.json');
+const DEMO_SEED_CACHE_PATH = path.join(__dirname, 'demo-cache', 'cala-seed-cache.json.gz');
 const CALA_BASE_URL = 'https://api.cala.ai';
 
 export function loadEnvFile(envPath = path.join(ROOT_DIR, '.env')) {
@@ -64,12 +66,15 @@ export function createCalaClient(options = {}) {
 
   let liveCallsUsed = 0;
   let cacheHits = 0;
+  let cacheOnlyDepth = 0;
   let cacheStore = {};
 
   function loadCache() {
     try {
       if (fs.existsSync(cachePath)) {
         cacheStore = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+      } else if (cachePath === DEFAULT_CACHE_PATH && fs.existsSync(DEMO_SEED_CACHE_PATH)) {
+        cacheStore = JSON.parse(zlib.gunzipSync(fs.readFileSync(DEMO_SEED_CACHE_PATH)).toString('utf8'));
       }
     } catch {
       cacheStore = {};
@@ -97,6 +102,12 @@ export function createCalaClient(options = {}) {
         cachedAt: cacheStore[key].cachedAt,
         budget: getBudgetStatus()
       };
+    }
+
+    if (cacheOnlyDepth > 0) {
+      const err = new Error(`Cache-only mode: ${apiPath} not in demo seed cache.`);
+      err.statusCode = 404;
+      throw err;
     }
 
     const apiKey = getApiKey();
@@ -255,6 +266,14 @@ export function createCalaClient(options = {}) {
   }
 
   return {
+    async withCacheOnly(fn) {
+      cacheOnlyDepth += 1;
+      try {
+        return await fn();
+      } finally {
+        cacheOnlyDepth = Math.max(0, cacheOnlyDepth - 1);
+      }
+    },
     getBudgetStatus,
     getCachedEntities,
     calaEntitySearch,

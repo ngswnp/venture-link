@@ -1843,6 +1843,9 @@ export function createAppServer(options = {}) {
       if (req.method === 'POST' && pathname === '/api/analyze') {
         const body = await readJsonBody(req);
         if (body.mode === 'entity') {
+          const resolvedPayload = body.isSampleMap && typeof calaClient.withCacheOnly === 'function'
+            ? await calaClient.withCacheOnly(() => resolveEntityMapRequest(body))
+            : await resolveEntityMapRequest(body);
           const {
             entities,
             anchor,
@@ -1850,7 +1853,7 @@ export function createAppServer(options = {}) {
             perspectiveEntity,
             primaryTargetId,
             hydratedNeighbors
-          } = await resolveEntityMapRequest(body);
+          } = resolvedPayload;
           const result = runFullAnalysis(
             {
               mode: 'entity',

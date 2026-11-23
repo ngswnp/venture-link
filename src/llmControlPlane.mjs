@@ -1,12 +1,14 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { enforceFactCitations } from './engine.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEFAULT_INSIGHT_DISK_CACHE = path.resolve(__dirname, '..', '.cache', 'claude-insight-cache.json');
+const DEMO_CLAUDE_SEED_CACHE = path.resolve(__dirname, 'demo-cache', 'claude-seed-cache.json.gz');
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -38,6 +40,9 @@ function loadDiskInsightStore(diskCachePath) {
   try {
     if (fs.existsSync(diskCachePath)) {
       const parsed = JSON.parse(fs.readFileSync(diskCachePath, 'utf8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) store = parsed;
+    } else if (diskCachePath === DEFAULT_INSIGHT_DISK_CACHE && fs.existsSync(DEMO_CLAUDE_SEED_CACHE)) {
+      const parsed = JSON.parse(zlib.gunzipSync(fs.readFileSync(DEMO_CLAUDE_SEED_CACHE)).toString('utf8'));
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) store = parsed;
     }
   } catch {

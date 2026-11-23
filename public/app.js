@@ -6739,7 +6739,8 @@ async function runEntityMapAnalysis(entityRefs, options = {}) {
       primaryTargetId: validPrimary || undefined,
       hideMegaHubs: state.hideMegaHubs,
       expandAllEntities: Boolean(state.expandAllEntities),
-      discoverLive: options.discoverLive !== false
+      discoverLive: options.discoverLive !== false,
+      isSampleMap: Boolean(options.isSampleMap)
     };
 
     const result = await fetchJson("/api/analyze", {
@@ -6879,6 +6880,7 @@ async function launchSampleMap() {
   await runEntityMapAnalysis(SAMPLE_MAP_ENTITY_REFS, {
     fit: true,
     discoverLive: true,
+    isSampleMap: true,
     loadingMessage: "Searching with Cala AI · Loading OpenAI, Nvidia & Anthropic..."
   });
 }
