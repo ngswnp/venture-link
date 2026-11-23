@@ -27,6 +27,37 @@ const CACHE_DIR = path.join(__dirname, '.cache');
 const DEMO_CACHE_DIR = path.join(__dirname, 'src', 'demo-cache');
 const CALA_CACHE_FILE = path.join(CACHE_DIR, 'cala-cache.json');
 const CLAUDE_CACHE_FILE = path.join(CACHE_DIR, 'claude-insight-cache.json');
+const SAMPLE_MAP_BUNDLE_FILE = path.join(DEMO_CACHE_DIR, 'sample-map-response.json.gz');
+const SAMPLE_MAP_ID_KEY = [
+  '0ac03ffd-ebde-413d-b9e2-c2cb2299b633',
+  '5f7ca504-01d8-4aa9-b1ac-889202fd17c9',
+  'ff253079-1c16-47f1-814d-9d8e839e5c03'
+].sort().join('|');
+let staticSampleMapBundle = null;
+
+function getStaticSampleMapBundle() {
+  if (staticSampleMapBundle) return staticSampleMapBundle;
+  try {
+    if (fsSync.existsSync(SAMPLE_MAP_BUNDLE_FILE)) {
+      staticSampleMapBundle = JSON.parse(zlib.gunzipSync(fsSync.readFileSync(SAMPLE_MAP_BUNDLE_FILE)).toString('utf8'));
+    }
+  } catch (err) {
+    console.warn('[demo-cache] Could not load static sample map bundle:', err?.message || err);
+  }
+  return staticSampleMapBundle;
+}
+
+function isStaticSampleMapRequest(body = {}) {
+  if (body.perspectiveEntityId || body.perspectiveEntityName || body.perspectiveEntity) return false;
+  if (body.primaryTargetId) return false;
+  if (body.hideMegaHubs === false) return false;
+  const refs = Array.isArray(body.entityRefs) ? body.entityRefs : Array.isArray(body.entities) ? body.entities : [];
+  if (refs.length === 3) {
+    const key = refs.map((r) => String(r?.id || r?.calaEntityId || '')).sort().join('|');
+    if (key === SAMPLE_MAP_ID_KEY) return true;
+  }
+  return Boolean(body.isSampleMap);
+}
 
 function hydrateDemoSeedCaches() {
   try {
@@ -1843,6 +1874,16 @@ export function createAppServer(options = {}) {
       if (req.method === 'POST' && pathname === '/api/analyze') {
         const body = await readJsonBody(req);
         if (body.mode === 'entity') {
+          if (isStaticSampleMapRequest(body)) {
+            const bundle = getStaticSampleMapBundle();
+            const prebuilt = body.expandAllEntities ? bundle?.expanded : bundle?.compact;
+            if (prebuilt) {
+              return sendJson(res, 200, {
+                ...prebuilt,
+                calaBudget: calaClient.getBudgetStatus()
+              });
+            }
+          }
           const resolvedPayload = body.isSampleMap && typeof calaClient.withCacheOnly === 'function'
             ? await calaClient.withCacheOnly(() => resolveEntityMapRequest(body))
             : await resolveEntityMapRequest(body);
